@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from agentkit import AssistantMessage, Message, ToolCall, ToolSpec
+
 from bismuth.adapters.llm.litellm_adapter import _load_litellm
 
 

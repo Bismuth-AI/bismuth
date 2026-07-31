@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from agentkit.testing import FakeModel, call, says
 from fastapi.testclient import TestClient
 from tests.test_ingest import add
 
-from agentkit.testing import FakeModel, call, says
 from bismuth.api.app import create_app
 from bismuth.config import Settings
 from bismuth.container import Bismuth, build
@@ -21,14 +21,19 @@ async def test_propose_records_moves_without_touching_disk(engine: Bismuth) -> N
     model = FakeModel(
         [
             says("구조를 봅니다", call("tree", {})),
-            says("계약서를 나눕니다", call("move", {"paths": ["아폴로/2023/a.txt"], "target": "아폴로/2023/계약"})),
+            says(
+                "계약서를 나눕니다",
+                call("move", {"paths": ["아폴로/2023/a.txt"], "target": "아폴로/2023/계약"}),
+            ),
             says("계약 문서를 아폴로/2023/계약 으로 나누자고 제안합니다."),
         ]
     )
 
     proposal = await _svc(engine, model).propose_reorg()
 
-    assert [(m.paths, m.target) for m in proposal.moves] == [(["아폴로/2023/a.txt"], "아폴로/2023/계약")]
+    assert [(m.paths, m.target) for m in proposal.moves] == [
+        (["아폴로/2023/a.txt"], "아폴로/2023/계약")
+    ]
     assert proposal.summary
     # A proposal moves nothing on its own.
     assert (engine.vault.root / "아폴로/2023/a.txt").is_file()

@@ -14,17 +14,19 @@ import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from pydantic import BaseModel, Field
-
 from agentkit import Agent, ChatModel, FunctionTool, RunResult, Tool, subagent_tool
 from agentkit.loop import OnEvent
+from pydantic import BaseModel, Field
+
 from bismuth.domain.charter import CHARTER_FILENAME
 from bismuth.domain.document import sidecar_name
 from bismuth.ports.vault import INBOX, Vault
 from bismuth.services.charters import CharterService
 from bismuth.services.sidecar import read_sidecar_meta
 
-DEFAULT_ORGANIZE_INSTRUCTION = "Review the vault's structure and propose any reorganisation it needs."
+DEFAULT_ORGANIZE_INSTRUCTION = (
+    "Review the vault's structure and propose any reorganisation it needs."
+)
 
 SYSTEM_ASK = """\
 You are a librarian answering questions from a vault of real folders and files.
@@ -88,7 +90,18 @@ names that do not match the documents' language? Reply with a short verdict for 
 each part: keep, drop, or reject, with one reason each.\
 """
 
-_TEXT_SUFFIXES = {".md", ".txt", ".markdown", ".rst", ".log", ".csv", ".tsv", ".json", ".yaml", ".yml"}
+_TEXT_SUFFIXES = {
+    ".md",
+    ".txt",
+    ".markdown",
+    ".rst",
+    ".log",
+    ".csv",
+    ".tsv",
+    ".json",
+    ".yaml",
+    ".yml",
+}
 _GREP_MATCH_LIMIT = 100
 
 
@@ -214,11 +227,36 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
         return vault.read_text(note)
 
     return [
-        FunctionTool(name="ls", description="List the folders and files directly in a folder.", params=_LsArgs, handler=_ls),
-        FunctionTool(name="tree", description="Show the folder tree (with document counts) under a folder.", params=_TreeArgs, handler=_tree),
-        FunctionTool(name="read", description="Read a file's text (a document reads its sidecar), paginated.", params=_ReadArgs, handler=_read),
-        FunctionTool(name="grep", description="Regex-search the text of documents' sidecars under a folder.", params=_GrepArgs, handler=_grep),
-        FunctionTool(name="read_note", description="Read a folder's note describing what it holds.", params=_NoteArgs, handler=_read_note),
+        FunctionTool(
+            name="ls",
+            description="List the folders and files directly in a folder.",
+            params=_LsArgs,
+            handler=_ls,
+        ),
+        FunctionTool(
+            name="tree",
+            description="Show the folder tree (with document counts) under a folder.",
+            params=_TreeArgs,
+            handler=_tree,
+        ),
+        FunctionTool(
+            name="read",
+            description="Read a file's text (a document reads its sidecar), paginated.",
+            params=_ReadArgs,
+            handler=_read,
+        ),
+        FunctionTool(
+            name="grep",
+            description="Regex-search the text of documents' sidecars under a folder.",
+            params=_GrepArgs,
+            handler=_grep,
+        ),
+        FunctionTool(
+            name="read_note",
+            description="Read a folder's note describing what it holds.",
+            params=_NoteArgs,
+            handler=_read_note,
+        ),
     ]
 
 
