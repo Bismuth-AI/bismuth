@@ -1,0 +1,113 @@
+﻿[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bismuth-kb"
+version = "0.1.0"
+description = "Self-organizing document structure for agentic retrieval."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "The Bismuth authors" }]
+keywords = ["knowledge-base", "rag", "agents", "document-management", "llm", "faceted-classification"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business",
+    "Topic :: Text Processing :: Indexing",
+]
+
+# Permissive licences only (MIT/BSD/Apache-2.0); see docs/licensing.md.
+# PyMuPDF is avoided on purpose: AGPL-3.0 would relicense this project.
+dependencies = [
+    "pydantic>=2.7,<3",           # MIT
+    "pydantic-settings>=2.3,<3",  # MIT
+    "python-dotenv>=1.0",         # BSD-3-Clause
+    # MIT. 1.92.0 excluded (not capped): it shipped without a wheel, so pip falls
+    # back to the sdist and needs a Rust toolchain, breaking `pip install`.
+    "litellm>=1.55,!=1.92.0",
+    "typer>=0.12",                # MIT
+    "rich>=13.7",                 # MIT
+    "python-frontmatter>=1.1",    # MIT
+    "pyyaml>=6.0",                # MIT
+    "anyio>=4.4",                 # MIT
+]
+
+[project.optional-dependencies]
+# Document parsers. Split out so a minimal install stays small.
+parsers = [
+    "pypdf>=5.1",         # BSD-3-Clause
+    "python-docx>=1.1",   # MIT
+    "python-pptx>=1.0",   # MIT
+    "openpyxl>=3.1",      # MIT
+]
+server = [
+    "fastapi>=0.115",             # MIT
+    "uvicorn[standard]>=0.32",    # BSD-3-Clause
+    "python-multipart>=0.0.12",   # Apache-2.0
+    "watchfiles>=0.24",           # MIT
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "types-PyYAML>=6.0",
+]
+all = ["bismuth-kb[parsers,server]"]
+
+[project.scripts]
+bismuth = "bismuth.cli.main:main"
+
+[project.urls]
+Homepage = "https://github.com/Bismuth-AI/bismuth"
+Documentation = "https://github.com/Bismuth-AI/bismuth/tree/main/docs"
+Issues = "https://github.com/Bismuth-AI/bismuth/issues"
+
+[tool.hatch.build.targets.wheel]
+# The UI is a single file with no build step, so it ships as package data.
+# agentkit is a separate installable package under packages/agentkit (bismuth
+# imports it as an installed library); it is not vendored into this wheel.
+packages = ["src/bismuth"]
+artifacts = ["src/bismuth/api/static/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "TID", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"bismuth.adapters".msg = "The domain and services layers must not import adapters. Depend on bismuth.ports instead."
+
+[tool.ruff.lint.per-file-ignores]
+# "inward only" exceptions: composition root, delivery layers, adapters, tests.
+"src/bismuth/container.py" = ["TID251"]
+"src/bismuth/cli/*" = ["TID251"]
+"src/bismuth/api/*" = ["TID251"]
+"src/bismuth/adapters/*" = ["TID251"]
+"tests/*" = ["TID251"]
+"examples/*" = ["TID251"]  # examples exist to show embedding, which means wiring adapters
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["bismuth", "agentkit"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["litellm.*", "frontmatter.*", "docx.*", "pptx.*", "openpyxl.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests", "packages/agentkit/tests"]
+pythonpath = ["src"]
