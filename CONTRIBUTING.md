@@ -1,4 +1,4 @@
-﻿# Contributing
+# Contributing
 
 ## Getting set up
 
