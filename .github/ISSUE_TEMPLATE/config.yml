@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: How Bismuth decides things
+    url: https://github.com/Bismuth-AI/bismuth/tree/main/docs/adr
+    about: The design decisions, their costs, and what would overturn them.
+  - name: Contributing
+    url: https://github.com/Bismuth-AI/bismuth/blob/main/CONTRIBUTING.md
+    about: The dependency rule, the licence constraint, and what we would like help with.

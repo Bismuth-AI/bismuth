@@ -1,0 +1,32 @@
+name: Feature request
+description: Something Bismuth should be able to do and cannot.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The situation that is not handled today
+      description: What you were trying to do with your documents when you hit this.
+    validations: { required: true }
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+    validations: { required: true }
+
+  - type: textarea
+    id: cost
+    attributes:
+      label: What this would cost
+      description: |
+        New dependency, a slower ingest, a decision that contradicts an ADR --
+        whatever you can see. An honest cost makes a proposal easier to accept,
+        not harder.
+
+  - type: checkboxes
+    id: licence
+    attributes:
+      label: Licence
+      options:
+        - label: This does not require an AGPL/GPL/LGPL dependency, or I have said above why it must.
