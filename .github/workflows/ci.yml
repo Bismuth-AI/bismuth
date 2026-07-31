@@ -22,7 +22,10 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-      - run: pip install -e ".[parsers,server,dev]"
+      # agentkit lives in this repo and is imported as an installed library, not
+      # vendored, so it has to be installed alongside -- it is not a dependency
+      # of the wheel and pip will not find it on its own.
+      - run: pip install -e ./packages/agentkit -e ".[parsers,server,dev]"
       - run: ruff check src tests examples
       - run: ruff format --check src tests examples
       - run: pytest -q
@@ -36,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12", cache: pip }
-      - run: pip install -e ".[parsers,server,dev]"
+      - run: pip install -e ./packages/agentkit -e ".[parsers,server,dev]"
       - run: mypy
 
   licences:

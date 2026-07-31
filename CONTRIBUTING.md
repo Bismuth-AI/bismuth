@@ -6,9 +6,14 @@
 git clone https://github.com/Bismuth-AI/bismuth
 cd bismuth
 python -m venv .venv && . .venv/bin/activate    # Windows: .venv\Scripts\activate
-pip install -e ".[parsers,server,dev]"
+pip install -e ./packages/agentkit -e ".[parsers,server,dev]"
 pytest -q
 ```
+
+`agentkit` is installed separately on purpose. It is a standalone package that
+happens to live in this repository, and Bismuth imports it as a library rather
+than vendoring it — so it is not a dependency of the `bismuth-kb` wheel and pip
+will not pull it in for you. Miss it and `bismuth.container` fails to import.
 
 **No API key needed, for anything.** The whole engine runs against a scripted model
 ([`FakeLLM`](src/bismuth/adapters/llm/fake.py)). To see what it produces:
