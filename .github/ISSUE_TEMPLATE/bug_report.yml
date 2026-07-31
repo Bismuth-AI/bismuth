@@ -1,0 +1,53 @@
+name: Bug report
+description: Bismuth did something wrong with your documents.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Vaults contain documents you probably cannot share, so please do not try.
+        The shape of the vault and the journal line are more useful than the files.
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations: { required: true }
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+    validations: { required: true }
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: The shape of the vault
+      description: Roughly how many files, which formats, and what the folder tree looks like.
+      placeholder: ~400 files, mostly .pdf and .hwpx, three top-level folders by project
+    validations: { required: true }
+
+  - type: input
+    id: model
+    attributes:
+      label: Provider and models
+      description: What you configured for FAST and REASONING. Say if they are local.
+      placeholder: ollama, qwen2.5:7b (fast) / qwen2.5:14b (reasoning)
+    validations: { required: true }
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: The relevant lines from .bismuth/journal.jsonl
+      description: |
+        If a file was placed somewhere wrong, `bismuth log` shows the rationale
+        it used. That line is the single most useful thing you can paste.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Version and OS
+      placeholder: bismuth-kb 0.1.0, Windows 11, Python 3.12
+    validations: { required: true }
