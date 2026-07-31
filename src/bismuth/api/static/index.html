@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bismuth</title>
+<style>
+/*
+  One file, no build step, no CDN. `pip install` then `bismuth` has to be the whole
+  setup; a node toolchain in front of a Python tool is friction we would be choosing.
+
+  The layout is a file explorer because that is what the product is: a folder tree
+  the model built and a person browses. Folders and documents are the content;
+  everything else (setup, history) gets out of the way.
+*/
+:root {
+  --bg: #fbfaf9; --panel: #fff; --line: #e7e3df; --ink: #1c1a19; --dim: #6f6862;
+  --accent: #8b6f47; --accent-soft: #f0ebe3; --ok: #3f7d58; --warn: #a8761f; --danger: #a13c32;
+  --radius: 9px;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17161a; --panel: #1f1e23; --line: #33313a; --ink: #eceaf0; --dim: #9a949f;
+    --accent: #c9a875; --accent-soft: #2a2620; --ok: #6bbf8b; --warn: #d6a24a; --danger: #e0736a;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.6 "Pretendard", -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", "맑은 고딕", ui-sans-serif, system-ui, sans-serif;
+  word-break: keep-all;
+  display: flex; flex-direction: column;
+}
+code, .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .85em; }
+button {
+  font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.ghost { border-color: transparent; background: transparent; color: var(--dim); }
+button.ghost:hover { color: var(--ink); background: var(--accent-soft); }
+input, select {
+  font: inherit; padding: 8px 11px; border-radius: 7px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--ink); width: 100%; max-width: 480px;
+}
+input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.hidden { display: none !important; }
+.muted { color: var(--dim); }
+
+/* header */
+header {
+  border-bottom: 1px solid var(--line); padding: 12px 20px; background: var(--panel);
+  display: flex; align-items: center; gap: 14px; flex-shrink: 0;
+}
+h1 { font-size: 17px; margin: 0; letter-spacing: -.01em; font-weight: 650; }
+h1 span { color: var(--accent); }
+.badge { font-size: 12px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--dim); }
+.badge.local { color: var(--ok); border-color: currentColor; }
+.badge.cloud { color: var(--warn); border-color: currentColor; }
+.spacer { margin-left: auto; }
+.hstat { font-size: 13px; color: var(--dim); }
+.hstat b { color: var(--ink); font-weight: 650; }
+
+/* explorer layout */
+#explorer { flex: 1; display: flex; min-height: 0; }
+#sidebar {
+  width: 300px; flex-shrink: 0; border-right: 1px solid var(--line); background: var(--panel);
+  display: flex; flex-direction: column; min-height: 0;
+}
+#drop {
+  margin: 12px; padding: 18px; text-align: center; color: var(--dim); font-size: 13px;
+  border: 1.5px dashed var(--line); border-radius: var(--radius); cursor: pointer; transition: .12s;
+}
+#drop.over, #drop:hover { border-color: var(--accent); color: var(--ink); background: var(--accent-soft); }
+#tree { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
+.node {
+  display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 6px;
+  cursor: pointer; font-size: 14px; white-space: nowrap;
+}
+.node:hover { background: var(--accent-soft); }
+.node.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.node .twist { width: 12px; color: var(--dim); font-size: 10px; flex-shrink: 0; text-align: center; }
+.node .ic { flex-shrink: 0; }
+.node .nm { overflow: hidden; text-overflow: ellipsis; }
+.node .ct { margin-left: auto; font-size: 11px; color: var(--dim); }
+
+#main { flex: 1; overflow-y: auto; padding: 22px 28px; min-width: 0; }
+.crumb { color: var(--dim); font-size: 13px; margin-bottom: 4px; }
+.crumb a { color: var(--accent); cursor: pointer; }
+h2 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.01em; }
+.note-box {
+  background: var(--accent-soft); border-radius: var(--radius); padding: 12px 15px;
+  margin: 14px 0; font-size: 14px;
+}
+.note-box .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 3px; }
+.doc {
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 13px 15px; margin-bottom: 10px;
+  cursor: pointer; transition: .1s;
+}
+.doc:hover { border-color: var(--accent); }
+.doc .t { font-weight: 600; }
+.doc .openhint { font-size: 11px; font-weight: 400; color: var(--dim); opacity: 0; }
+.doc:hover .openhint { opacity: 1; }
+.node.inbox { color: var(--warn); }
+.node.inbox.on { background: var(--accent-soft); }
+.doc.sel { border-color: var(--accent); background: var(--accent-soft); }
+.doc .chk { flex-shrink: 0; width: auto; margin-top: 2px; cursor: pointer; accent-color: var(--accent); }
+.kebab { padding: 2px 7px; color: var(--dim); font-size: 16px; line-height: 1; border-color: transparent; background: transparent; flex-shrink: 0; }
+.kebab:hover { color: var(--ink); background: var(--accent-soft); }
+.node .kebab { opacity: 0; margin-left: 4px; padding: 0 5px; }
+.node:hover .kebab, .node.on .kebab { opacity: 1; }
+#selbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: 20px; z-index: 60;
+  display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--accent);
+  border-radius: 99px; padding: 8px 10px 8px 18px; box-shadow: 0 6px 24px rgba(0,0,0,.18); font-size: 14px; }
+.ctxmenu { position: fixed; z-index: 200; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.16); padding: 4px; min-width: 160px; }
+.ctxmenu button { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 8px 12px; border-radius: 6px; }
+.ctxmenu button:hover { background: var(--accent-soft); border-color: transparent; }
+.ctxmenu button.danger:hover { color: var(--danger); }
+.picker-list { max-height: 40vh; overflow-y: auto; margin: 8px 0; border: 1px solid var(--line); border-radius: var(--radius); }
+.picker-list .row { padding: 9px 12px; cursor: pointer; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.picker-list .row:hover { background: var(--accent-soft); }
+.doc .meta { font-size: 12px; color: var(--dim); margin-top: 2px; }
+.doc .sm { font-size: 13px; color: var(--dim); margin-top: 6px; }
+.chip { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); margin: 3px 4px 0 0; }
+.empty { color: var(--dim); text-align: center; padding: 48px 0; }
+.sect { margin: 18px 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.del-x { padding: 2px 8px; color: var(--dim); font-size: 14px; line-height: 1; }
+.del-x:hover { color: var(--danger); border-color: var(--danger); }
+.danger-btn:hover { color: var(--danger); border-color: var(--danger); }
+.up.dup { border-color: var(--warn); }
+.up .dupflag { color: var(--warn); font-weight: 600; }
+
+/* uploads toast */
+#uploads { position: fixed; right: 18px; bottom: 18px; width: 340px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+.up { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 13px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.08); }
+.up .fn { font-weight: 600; }
+.up .dest { color: var(--accent); }
+.up.err .fn { color: var(--danger); }
+
+/* setup + modal */
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px; overflow-y: auto; z-index: 100; }
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 26px;
+  width: 100%; max-width: 560px;
+}
+.card h2 { margin-bottom: 4px; }
+.field { margin: 16px 0; }
+.field > label { display: block; font-weight: 550; margin-bottom: 6px; font-size: 14px; }
+.choices { display: grid; gap: 8px; }
+.choice { display: flex; align-items: center; gap: 10px; padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
+.choice:hover { border-color: var(--accent); }
+.choice.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.choice input { width: auto; }
+.choice .tag { margin-left: auto; font-size: 11px; color: var(--ok); border: 1px solid currentColor; border-radius: 99px; padding: 1px 7px; }
+.err { margin-top: 12px; padding: 11px 13px; border-radius: var(--radius); border: 1px solid var(--danger); color: var(--danger); font-size: 13px; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 20px 0; }
+.rowend { display: flex; gap: 8px; justify-content: flex-end; align-items: center; margin-top: 18px; }
+table.log { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span>◆</span> Bismuth</h1>
+  <span class="badge" id="privacy">…</span>
+  <div class="spacer"></div>
+  <span class="hstat"><b id="hs-docs">0</b> 문서 · <b id="hs-folders">0</b> 폴더<span id="hs-inbox"></span></span>
+  <button class="ghost" id="btn-organize">구조 정리</button>
+  <button class="ghost" id="btn-history">기록</button>
+  <button class="ghost" id="btn-settings">설정</button>
+</header>
+
+<div id="explorer">
+  <aside id="sidebar">
+    <div id="drop">
+      <strong>파일을 여기로</strong><br>끌어다 놓거나 눌러서 고르기
+    </div>
+    <input type="file" id="picker" multiple class="hidden">
+    <div id="tree"></div>
+  </aside>
+  <main id="main"><div class="empty">불러오는 중…</div></main>
+</div>
+
+<div id="uploads"></div>
+<div id="selbar" class="hidden"></div>
+<div id="ctxmenu" class="ctxmenu hidden"></div>
+
+<!-- move modal -->
+<div id="movemodal" class="overlay hidden"><div class="card">
+  <div style="display:flex;align-items:center"><h2 style="flex:1">이동</h2><button class="ghost" id="mv-close">닫기</button></div>
+  <p class="muted" id="mv-count" style="margin-top:2px"></p>
+  <div class="field">
+    <label>대상 폴더를 고르거나, 새 경로를 입력하세요</label>
+    <div class="picker-list" id="mv-list"></div>
+    <input type="text" id="mv-custom" spellcheck="false" placeholder="예: 라자스탄 태양광/계약">
+  </div>
+  <div id="mv-error" class="err hidden"></div>
+  <div class="rowend"><button class="primary" id="mv-go">여기로 이동</button></div>
+</div></div>
+
+<!-- setup wizard -->
+<div id="setup" class="overlay hidden"><div class="card">
+  <h2>설정</h2>
+  <p class="muted" style="margin-top:2px">처음 한 번, 1분이면 됩니다. 모든 설정은 이 컴퓨터에만 저장됩니다.</p>
+  <div class="field">
+    <label>정리된 문서를 어디에 둘까요?</label>
+    <input type="text" id="s-vault" spellcheck="false">
+    <div class="muted" style="font-size:13px;margin-top:5px">평범한 폴더입니다. 원본이 이 안으로 옮겨지며 내용은 절대 수정되지 않습니다.</div>
+  </div>
+  <div class="field">
+    <label>어떤 모델을 쓸까요?</label>
+    <div id="s-providers" class="choices"></div>
+    <div class="muted" id="s-hint" style="font-size:13px;margin-top:6px"></div>
+  </div>
+  <div class="field hidden" id="s-key-field">
+    <label id="s-key-label">API 키</label>
+    <input type="password" id="s-key" spellcheck="false" autocomplete="off" placeholder="여기에 붙여넣으세요">
+  </div>
+  <div class="field hidden" id="s-base-field">
+    <label>엔드포인트 주소</label>
+    <input type="text" id="s-base" spellcheck="false">
+  </div>
+  <button id="s-check" class="primary">다음</button>
+  <div id="s-error" class="err hidden"></div>
+  <div id="s-models" class="hidden">
+    <hr>
+    <p id="s-models-count" class="muted"></p>
+    <div class="field"><label>빠른 모델 <span class="muted" style="font-weight:400">— 문서마다 실행됩니다</span></label><select id="s-fast"></select></div>
+    <div class="field"><label>판단 모델 <span class="muted" style="font-weight:400">— 배치·폴더 노트에 실행됩니다</span></label><select id="s-reasoning"></select></div>
+    <div class="rowend">
+      <button class="ghost" id="s-cancel">취소</button>
+      <button id="s-save" class="primary">저장하고 시작</button>
+    </div>
+  </div>
+</div></div>
+
+<!-- organize -->
+<div id="organize" class="overlay hidden"><div class="card">
+  <div style="display:flex;align-items:center"><h2 style="flex:1">구조 정리 제안</h2><button class="ghost" id="o-close">닫기</button></div>
+  <p class="muted" style="margin-top:2px">에이전트가 볼트를 직접 살펴보고 제안합니다. 승인해야만 실제로 옮겨지고, 기록에서 되돌릴 수 있습니다.</p>
+  <div id="o-body"></div>
+</div></div>
+
+<!-- history -->
+<div id="history" class="overlay hidden"><div class="card">
+  <div style="display:flex;align-items:center"><h2 style="flex:1">기록</h2><button class="ghost" id="h-close">닫기</button></div>
+  <p class="muted" style="margin-top:2px">모든 변경은 되돌릴 수 있습니다. 되돌린 것도 다시 되돌릴 수 있습니다.</p>
+  <table class="log"><tbody id="h-body"></tbody></table>
+</div></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[<>&"]/g, (c) => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;", '"':"&quot;" }[c]));
+
+async function api(path, opts = {}) {
+  const res = await fetch("/api" + path, opts);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+let state = {}, tree = [], selected = "", expanded = new Set();
+let sel = new Set(), selAnchor = null, viewDocs = [], moveTargets = [];
+
+/* ---------------- explorer ---------------- */
+
+async function refresh() {
+  state = await api("/status");
+
+  const pv = $("privacy");
+  pv.className = "badge " + (!state.configured ? "" : state.runs_locally ? "local" : "cloud");
+  pv.textContent = !state.configured ? "설정 전"
+    : state.runs_locally ? "완전 로컬" : "외부 모델";
+
+  $("hs-docs").textContent = state.documents;
+  $("hs-folders").textContent = state.folders;
+  $("hs-inbox").innerHTML = state.inbox
+    ? ` · <b style="color:var(--warn)">${state.inbox}</b> 인박스` : "";
+
+  if (!state.configured) { openSetup(false); return; }
+
+  tree = (await api("/tree")).filter((f) => f.depth > 0 && f.path.split("/")[0] !== "_inbox");
+  renderTree();
+  const onInbox = selected === "_inbox" && state.inbox;
+  if (!onInbox && (!selected || !tree.some((f) => f.path === selected))) {
+    selected = tree.length ? topLevel()[0]?.path ?? "" : (state.inbox ? "_inbox" : "");
+  }
+  renderMain();
+}
+
+const topLevel = () => tree.filter((f) => f.depth === 1);
+const childrenOf = (path) => tree.filter((f) => f.depth === path.split("/").length + 1 && f.path.startsWith(path + "/"));
+
+const inboxRow = () => state.inbox
+  ? `<div class="node inbox ${selected === "_inbox" ? "on" : ""}" data-path="_inbox" style="padding-left:8px">
+      <span class="twist"></span><span class="ic">📥</span>
+      <span class="nm">인박스</span><span class="ct">${state.inbox}</span>
+    </div>`
+  : "";
+
+function renderTree() {
+  const el = $("tree");
+  if (!tree.length) {
+    el.innerHTML = inboxRow()
+      || `<div class="muted" style="padding:16px;font-size:13px">아직 폴더가 없습니다. 문서를 넣으면 폴더가 생깁니다.</div>`;
+    bindTreeClicks(el);
+    return;
+  }
+  const rows = [];
+  const walk = (nodes, depth) => {
+    for (const f of nodes) {
+      const kids = childrenOf(f.path);
+      const open = expanded.has(f.path);
+      rows.push(`<div class="node ${selected === f.path ? "on" : ""}" data-path="${esc(f.path)}" style="padding-left:${8 + depth * 16}px">
+        <span class="twist" data-twist="${esc(f.path)}">${kids.length ? (open ? "▾" : "▸") : ""}</span>
+        <span class="ic">${open && kids.length ? "📂" : "📁"}</span>
+        <span class="nm">${esc(f.name)}</span>
+        ${f.files ? `<span class="ct">${f.files}</span>` : ""}
+        <button class="kebab" data-fkebab="${esc(f.path)}" title="더보기">⋮</button>
+      </div>`);
+      if (open) walk(kids, depth + 1);
+    }
+  };
+  walk(topLevel(), 0);
+  el.innerHTML = rows.join("") + inboxRow();
+  bindTreeClicks(el);
+}
+
+function bindTreeClicks(el) {
+  el.querySelectorAll(".node").forEach((n) => {
+    const path = n.dataset.path;
+    n.addEventListener("click", (e) => {
+      if (e.target.dataset.twist !== undefined) { toggle(path); return; }
+      if (e.target.dataset.fkebab !== undefined) { e.stopPropagation(); if (path !== "_inbox") openFolderMenu(e, path); return; }
+      sel.clear();
+      selected = path;
+      if (childrenOf(path).length) expanded.add(path);
+      renderTree(); renderMain();
+    });
+    if (path !== "_inbox") n.addEventListener("contextmenu", (e) => { e.preventDefault(); openFolderMenu(e, path); });
+  });
+}
+
+function toggle(path) { expanded.has(path) ? expanded.delete(path) : expanded.add(path); renderTree(); }
+
+async function renderMain() {
+  const el = $("main");
+  if (selected === "_inbox") { renderInbox(el); return; }
+  if (!tree.length) {
+    el.innerHTML = `<div class="empty">왼쪽에 파일을 끌어다 놓으면<br>Bismuth 가 읽고 폴더에 정리합니다.</div>`;
+    return;
+  }
+  if (!selected) { el.innerHTML = `<div class="empty">왼쪽에서 폴더를 고르세요.</div>`; return; }
+
+  let detail;
+  try { detail = await api("/folder?path=" + encodeURIComponent(selected)); }
+  catch (err) { el.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
+
+  const parts = selected.split("/");
+  const crumb = parts.map((p, i) => {
+    const path = parts.slice(0, i + 1).join("/");
+    return i < parts.length - 1 ? `<a data-go="${esc(path)}">${esc(p)}</a>` : `<span>${esc(p)}</span>`;
+  }).join(" / ");
+
+  const kids = childrenOf(selected);
+  const note = detail.charter;
+  const docs = detail.documents;
+
+  const totalFiles = docs.length + kids.reduce((s, k) => s + (k.files || 0), 0);
+  el.innerHTML = `
+    <div class="crumb">${crumb}</div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <h2 style="flex:1">${esc(parts[parts.length - 1])}/</h2>
+      <button class="ghost danger-btn" data-del-folder="${esc(selected)}" data-count="${totalFiles}">폴더 삭제</button>
+    </div>
+    ${note?.purpose ? `<div class="note-box"><div class="k">이 폴더</div>${esc(note.purpose)}
+      ${note.answers?.length ? `<div style="margin-top:8px;font-size:13px;color:var(--dim)">${note.answers.map((a) => "· " + esc(a)).join("<br>")}</div>` : ""}</div>` : ""}
+    ${kids.length ? `<div class="sect">하위 폴더</div>
+      ${kids.map((k) => `<div class="doc" data-go="${esc(k.path)}"><div class="t">📁 ${esc(k.name)}</div>
+        ${k.purpose ? `<div class="sm">${esc(k.purpose)}</div>` : ""}</div>`).join("")}` : ""}
+    ${docs.length ? `<div class="sect">문서 ${docs.length}개</div>
+      ${docs.map(docRow).join("")}` : (kids.length ? "" : `<div class="empty" style="padding:32px 0">이 폴더에 문서가 없습니다.</div>`)}`;
+
+  el.querySelectorAll("[data-go]").forEach((n) => n.addEventListener("click", () => {
+    sel.clear();
+    selected = n.dataset.go; openAncestors(selected); expanded.add(selected);
+    renderTree(); renderMain();
+  }));
+  el.querySelector("[data-del-folder]")?.addEventListener("click", () => deleteFolder(selected, totalFiles));
+  bindDocs(el); syncSel();
+}
+
+function fileIcon(name) {
+  const e = (name.split(".").pop() || "").toLowerCase();
+  if (e === "pdf") return "📕";
+  if (e === "doc" || e === "docx") return "📘";
+  if (["xls", "xlsx", "xlsm", "csv", "tsv"].includes(e)) return "📗";
+  if (e === "ppt" || e === "pptx") return "📙";
+  if (e === "hwp" || e === "hwpx") return "📓";
+  return "📄";
+}
+
+function docRow(d) {
+  const on = sel.has(d.path);
+  return `<div class="doc ${on ? "sel" : ""}" data-path="${esc(d.path)}" data-open="${esc(d.path)}" title="눌러서 원본 열기 · 우클릭으로 더보기">
+    <div style="display:flex;align-items:flex-start;gap:9px">
+      <input type="checkbox" class="chk" data-chk="${esc(d.path)}" ${on ? "checked" : ""} title="선택">
+      <div style="flex:1;min-width:0">
+        <div class="t">${fileIcon(d.filename)} ${esc(d.title || d.filename)} <span class="openhint">열기 ↗</span></div>
+        <div class="meta">${d.doc_type ? esc(d.doc_type) + " · " : ""}<span class="mono">${esc(d.filename)}</span></div>
+      </div>
+      <button class="kebab" data-kebab="${esc(d.path)}" title="더보기">⋮</button>
+    </div>
+    ${d.summary ? `<div class="sm">${esc(d.summary)}</div>` : ""}
+    ${(d.topics || []).map((t) => `<span class="chip">${esc(t)}</span>`).join("")}
+  </div>`;
+}
+
+async function renderInbox(el) {
+  let detail;
+  try { detail = await api("/folder?path=_inbox"); }
+  catch (err) { el.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
+  const docs = detail.documents;
+  el.innerHTML = `
+    <div class="crumb">인박스</div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <h2 style="flex:1">📥 인박스</h2>
+      ${docs.length ? `<button class="primary" id="rescan">전체 다시 분류</button>` : ""}
+    </div>
+    <div class="note-box"><div class="k">여기는</div>Bismuth 가 확신이 없어 아직 폴더에 넣지 못한 문서입니다. 눌러서 원본을 확인하고, 다시 분류하거나 폴더로 옮기거나 삭제하세요.</div>
+    ${docs.length ? docs.map(docRow).join("") : `<div class="empty">인박스가 비었습니다.</div>`}`;
+  $("rescan")?.addEventListener("click", async (e) => {
+    e.target.disabled = true; e.target.textContent = "분류하는 중…";
+    try { await api("/scan", { method: "POST" }); await refresh(); }
+    catch (err) { alert(err.message); e.target.disabled = false; e.target.textContent = "전체 다시 분류"; }
+  });
+  bindDocs(el); syncSel();
+}
+
+/* ---- selection + per-row actions ---- */
+
+function bindDocs(el) {
+  viewDocs = [...el.querySelectorAll(".doc[data-open]")].map((n) => n.dataset.open);
+  el.querySelectorAll("[data-chk]").forEach((c) => c.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const path = c.dataset.chk;
+    if (e.shiftKey && selAnchor) selectRange(selAnchor, path);
+    else { c.checked ? sel.add(path) : sel.delete(path); selAnchor = path; }
+    syncSel();
+  }));
+  el.querySelectorAll(".doc[data-open]").forEach((n) => {
+    n.addEventListener("click", (e) => {
+      if (e.target.closest("[data-chk],[data-kebab]")) return;
+      openOriginal(n.dataset.open);
+    });
+    n.addEventListener("contextmenu", (e) => { e.preventDefault(); openDocMenu(e, n.dataset.path); });
+  });
+  el.querySelectorAll("[data-kebab]").forEach((b) => b.addEventListener("click", (e) => {
+    e.stopPropagation(); openDocMenu(e, b.dataset.kebab);
+  }));
+}
+function openOriginal(path) { window.open("/api/file?path=" + encodeURIComponent(path), "_blank"); }
+function selectRange(a, b) {
+  const i = viewDocs.indexOf(a), j = viewDocs.indexOf(b);
+  if (i < 0 || j < 0) { sel.add(b); return; }
+  for (let k = Math.min(i, j); k <= Math.max(i, j); k++) sel.add(viewDocs[k]);
+}
+function syncSel() {
+  document.querySelectorAll("#main .doc[data-path]").forEach((d) => {
+    const on = sel.has(d.dataset.path);
+    d.classList.toggle("sel", on);
+    const c = d.querySelector("[data-chk]"); if (c) c.checked = on;
+  });
+  renderSelBar();
+}
+function renderSelBar() {
+  const bar = $("selbar");
+  if (!sel.size) { bar.className = "hidden"; bar.innerHTML = ""; return; }
+  bar.className = "";
+  bar.innerHTML = `<span><b>${sel.size}</b>개 선택</span>
+    <button class="ghost" id="sel-move">이동</button>
+    <button class="ghost danger-btn" id="sel-del">삭제</button>
+    <button class="ghost" id="sel-clear">해제</button>`;
+  $("sel-move").onclick = () => openMoveModal([...sel]);
+  $("sel-del").onclick = () => bulkDelete([...sel]);
+  $("sel-clear").onclick = () => { sel.clear(); syncSel(); };
+}
+
+/* ---- context menu ---- */
+
+function openDocMenu(e, path) {
+  const targets = sel.has(path) && sel.size > 1 ? [...sel] : [path];
+  const multi = targets.length > 1;
+  const items = [];
+  if (!multi) items.push({ label: "원본 열기", fn: () => openOriginal(path) });
+  items.push({ label: `이동${multi ? ` (${targets.length}개)` : ""}`, fn: () => openMoveModal(targets) });
+  items.push({ label: `삭제${multi ? ` (${targets.length}개)` : ""}`, danger: true, fn: () => bulkDelete(targets) });
+  showMenu(e, items);
+}
+function openFolderMenu(e, path) {
+  showMenu(e, [
+    { label: "열기", fn: () => { sel.clear(); selected = path; openAncestors(path); expanded.add(path); renderTree(); renderMain(); } },
+    { label: "삭제", danger: true, fn: () => deleteFolder(path) },
+  ]);
+}
+function showMenu(e, items) {
+  const m = $("ctxmenu");
+  m.innerHTML = items.map((it, i) => `<button data-mi="${i}" class="${it.danger ? "danger" : ""}">${esc(it.label)}</button>`).join("");
+  m.classList.remove("hidden");
+  m.style.left = Math.min(e.clientX, innerWidth - 180) + "px";
+  m.style.top = Math.min(e.clientY, innerHeight - items.length * 40 - 12) + "px";
+  m.querySelectorAll("[data-mi]").forEach((b, i) => b.onclick = () => { closeMenu(); items[i].fn(); });
+}
+function closeMenu() { $("ctxmenu").classList.add("hidden"); }
+function openAncestors(path) { let p = ""; for (const seg of path.split("/").slice(0, -1)) { p = p ? p + "/" + seg : seg; expanded.add(p); } }
+
+/* ---- bulk delete + move ---- */
+
+async function bulkDelete(paths) {
+  if (!paths.length) return;
+  const msg = paths.length === 1
+    ? `"${paths[0].split("/").pop()}" 을(를) 삭제할까요?`
+    : `문서 ${paths.length}개를 삭제할까요?`;
+  if (!confirm(`${msg}\n\n원본과 사이드카가 지워집니다. 기록에서 되돌릴 수 있습니다.`)) return;
+  try {
+    if (paths.length === 1)
+      await api("/delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: paths[0] }) });
+    else
+      await api("/delete-many", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paths }) });
+    sel.clear(); await refresh();
+  } catch (err) { alert(err.message); }
+}
+function openMoveModal(paths) {
+  moveTargets = paths;
+  if (!paths.length) return;
+  $("mv-count").textContent = `문서 ${paths.length}개를 옮깁니다.`;
+  const folders = tree.filter((f) => f.depth > 0).map((f) => f.path);
+  $("mv-list").innerHTML = folders.length
+    ? folders.map((p) => `<div class="row" data-t="${esc(p)}">📁 ${esc(p)}</div>`).join("")
+    : `<div class="muted" style="padding:9px 12px">아직 폴더가 없습니다. 아래에 경로를 입력하세요.</div>`;
+  $("mv-list").querySelectorAll("[data-t]").forEach((r) => r.onclick = () => doMove(r.dataset.t));
+  $("mv-custom").value = ""; $("mv-error").classList.add("hidden");
+  $("movemodal").classList.remove("hidden");
+}
+function closeMoveModal() { $("movemodal").classList.add("hidden"); }
+async function doMove(target) {
+  try {
+    const r = await api("/move", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paths: moveTargets, target }) });
+    closeMoveModal(); sel.clear();
+    selected = r.target; openAncestors(r.target); expanded.add(r.target);
+    await refresh();
+  } catch (err) { $("mv-error").textContent = err.message; $("mv-error").classList.remove("hidden"); }
+}
+
+async function deleteFolder(path, count) {
+  const tail = count != null ? `\n\n문서 ${count}개와 하위 폴더가 모두 지워집니다.` : "\n\n폴더와 그 안의 모든 것이 지워집니다.";
+  if (!confirm(`"${path}/" 폴더를 통째로 삭제할까요?${tail} 기록에서 되돌릴 수 있습니다.`)) return;
+  try {
+    await api("/delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path, is_folder: true }) });
+    sel.clear();
+    selected = path.split("/").slice(0, -1).join("/"); expanded.delete(path);
+    await refresh();
+  } catch (err) { alert(err.message); }
+}
+
+/* ---------------- uploads ---------------- */
+
+async function upload(files) {
+  if (!files.length) return;
+  const box = document.createElement("div");
+  box.className = "up";
+  box.innerHTML = `<span class="muted">문서 ${files.length}개를 읽는 중…</span>`;
+  $("uploads").prepend(box);
+
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f);
+  try {
+    const results = await api("/documents", { method: "POST", body: fd });
+    box.innerHTML = results.map((r) => r.ok
+      ? (r.duplicate
+          ? `<div><span class="dupflag">⚠ 중복</span> <span class="fn">${esc(r.filename)}</span>
+             <div class="muted" style="font-size:12px">같은 내용이 이미 <code>${esc(r.destination)}/</code> 에 있어 넣지 않았습니다.</div></div>`
+          : r.placed
+            ? `<div><span class="fn">${esc(r.filename)}</span> → <span class="dest">${esc(r.destination)}/</span>${r.created_folder ? ' <span class="muted">(새 폴더)</span>' : ""}</div>`
+            : `<div><span class="fn">${esc(r.filename)}</span> <span class="muted">— 인박스 (${esc(r.reason)})</span></div>`)
+      : `<div class="err-line"><span class="fn">실패: ${esc(r.filename)}</span> <span class="muted">${esc(r.reason)}</span></div>`
+    ).join("");
+    if (results.some((r) => !r.ok)) box.classList.add("err");
+    else if (results.some((r) => r.duplicate)) box.classList.add("dup");
+    // jump to where the first document landed
+    const landed = results.find((r) => r.ok && r.placed);
+    if (landed) {
+      selected = landed.destination;
+      let p = ""; for (const seg of selected.split("/").slice(0, -1)) { p = p ? p + "/" + seg : seg; expanded.add(p); }
+    }
+    await refresh();
+    setTimeout(() => box.remove(), 6000);
+    // Autonomous: after documents land, let the agent judge the folder they landed
+    // in. If it proposes a reorganisation, surface it -- the user never had to ask.
+    const landedFolders = [...new Set(results.filter((r) => r.ok && r.placed).map((r) => r.destination))];
+    if (landedFolders.length) autoReview(landedFolders[0]);
+  } catch (err) {
+    box.className = "up err";
+    box.innerHTML = `<span class="fn">${esc(err.message)}</span>`;
+    setTimeout(() => box.remove(), 8000);
+  }
+}
+
+const drop = $("drop");
+drop.addEventListener("click", () => $("picker").click());
+$("picker").addEventListener("change", (e) => { upload([...e.target.files]); e.target.value = ""; });
+["dragenter", "dragover"].forEach((t) => document.body.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) => document.body.addEventListener(t, (e) => { e.preventDefault(); if (t === "drop") upload([...e.dataTransfer.files]); drop.classList.remove("over"); }));
+
+/* ---------------- move modal + menu + keys ---------------- */
+
+$("mv-close").addEventListener("click", closeMoveModal);
+$("movemodal").addEventListener("click", (e) => { if (e.target.id === "movemodal") closeMoveModal(); });
+$("mv-go").addEventListener("click", () => {
+  const t = $("mv-custom").value.trim();
+  if (!t) { $("mv-error").textContent = "폴더를 고르거나 새 경로를 입력하세요."; $("mv-error").classList.remove("hidden"); return; }
+  doMove(t);
+});
+$("mv-custom").addEventListener("keydown", (e) => { if (e.key === "Enter") $("mv-go").click(); });
+
+document.addEventListener("click", (e) => { if (!e.target.closest("#ctxmenu")) closeMenu(); });
+document.addEventListener("scroll", closeMenu, true);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closeMenu(); closeMoveModal(); if (sel.size) { sel.clear(); syncSel(); } return; }
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+  if ((e.key === "Delete" || e.key === "Backspace") && sel.size && !typing) { e.preventDefault(); bulkDelete([...sel]); }
+});
+
+/* ---------------- organize ---------------- */
+
+$("btn-organize").addEventListener("click", async () => {
+  $("organize").classList.remove("hidden");
+  $("o-body").innerHTML = `<div class="empty">에이전트가 볼트 구조를 살펴보는 중… (조금 걸립니다)</div>`;
+  try {
+    const plan = await api("/organize/propose", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    renderPlan(plan);
+  } catch (err) { $("o-body").innerHTML = `<div class="err">${esc(err.message)}</div>`; }
+});
+$("o-close").addEventListener("click", () => $("organize").classList.add("hidden"));
+
+async function autoReview(folder) {
+  // Fired automatically after an upload. Only surfaces if the agent proposes moves;
+  // stays silent otherwise, so it never nags.
+  try {
+    const plan = await api("/organize/propose", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ folder }) });
+    if ((plan.moves || []).length || (plan.renames || []).length) {
+      $("organize").classList.remove("hidden");
+      renderPlan(plan);
+    }
+  } catch (e) { /* autonomous check — stay silent on failure */ }
+}
+
+function renderPlan(plan) {
+  const moves = plan.moves || [];
+  const renames = plan.renames || [];
+  const summary = plan.summary || "";
+  if (!moves.length && !renames.length) {
+    $("o-body").innerHTML = `<div class="note-box">${esc(summary) || "바꿀 것이 없습니다. 구조가 괜찮습니다."}</div>`;
+    return;
+  }
+  $("o-body").innerHTML = `
+    ${summary ? `<div class="note-box">${esc(summary)}</div>` : ""}
+    ${renames.length ? `<div class="sect">이름 변경 ${renames.length}건</div>
+      ${renames.map((r) => `<div class="doc"><div class="t">✎ ${esc(r.folder)} → <span class="dest">${esc(r.new_name)}</span></div></div>`).join("")}` : ""}
+    ${moves.length ? `<div class="sect">이동 ${moves.length}건</div>
+      ${moves.map((m) => `<div class="doc">
+        <div class="t">→ <span class="dest">${esc(m.target)}/</span></div>
+        <div class="sm">${m.paths.map((p) => esc(p.split("/").pop())).join(", ")}</div>
+      </div>`).join("")}` : ""}
+    <div class="rowend">
+      <button class="ghost" id="o-cancel">취소</button>
+      <button class="primary" id="o-apply">이대로 적용</button>
+    </div>`;
+  $("o-cancel").onclick = () => $("organize").classList.add("hidden");
+  $("o-apply").onclick = async () => {
+    const btn = $("o-apply"); btn.disabled = true; btn.textContent = "적용 중…";
+    try {
+      await api("/organize/apply", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ moves, renames }) });
+      $("organize").classList.add("hidden");
+      await refresh();
+    } catch (err) { alert(err.message); btn.disabled = false; btn.textContent = "이대로 적용"; }
+  };
+}
+
+/* ---------------- history ---------------- */
+
+$("btn-history").addEventListener("click", async () => {
+  const entries = await api("/journal?limit=25");
+  $("h-body").innerHTML = entries.map((e) => `<tr>
+    <td>${new Date(e.created_at).toLocaleString("ko")}</td>
+    <td>${esc(e.reason)}</td>
+    <td style="text-align:right">${e.status === "applied"
+      ? `<button class="ghost" data-undo="${e.id}">되돌리기</button>`
+      : `<span class="muted">${e.status === "reverted" ? "되돌림" : esc(e.status)}</span>`}</td>
+  </tr>`).join("") || `<tr><td class="muted">아직 없습니다.</td></tr>`;
+  $("h-body").querySelectorAll("[data-undo]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    try { await api(`/journal/${b.dataset.undo}/undo`, { method: "POST" }); $("btn-history").click(); await refresh(); }
+    catch (err) { alert(err.message); b.disabled = false; }
+  }));
+  $("history").classList.remove("hidden");
+});
+$("h-close").addEventListener("click", () => $("history").classList.add("hidden"));
+
+/* ---------------- setup wizard ---------------- */
+
+let setup = {};
+function openSetup(force) { $("setup").classList.remove("hidden"); loadSetup(force); }
+$("btn-settings").addEventListener("click", () => openSetup(true));
+$("s-cancel").addEventListener("click", () => { if (state.configured) $("setup").classList.add("hidden"); });
+
+async function loadSetup() {
+  setup = await api("/setup");
+  $("s-vault").value = setup.vault_path;
+  $("s-providers").innerHTML = setup.providers.map((p) => `
+    <label class="choice ${p.id === setup.provider_id ? "on" : ""}">
+      <input type="radio" name="provider" value="${p.id}" ${p.id === setup.provider_id ? "checked" : ""}>
+      <span>${esc(p.label)}</span>${p.local ? `<span class="tag">내 컴퓨터</span>` : ""}
+    </label>`).join("");
+  document.querySelectorAll('input[name=provider]').forEach((r) => r.addEventListener("change", onProvider));
+  $("s-models").classList.add("hidden");
+  if (setup.provider_id) onProvider();
+}
+const currentProvider = () => { const p = document.querySelector("input[name=provider]:checked"); return p ? setup.providers.find((x) => x.id === p.value) : null; };
+function onProvider() {
+  const p = currentProvider();
+  document.querySelectorAll(".choice").forEach((c) => c.classList.toggle("on", c.querySelector("input").checked));
+  $("s-models").classList.add("hidden"); $("s-error").classList.add("hidden");
+  if (!p) return;
+  $("s-hint").textContent = p.hint || "";
+  $("s-key-field").classList.toggle("hidden", !p.needs_key);
+  $("s-key").placeholder = setup.api_key_tail && p.id === setup.provider_id ? `저장된 키 ${setup.api_key_tail} — 그대로 쓰려면 비워 두세요` : "여기에 붙여넣으세요";
+  $("s-base-field").classList.toggle("hidden", !p.needs_api_base);
+  if (p.needs_api_base) $("s-base").value = setup.api_base || p.default_api_base || "";
+}
+function showErr(m) { const b = $("s-error"); b.textContent = m; b.classList.remove("hidden"); }
+$("s-check").addEventListener("click", async () => {
+  const p = currentProvider(); if (!p) { showErr("먼저 하나 골라 주세요."); return; }
+  const btn = $("s-check"); btn.disabled = true; btn.textContent = "프로바이더에 물어보는 중…"; $("s-error").classList.add("hidden");
+  try {
+    const body = { provider_id: p.id, api_key: $("s-key").value, reuse_saved_key: !$("s-key").value && p.id === setup.provider_id, api_base: p.needs_api_base ? $("s-base").value : null };
+    const r = await api("/setup/check", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) { showErr(r.error); return; }
+    const opts = (sel) => r.models.map((m) => `<option ${m === sel ? "selected" : ""}>${esc(m)}</option>`).join("");
+    $("s-fast").innerHTML = opts(setup.model_fast || r.suggested_fast);
+    $("s-reasoning").innerHTML = opts(setup.model_reasoning || r.suggested_reasoning);
+    $("s-models-count").textContent = `이 키로 쓸 수 있는 모델 ${r.models.length}개. 무난한 조합을 골라 뒀으니 원하면 바꾸세요.`;
+    $("s-models").classList.remove("hidden");
+  } catch (err) { showErr(err.message); } finally { btn.disabled = false; btn.textContent = "다음"; }
+});
+$("s-save").addEventListener("click", async () => {
+  const p = currentProvider(); const btn = $("s-save"); btn.disabled = true;
+  try {
+    await api("/setup", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider_id: p.id, api_key: $("s-key").value, reuse_saved_key: !$("s-key").value && p.id === setup.provider_id, api_base: p.needs_api_base ? $("s-base").value : null, model_fast: $("s-fast").value, model_reasoning: $("s-reasoning").value, vault_path: $("s-vault").value }) });
+    $("setup").classList.add("hidden"); await refresh();
+  } catch (err) { showErr(err.message); } finally { btn.disabled = false; }
+});
+
+refresh().catch((err) => { $("main").innerHTML = `<div class="empty">${esc(err.message)}</div>`; });
+</script>
+</body>
+</html>
