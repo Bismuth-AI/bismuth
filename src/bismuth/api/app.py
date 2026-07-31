@@ -276,9 +276,7 @@ def create_app(settings: Settings) -> FastAPI:
         applied = 0
         try:
             for item in body.moves:
-                result = await engine.move.move(
-                    [PurePosixPath(p) for p in item.paths], item.target
-                )
+                result = await engine.move.move([PurePosixPath(p) for p in item.paths], item.target)
                 applied += result.moved
             for rename in body.renames:
                 await engine.move.rename_folder(PurePosixPath(rename.folder), rename.new_name)

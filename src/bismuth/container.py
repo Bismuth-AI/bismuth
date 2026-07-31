@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agentkit import ChatModel
+
 from bismuth.adapters.catalog import FileCatalog
 from bismuth.adapters.journal import JOURNAL_FILENAME, JsonlJournal
 from bismuth.adapters.llm import LiteLLMAdapter
@@ -52,7 +53,9 @@ class Bismuth:
         return len(self.transactor.recover())
 
 
-def build(settings: Settings, *, llm: LLM | None = None, chat_model: ChatModel | None = None) -> Bismuth:
+def build(
+    settings: Settings, *, llm: LLM | None = None, chat_model: ChatModel | None = None
+) -> Bismuth:
     """Wire an engine over ``settings.vault_path``. Pass a fake ``llm``/``chat_model`` to run offline."""
     vault = FileSystemVault(settings.vault_path)
     state = Path(vault.root) / STATE_DIR

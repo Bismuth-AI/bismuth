@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from agentkit.testing import FakeModel, call, says
 from tests.test_ingest import add
 
-from agentkit.testing import FakeModel, call, says
 from bismuth.container import Bismuth
 from bismuth.services.agent import AgentService, build_read_tools
 

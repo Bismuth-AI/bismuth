@@ -50,9 +50,7 @@ class TestMove:
 
     async def test_move_to_the_same_folder_is_a_no_op(self, engine: Bismuth) -> None:
         await add(engine, "contract.txt")
-        result = await engine.move.move(
-            [PurePosixPath("아폴로/2023/contract.txt")], "아폴로/2023"
-        )
+        result = await engine.move.move([PurePosixPath("아폴로/2023/contract.txt")], "아폴로/2023")
         assert result.moved == 0
         assert (engine.vault.root / "아폴로/2023/contract.txt").is_file()
 

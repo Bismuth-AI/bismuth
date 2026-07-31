@@ -43,17 +43,24 @@ def scripted(prompt: Prompt, schema: type[BaseModel], profile: ModelProfile) -> 
     if schema is card_prompts.CardDraft:
         if zephyr:
             return card_prompts.CardDraft(
-                title="제피르 차세대 플랫폼 제안서", summary="한빛전자 ERP를 전환하는 제피르 제안서.",
-                doc_type="제안서", language="ko", topics=["제피르", "한빛전자", "2024"],
+                title="제피르 차세대 플랫폼 제안서",
+                summary="한빛전자 ERP를 전환하는 제피르 제안서.",
+                doc_type="제안서",
+                language="ko",
+                topics=["제피르", "한빛전자", "2024"],
                 entities=[Entity(name="한빛전자", kind=EntityKind.ORGANIZATION)],
-                keywords=["ERP"], answers_questions=["제피르 제안 금액은?"],
+                keywords=["ERP"],
+                answers_questions=["제피르 제안 금액은?"],
             )
         return card_prompts.CardDraft(
-            title="아폴로 사업 문서", summary="대한물산과 유엔진의 아폴로 사업 문서.",
-            doc_type="계약서" if "계약" in u else "회의록", language="ko",
+            title="아폴로 사업 문서",
+            summary="대한물산과 유엔진의 아폴로 사업 문서.",
+            doc_type="계약서" if "계약" in u else "회의록",
+            language="ko",
             topics=["아폴로", "대한물산", "2023"],
             entities=[Entity(name="대한물산", kind=EntityKind.ORGANIZATION)],
-            keywords=["아폴로"], answers_questions=["아폴로 사업에서 무엇이 합의되었나?"],
+            keywords=["아폴로"],
+            answers_questions=["아폴로 사업에서 무엇이 합의되었나?"],
         )
     if schema is placement_prompts.PlacementDecision:
         folder = "제피르/2024" if zephyr else "아폴로/2023"
@@ -63,8 +70,10 @@ def scripted(prompt: Prompt, schema: type[BaseModel], profile: ModelProfile) -> 
     if schema is charter_prompts.CharterDraft:
         name = "제피르 2024" if zephyr else "아폴로 2023"
         return charter_prompts.CharterDraft(
-            title=name, purpose=f"{name} 문서를 모아둡니다.",
-            holds=["계약서·제안서·보고서·회의록"], answers=["무엇이 합의되었나?"],
+            title=name,
+            purpose=f"{name} 문서를 모아둡니다.",
+            holds=["계약서·제안서·보고서·회의록"],
+            answers=["무엇이 합의되었나?"],
         )
     raise AssertionError(f"nothing scripted for {schema.__name__}")
 

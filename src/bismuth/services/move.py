@@ -28,9 +28,7 @@ class MoveResult:
 class MoveService:
     """Moves documents to a folder the user chose, reversibly."""
 
-    def __init__(
-        self, *, vault: Vault, transactor: Transactor, charters: CharterService
-    ) -> None:
+    def __init__(self, *, vault: Vault, transactor: Transactor, charters: CharterService) -> None:
         self._vault = vault
         self._transactor = transactor
         self._charters = charters
@@ -136,9 +134,7 @@ class MoveService:
         await self._refresh({target, *_ancestors(target)})
         return str(target)
 
-    def _free_name(
-        self, target: PurePosixPath, name: str, planned: set[str]
-    ) -> PurePosixPath:
+    def _free_name(self, target: PurePosixPath, name: str, planned: set[str]) -> PurePosixPath:
         """A free path in ``target``, disambiguating against disk and names already
         planned in this same batch (two same-named files moved at once)."""
         candidate = self._vault.unique_target(target, name)
