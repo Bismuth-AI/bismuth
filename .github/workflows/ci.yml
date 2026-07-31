@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  test:
+    # Windows is in the matrix on purpose, not for completeness. Bismuth's job is
+    # paths -- reserved device names, case-insensitivity, cp949 consoles, symlinks
+    # that need Developer Mode. Every one of those is a Windows-only bug, and the
+    # primary users are on Windows. A green Linux build proves very little here.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -e ".[parsers,server,dev]"
+      - run: ruff check src tests examples
+      - run: ruff format --check src tests examples
+      - run: pytest -q
+      # No API key anywhere in this file. The whole engine runs against a scripted
+      # model, so CI exercises placement, refusal and undo for free -- and cannot
+      # start silently passing because someone's credentials expired.
+
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -e ".[parsers,server,dev]"
+      - run: mypy
+
+  licences:
+    # The Apache-2.0 promise in docs/licensing.md is only true if nothing copyleft
+    # sneaks in transitively. Checked, not trusted.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -e ".[parsers,server]" pip-licenses
+      - name: Fail on copyleft dependencies
+        run: |
+          pip-licenses --from=mixed --format=csv > licences.csv
+          cat licences.csv
+          if grep -Ei '(^|,)"?(GNU )?(A?GPL|LGPL)' licences.csv; then
+            echo "::error::A copyleft dependency was introduced. See docs/licensing.md."
+            exit 1
+          fi
