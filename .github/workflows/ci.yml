@@ -8,22 +8,17 @@ on:
 
 jobs:
   test:
-    # Windows is in the matrix on purpose, not for completeness. Bismuth's job is
-    # paths -- reserved device names, case-insensitivity, cp949 consoles, symlinks
-    # that need Developer Mode. Every one of those is a Windows-only bug, and the
-    # primary users are on Windows. A green Linux build proves very little here.
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python: ["3.11", "3.12"]
-    runs-on: ${{ matrix.os }}
+    # One platform, and it is Windows on purpose. Bismuth's job is paths --
+    # reserved device names, case-insensitivity, cp949 consoles, symlinks that
+    # need Developer Mode -- and every one of those is a Windows-only bug, on the
+    # OS the primary users are running. A green Linux build would prove very
+    # little here. Python 3.11 is the floor declared in pyproject.toml; testing
+    # the floor is what catches syntax and stdlib that only exist further up.
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-          cache: pip
+        with: { python-version: "3.11", cache: pip }
       # agentkit lives in this repo and is imported as an installed library, not
       # vendored, so it has to be installed alongside -- it is not a dependency
       # of the wheel and pip will not find it on its own.
