@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
-from tests.conftest import ScriptedModel
-
 from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.container import Bismuth
 from bismuth.domain.placement import Verdict
 from bismuth.prompts import placement as placement_prompts
 from bismuth.services.sidecar import read_sidecar_meta
+from tests.conftest import ScriptedModel
 
 
 async def add(engine: Bismuth, name: str, body: str = "아폴로 지원 계약서, 2023.") -> object:

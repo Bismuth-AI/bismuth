@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from agentkit.testing import FakeModel, call, says
-from tests.test_ingest import add
 
 from bismuth.container import Bismuth
 from bismuth.services.agent import AgentService, build_read_tools
+from tests.test_ingest import add
 
 
 def _svc(engine: Bismuth, model: FakeModel) -> AgentService:
