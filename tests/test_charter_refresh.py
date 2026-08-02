@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 
-from tests.conftest import ScriptedModel
-from tests.test_ingest import add, place_at
-
 from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.container import Bismuth
 from bismuth.domain.charter import Charter
 from bismuth.prompts import charters as charter_prompts
 from bismuth.prompts import placement as placement_prompts
+from tests.conftest import ScriptedModel
+from tests.test_ingest import add, place_at
 
 
 def _notes_for(llm: FakeLLM, folder: str) -> list[str]:

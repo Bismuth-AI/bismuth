@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from agentkit.testing import FakeModel, call, says
 from fastapi.testclient import TestClient
-from tests.test_ingest import add
 
 from bismuth.api.app import create_app
 from bismuth.config import Settings
 from bismuth.container import Bismuth, build
 from bismuth.services.agent import AgentService, build_propose_move_tool
+from tests.test_ingest import add
 
 
 def _svc(engine: Bismuth, model: FakeModel) -> AgentService:

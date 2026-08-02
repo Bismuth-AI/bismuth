@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 import pytest
-from tests.test_ingest import add
 
 from bismuth.container import Bismuth
 from bismuth.domain.errors import VaultError
+from tests.test_ingest import add
 
 
 class TestMove:
