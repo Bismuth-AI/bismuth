@@ -7,6 +7,30 @@ that below `1.0.0` the interface may break between minor versions.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-08-02
+
+No change to what Bismuth does. This release exists because 0.1.0 shipped a test
+suite that only passed by accident, and a repository that could not prove it.
+
+### Fixed
+
+- **The test suite could not be collected on a clean checkout.** Six test modules
+  import helpers from each other, which needs `tests/` to be a package. Without
+  `tests/__init__.py` it resolved only under `python -m pytest`, which puts the
+  working directory on `sys.path`; the `pytest` console script does not, so every
+  CI job died during collection while the same suite passed locally.
+
+### Changed
+
+- CI runs one platform — Windows on Python 3.11 — instead of a three-OS,
+  two-version matrix. Bismuth's failure mode is path handling, and reserved
+  names, case-insensitivity and cp949 consoles are Windows-only bugs on the OS
+  the primary users run. Type checking and the copyleft audit still run
+  separately.
+- Branching is Git Flow without release branches: `main` carries released
+  versions and their tags, `develop` carries day-to-day work. Written down in
+  [`docs/git-workflow.md`](docs/git-workflow.md) along with the ownership split.
+
 ## [0.1.0] — 2026-07-31
 
 First alpha. Placement, sidecars, folder notes, deletion and undo work and are
@@ -56,5 +80,6 @@ built yet.
   from the design (task decomposition and schema constraints), not a result. The
   ADRs say so too.
 
-[Unreleased]: https://github.com/Bismuth-AI/bismuth/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Bismuth-AI/bismuth/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Bismuth-AI/bismuth/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Bismuth-AI/bismuth/releases/tag/v0.1.0
