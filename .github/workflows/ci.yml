@@ -1,7 +1,9 @@
 name: CI
 
 on:
-  push: { branches: [main] }
+  # develop is where day-to-day work lands, so it has to be gated too. Gating
+  # only main would mean a release is the first time anything gets checked.
+  push: { branches: [main, develop] }
   pull_request:
 
 jobs:

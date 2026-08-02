@@ -25,6 +25,10 @@ htmlcov/
 /vault/
 *.bismuth-vault/
 
+# Team operating notes -- ownership map and each member's git identity. Kept out
+# of the repository on purpose; the workflow itself is in docs/git-workflow.md.
+/TEAM.md
+
 # Editors / OS
 .vscode/
 .idea/
