@@ -82,7 +82,11 @@ def build(
     )
 
     transactor = Transactor(vault, journal)
-    cards = CardService(model, context_chars=settings.card_context_chars)
+    cards = CardService(
+        model,
+        context_chars=settings.card_context_chars,
+        max_windows=settings.card_max_windows,
+    )
     charters = CharterService(vault, model, catalog)
     placement = PlacementService(model, min_confidence=settings.placement_min_confidence)
     move = MoveService(vault=vault, transactor=transactor, charters=charters)

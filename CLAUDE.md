@@ -14,7 +14,7 @@
 
 1. `stage()` — 업로드를 먼저 `_inbox`에 저장(저널). 파싱/모델 실패로 파일을 잃지 않게, 처리보다 저장이 먼저.
 2. sha256 중복 검사 — 이미 있으면 배치 않고 기존 위치 반환. 정체성은 파일명이 아니라 바이트.
-3. 파싱 → `DocumentCard`(모델 1회, FAST). **이후 단계는 원문이 아니라 카드만 읽는다.**
+3. 파싱 → `DocumentCard`(§카탈로깅). **이후 단계는 원문이 아니라 카드만 읽는다.**
 4. `placement.decide`(REASONING) — 현재 폴더 트리 전체를 주고 폴더 하나 선택.
 5. `_commit` — mkdir + move + 사이드카 write (+ 새 폴더면 노트)를 한 배치로. 부분 실패 없음.
 6. `_reconcile_notes` — 영향받은 폴더 노트 다시 그림(§노트 갱신).
@@ -41,6 +41,24 @@
 
 **사람 노트 불변.** `_folder.md`의 `managed: false`는 읽되 절대 덮어쓰지 않는다.
 
+## 카탈로깅 (`services/cards.py`)
+
+문서 **전체**를 읽는다. 앞 N자만 보던 방식은 100페이지 문서에서 핵심을 통째로 놓쳤음.
+
+루프: 길이로 자른 window를 읽는 순서대로 → 1번은 `CardDraft`, 2번부터는 `CardUpdate`로 **카드를 갱신** → 마지막에 `DensifiedSummary` 1회. 문서당 FAST 호출이 window 수만큼(+1) 든다 — 카드 1회가 아니다.
+
+**형식을 묻지 않는다.** 목차·헤딩·페이지가 있는 문서에서만 도는 방법은 방법이 아니다. 모든 글에 있는 건 순서와 길이뿐이라 자르기는 길이 기준이고, 줄바꿈이 근처에 있으면 거기 맞춰줄 뿐(`Extraction.windows`). 의미 단위 분할(임베딩으로 화제 전환 탐지)은 고정 크기 대비 이득이 없다고 검증된 바 있어 안 쓴다.
+
+**사실은 합집합, 요약은 재작성.** `topics`/`entities`/`keywords`/`answers_questions`는 절대 안 지우고 누적(중복은 casefold/`Entity.key`로 제거) — 순서도 구조도 필요 없는 유일한 병합 방식. 반면 `summary`는 매 window마다 통째로 다시 쓴다(붙이지 않음). `title`/`doc_type`은 모델이 앞선 판단이 틀렸다고 할 때만 교체.
+
+**마지막 densify 1회** = 길이 고정한 채 누적된 사실 중 중요한 걸 요약에 흡수(Chain of Density). 마지막 window는 방금 읽은 텍스트에 쏠려 요약을 쓰므로, 사실 전체를 기준으로 한 번 더 저울질한다. window 1개짜리 문서는 스킵.
+
+**커버리지는 카드에 박제**(`Coverage`). `truncated` O/X를 대체 — 몇 조각 중 몇 조각을 읽었고, 그중 몇이 **새 사실을 실제로 줬는지**. contributed는 모델 자기보고(`CardUpdate.contributed`)가 아니라 **새 사실이 붙었는지**로 판정(자기보고는 보일러플레이트에도 yes 함). 둘 다 트레이스에 남겨 불일치가 보이게.
+
+**예산 초과 시 앞부분이 아니라 등간격**(`card_max_windows`, 기본 16). 상한에 걸리면 문서 전체에 고르게 흩뿌려 읽고, 건너뛴 구간을 `card.windows_skipped`로 로그 + 커버리지·사이드카에 명시. 조용한 절단 금지.
+
+window 하나가 실패해도 카드는 유지(첫 window 실패만 치명적).
+
 ## 폴더 노트(charter, `_folder.md`)
 
 폴더가 **직접 관장하는 것(직속 문서 + 직속 하위폴더)**을 서술. placement 재사용 판단과 에이전트 탐색에 쓰임. frontmatter가 authoritative, 본문은 거기서 생성.
@@ -49,7 +67,8 @@
 
 ## 그 외 실무 사실
 
-- **모델 프로파일** (`ports/llm.py`): FAST(문서당 카탈로깅) / REASONING(배치·노트). 실제 모델은 config 매핑. `DocumentCard.topics`는 고정 카테고리 없는 열린 목록.
+- **모델 프로파일** (`ports/llm.py`): FAST(카탈로깅, 문서당 window 수만큼) / REASONING(배치·노트). 실제 모델은 config 매핑. `DocumentCard.topics`는 고정 카테고리 없는 열린 목록.
+- **로그** (`logging_setup.py`): `logs/bismuth.log`(사람용) · `logs/llm.jsonl`(모델 호출) · `logs/trace.jsonl`(파이프라인 판단). 셋 다 시작 시 truncate. trace는 **사람이 읽는 문장이 아니라 기계가 재생하는 기록** — 모든 줄에 `event`와 `document_id`가 있어 `document_id`로 필터하면 그 문서의 전말이 나온다. 새 줄을 추가할 땐 그 줄만 보고 상황이 복원되게: 입력(구간·앞뒤 텍스트)·출력(무엇이 새로 붙었나)·소요시간을 넣고, 그것에 대한 소감은 넣지 않는다.
 - **구조화 출력** (`litellm_adapter.structured`): 3-tier 폴백(네이티브 스키마 → JSON 모드 → 프롬프트 임베드). 검증 실패 시 에러를 수리 턴으로 되먹임(소형/로컬 모델 대응).
 - **설정** (`config.py`): 자기 키 하나만 읽음(`Settings.api_key`). `OPENAI_API_KEY` 등 앰비언트 env는 안 읽고 LiteLLM엔 명시 인자로 전달. 우선순위: 명시 인자 > `BISMUTH_*` > `./.env` > `~/.bismuth/config.json` > 기본값.
 - **파일시스템** (`adapters/vault/filesystem.py`): 원자적 쓰기(같은 디렉토리 temp → `os.replace`). `unique_target`은 case-insensitive(Linux `Report.pdf`/`report.pdf`가 Windows에서 충돌 안 나게). RMDIR 비재귀. 사이드카·노트는 문서 카운트에서 제외.
