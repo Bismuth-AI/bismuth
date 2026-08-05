@@ -116,7 +116,20 @@ class Settings(BaseSettings):
     llm_max_schema_retries: int = Field(default=2, ge=0)
     llm_max_concurrency: int = Field(default=4, ge=1)
     extraction_max_chars: int = Field(default=200_000, ge=1_000)
-    card_context_chars: int = Field(default=12_000, ge=500)
+    card_context_chars: int = Field(
+        default=12_000,
+        ge=500,
+        description="Window size for cataloguing. The document is read window by window, not truncated to this.",
+    )
+    card_max_windows: int = Field(
+        default=16,
+        ge=1,
+        description=(
+            "Model calls one document may cost. A document with more windows than "
+            "this is sampled across its whole length rather than read from the top, "
+            "and the gap is recorded on the card."
+        ),
+    )
     placement_min_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
     host: str = "127.0.0.1"
     port: int = 8765

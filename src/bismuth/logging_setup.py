@@ -1,4 +1,4 @@
-"""Logging setup: text log + JSONL of LLM calls under ``logs/``, truncated on each start."""
+"""Logging setup: text log + JSONL of LLM calls and pipeline traces under ``logs/``, truncated on each start."""
 
 from __future__ import annotations
 
@@ -10,6 +10,11 @@ from typing import Any
 LOG_DIR = Path("logs")
 
 LLM_LOGGER = "bismuth.llm"
+
+TRACE_LOGGER = "bismuth.trace"
+"""Pipeline decisions, one JSON object per line. Written for a machine to replay:
+every line carries ``event`` and ``document_id``, so filtering by document
+reconstructs the whole run without reading prose."""
 
 
 class _JsonlFormatter(logging.Formatter):
@@ -32,13 +37,10 @@ def configure_logging(*, verbose: bool = False, log_dir: Path | None = None) -> 
 
     root = logging.getLogger("bismuth")
     # Must not stack handlers, or lines get logged multiple times.
-    for handler in list(root.handlers):
-        root.removeHandler(handler)
-        handler.close()
-    llm = logging.getLogger(LLM_LOGGER)
-    for handler in list(llm.handlers):
-        llm.removeHandler(handler)
-        handler.close()
+    for logger in (root, logging.getLogger(LLM_LOGGER), logging.getLogger(TRACE_LOGGER)):
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
 
     root.setLevel(logging.DEBUG)
     root.propagate = False
@@ -56,18 +58,33 @@ def configure_logging(*, verbose: bool = False, log_dir: Path | None = None) -> 
     console.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
     root.addHandler(console)
 
-    # Does not propagate, so it doesn't also land in bismuth.log or the console.
-    jsonl = logging.FileHandler(logs / "llm.jsonl", mode="w", encoding="utf-8")
-    jsonl.setLevel(logging.DEBUG)
-    jsonl.setFormatter(_JsonlFormatter())
-    llm.addHandler(jsonl)
-    llm.setLevel(logging.DEBUG)
-    llm.propagate = False
+    # These do not propagate, so their lines don't also land in bismuth.log or the console.
+    _attach_jsonl(LLM_LOGGER, logs / "llm.jsonl")
+    _attach_jsonl(TRACE_LOGGER, logs / "trace.jsonl")
 
     logging.getLogger("bismuth").info("logging to %s (truncated on start)", logs)
     return logs
 
 
+def _attach_jsonl(logger_name: str, path: Path) -> None:
+    handler = logging.FileHandler(path, mode="w", encoding="utf-8")
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(_JsonlFormatter())
+    logger = logging.getLogger(logger_name)
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+
 def log_llm_call(record: dict[str, Any]) -> None:
     """Append one model call as a JSON line. Called by the LLM adapter."""
     logging.getLogger(LLM_LOGGER).debug("llm", extra={"record": record})
+
+
+def log_trace(event: str, **fields: Any) -> None:
+    """Append one pipeline decision as a JSON line.
+
+    Every call must be reconstructible on its own: pass the ids, the inputs and the
+    outcome, not a sentence about them.
+    """
+    logging.getLogger(TRACE_LOGGER).debug(event, extra={"record": {"event": event, **fields}})

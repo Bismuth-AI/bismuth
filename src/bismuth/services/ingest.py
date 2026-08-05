@@ -97,7 +97,9 @@ class IngestService:
             )
 
         extraction = await self._extract(rel)
-        card = await self._cards.describe(extraction, filename=source.filename)
+        card = await self._cards.describe(
+            extraction, filename=source.filename, document_id=source.document_id
+        )
 
         placement = await self._placement.decide(
             document_id=source.document_id,
