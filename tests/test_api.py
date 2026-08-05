@@ -132,6 +132,32 @@ class TestDelete:
             == 400
         )
 
+    def test_delete_several_folders_at_once(self, client: TestClient) -> None:
+        self._file(client)
+        r = client.post("/api/delete-folders", json={"paths": ["아폴로/2023", "아폴로"]})
+
+        assert r.status_code == 200
+        # Nested selection: the child is covered by the parent, so its document is
+        # counted once rather than twice.
+        assert r.json() == {"files": 1, "folders": 2}
+        assert not (client.app.state.engine.vault.root / "아폴로").exists()  # type: ignore[attr-defined]
+
+    def test_a_bad_path_fails_the_whole_folder_batch(self, client: TestClient) -> None:
+        self._file(client)
+        r = client.post("/api/delete-folders", json={"paths": ["아폴로", "_inbox"]})
+
+        assert r.status_code == 400
+        assert (client.app.state.engine.vault.root / "아폴로").exists()  # type: ignore[attr-defined]
+
+    def test_deleting_several_folders_is_one_undo(self, client: TestClient) -> None:
+        self._file(client)
+        client.post("/api/delete-folders", json={"paths": ["아폴로"]})
+        assert client.get("/api/status").json()["documents"] == 0
+
+        entry = next(e for e in client.get("/api/journal").json() if "delete folder" in e["reason"])
+        client.post(f"/api/journal/{entry['id']}/undo")
+        assert client.get("/api/status").json()["documents"] == 1
+
     def test_document_count_follows_disk_after_undo(self, client: TestClient) -> None:
         # Count must reflect files restored on disk, not cache cards.
         self._file(client)
