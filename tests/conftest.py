@@ -43,6 +43,19 @@ class ScriptedModel:
                 keywords=["계약", "24개월"],
                 answers_questions=["아폴로 계약 기간은?"],
             ),
+            card_prompts.CardUpdate: card_prompts.CardUpdate(
+                summary="대한물산과 유엔진 간의 아폴로 사업 유지보수 계약. 지연배상 조항을 포함한다.",
+                contributed=True,
+                note="scripted update",
+                new_topics=["지연배상"],
+                new_entities=[Entity(name="대한물산", kind=EntityKind.ORGANIZATION)],
+                new_keywords=["지연배상금"],
+                new_questions=["지연배상금 요율은?"],
+            ),
+            card_prompts.DensifiedSummary: card_prompts.DensifiedSummary(
+                summary="대한물산과 유엔진 간 아폴로 유지보수 계약. 기간 24개월, 지연배상 조항 포함.",
+                absorbed=["지연배상"],
+            ),
             placement_prompts.PlacementDecision: placement_prompts.PlacementDecision(
                 folder="아폴로/2023",
                 existing=False,
