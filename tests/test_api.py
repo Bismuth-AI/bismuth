@@ -2,23 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-
-import pytest
 from fastapi.testclient import TestClient
-
-from bismuth.adapters.llm.fake import FakeLLM
-from bismuth.api.app import create_app
-from bismuth.config import Settings
-from bismuth.container import build
-
-
-@pytest.fixture
-def client(settings: Settings, llm: FakeLLM) -> Iterator[TestClient]:
-    app = create_app(settings)
-    app.state.engine = build(settings, llm=llm)
-    with TestClient(app) as test_client:
-        yield test_client
 
 
 class TestStatus:
