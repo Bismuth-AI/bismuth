@@ -250,7 +250,7 @@ def create_app(settings: Settings) -> FastAPI:
             )
         except BismuthError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return {"path": result.path, "files": result.files}
+        return {"path": result.path, "files": result.files, "folders": result.folders}
 
     @app.post("/api/delete-many")
     async def delete_many(body: DeleteManyIn, engine: Engine) -> dict[str, Any]:
@@ -260,6 +260,15 @@ def create_app(settings: Settings) -> FastAPI:
         except BismuthError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {"files": result.files}
+
+    @app.post("/api/delete-folders")
+    async def delete_folders(body: DeleteManyIn, engine: Engine) -> dict[str, Any]:
+        """Delete several folders, and everything under them, in one reversible batch."""
+        try:
+            result = await engine.deletion.delete_folders([PurePosixPath(p) for p in body.paths])
+        except BismuthError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"files": result.files, "folders": result.folders}
 
     @app.post("/api/move")
     async def move(body: MoveIn, engine: Engine) -> dict[str, Any]:

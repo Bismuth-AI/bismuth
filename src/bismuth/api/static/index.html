@@ -87,6 +87,9 @@ h1 span { color: var(--accent); }
 .node .ic { flex-shrink: 0; }
 .node .nm { overflow: hidden; text-overflow: ellipsis; }
 .node .ct { margin-left: auto; font-size: 11px; color: var(--dim); }
+/* Picked for a bulk action. Distinct from .on (where you are) -- the two co-occur. */
+.node.picked { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+.node.picked .nm { font-weight: 600; }
 
 #main { flex: 1; overflow-y: auto; padding: 22px 28px; min-width: 0; }
 .crumb { color: var(--dim); font-size: 13px; margin-bottom: 4px; }
@@ -292,6 +295,10 @@ async function api(path, opts = {}) {
 
 let state = {}, tree = [], selected = "", expanded = new Set();
 let sel = new Set(), selAnchor = null, viewDocs = [], moveTargets = [];
+// Folders select separately from documents, and the two are mutually exclusive: the
+// action bar offers 이동 for documents only, and a mixed selection would have to grey
+// half of itself out. Picking one kind clears the other.
+let fsel = new Set(), fselAnchor = null;
 
 /* ---------------- explorer ---------------- */
 
@@ -342,7 +349,7 @@ function renderTree() {
     for (const f of nodes) {
       const kids = childrenOf(f.path);
       const open = expanded.has(f.path);
-      rows.push(`<div class="node ${selected === f.path ? "on" : ""}" data-path="${esc(f.path)}" style="padding-left:${8 + depth * 16}px">
+      rows.push(`<div class="node ${selected === f.path ? "on" : ""}${fsel.has(f.path) ? " picked" : ""}" data-path="${esc(f.path)}" style="padding-left:${8 + depth * 16}px">
         <span class="twist" data-twist="${esc(f.path)}">${kids.length ? (open ? "▾" : "▸") : ""}</span>
         <span class="ic">${open && kids.length ? "📂" : "📁"}</span>
         <span class="nm">${esc(f.name)}</span>
@@ -358,18 +365,52 @@ function renderTree() {
 }
 
 function bindTreeClicks(el) {
+  // The rows as drawn, which is what shift+click ranges over -- a collapsed subtree is
+  // not on screen, so ranging into it would delete folders the user cannot see.
+  const visible = [...el.querySelectorAll(".node")].map((n) => n.dataset.path).filter((p) => p !== "_inbox");
+
   el.querySelectorAll(".node").forEach((n) => {
     const path = n.dataset.path;
     n.addEventListener("click", (e) => {
       if (e.target.dataset.twist !== undefined) { toggle(path); return; }
       if (e.target.dataset.fkebab !== undefined) { e.stopPropagation(); if (path !== "_inbox") openFolderMenu(e, path); return; }
-      sel.clear();
+
+      // Explorer conventions layered on top of the plain click, which still opens.
+      if (path !== "_inbox" && (e.ctrlKey || e.metaKey)) {
+        sel.clear();
+        fsel.has(path) ? fsel.delete(path) : fsel.add(path);
+        fselAnchor = path;
+        renderTree(); syncSel(); return;
+      }
+      if (path !== "_inbox" && e.shiftKey && fselAnchor) {
+        sel.clear();
+        const i = visible.indexOf(fselAnchor), j = visible.indexOf(path);
+        // Replaces rather than adds: shift+click means "the range", so dragging the far
+        // end back has to shrink the selection, not leave the earlier reach behind.
+        fsel.clear();
+        if (i >= 0 && j >= 0) for (let k = Math.min(i, j); k <= Math.max(i, j); k++) fsel.add(visible[k]);
+        else fsel.add(path);
+        renderTree(); syncSel(); return;
+      }
+
+      sel.clear(); fsel.clear();
+      // A plain click is the anchor a later shift+click extends from -- the usual way in
+      // is click-then-shift-click, and leaving the anchor null made that do nothing.
+      fselAnchor = path === "_inbox" ? null : path;
       selected = path;
       if (childrenOf(path).length) expanded.add(path);
-      renderTree(); renderMain();
+      renderTree(); renderMain(); syncSel();
     });
     if (path !== "_inbox") n.addEventListener("contextmenu", (e) => { e.preventDefault(); openFolderMenu(e, path); });
   });
+}
+
+/* What deleting the picked folders would actually take with it. Folders are collapsed
+   by default, so "3 folders" alone tells the user nothing about the cost. */
+function folderImpact(paths) {
+  const roots = paths.filter((p) => !paths.some((q) => q !== p && p.startsWith(q + "/")));
+  const doomed = tree.filter((f) => roots.some((r) => f.path === r || f.path.startsWith(r + "/")));
+  return { roots, folders: doomed.length, files: doomed.reduce((n, f) => n + f.files, 0) };
 }
 
 function toggle(path) { expanded.has(path) ? expanded.delete(path) : expanded.add(path); renderTree(); }
@@ -506,6 +547,17 @@ function syncSel() {
 }
 function renderSelBar() {
   const bar = $("selbar");
+  if (fsel.size) {
+    const { folders, files } = folderImpact([...fsel]);
+    bar.className = "";
+    bar.innerHTML = `<span>폴더 <b>${fsel.size}</b>개 선택
+      <span class="muted">${folders > fsel.size ? `· 하위 포함 ${folders}개` : ""}${files ? ` · 문서 ${files}개` : " · 비어 있음"}</span></span>
+      <button class="ghost danger-btn" id="fsel-del">삭제</button>
+      <button class="ghost" id="fsel-clear">해제</button>`;
+    $("fsel-del").onclick = () => deleteFolders([...fsel]);
+    $("fsel-clear").onclick = () => { fsel.clear(); fselAnchor = null; renderTree(); syncSel(); };
+    return;
+  }
   if (!sel.size) { bar.className = "hidden"; bar.innerHTML = ""; return; }
   bar.className = "";
   bar.innerHTML = `<span><b>${sel.size}</b>개 선택</span>
@@ -529,10 +581,13 @@ function openDocMenu(e, path) {
   showMenu(e, items);
 }
 function openFolderMenu(e, path) {
-  showMenu(e, [
-    { label: "열기", fn: () => { sel.clear(); selected = path; openAncestors(path); expanded.add(path); renderTree(); renderMain(); } },
-    { label: "삭제", danger: true, fn: () => deleteFolder(path) },
-  ]);
+  // Right-clicking inside a selection acts on the selection, as in openDocMenu.
+  const targets = fsel.has(path) && fsel.size > 1 ? [...fsel] : [path];
+  const multi = targets.length > 1;
+  const items = [];
+  if (!multi) items.push({ label: "열기", fn: () => { sel.clear(); fsel.clear(); selected = path; openAncestors(path); expanded.add(path); renderTree(); renderMain(); syncSel(); } });
+  items.push({ label: `삭제${multi ? ` (${targets.length}개)` : ""}`, danger: true, fn: () => deleteFolders(targets) });
+  showMenu(e, items);
 }
 function showMenu(e, items) {
   const m = $("ctxmenu");
@@ -581,6 +636,33 @@ async function doMove(target) {
     selected = r.target; openAncestors(r.target); expanded.add(r.target);
     await refresh();
   } catch (err) { $("mv-error").textContent = err.message; $("mv-error").classList.remove("hidden"); }
+}
+
+async function deleteFolders(paths) {
+  if (!paths.length) return;
+  if (paths.length === 1) { await deleteFolder(paths[0], folderImpact(paths).files); return; }
+
+  const { roots, folders, files } = folderImpact(paths);
+  const covered = paths.length - roots.length;
+  // null drops out; "" is a deliberate blank line, so the filter must tell them apart.
+  const lines = [
+    `폴더 ${roots.length}개를 통째로 삭제할까요?`,
+    "",
+    ...roots.slice(0, 8).map((p) => `  · ${p}/`),
+    roots.length > 8 ? `  · … 외 ${roots.length - 8}개` : null,
+    "",
+    `하위 폴더까지 ${folders}개, 그 안의 문서 ${files}개가 지워집니다.`,
+    covered ? `(선택한 ${covered}개는 상위 폴더에 이미 포함됩니다.)` : null,
+    "기록에서 한 번에 되돌릴 수 있습니다.",
+  ].filter((l) => l !== null);
+  if (!confirm(lines.join("\n"))) return;
+
+  try {
+    await api("/delete-folders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paths: roots }) });
+    fsel.clear(); fselAnchor = null; sel.clear();
+    for (const p of roots) { expanded.delete(p); if (selected === p || selected.startsWith(p + "/")) selected = p.split("/").slice(0, -1).join("/"); }
+    await refresh();
+  } catch (err) { alert(err.message); }
 }
 
 async function deleteFolder(path, count) {
@@ -765,9 +847,17 @@ $("mv-custom").addEventListener("keydown", (e) => { if (e.key === "Enter") $("mv
 document.addEventListener("click", (e) => { if (!e.target.closest("#ctxmenu")) closeMenu(); });
 document.addEventListener("scroll", closeMenu, true);
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closeMenu(); closeMoveModal(); if (sel.size) { sel.clear(); syncSel(); } return; }
+  if (e.key === "Escape") {
+    closeMenu(); closeMoveModal();
+    if (sel.size) { sel.clear(); syncSel(); }
+    if (fsel.size) { fsel.clear(); fselAnchor = null; renderTree(); syncSel(); }
+    return;
+  }
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
-  if ((e.key === "Delete" || e.key === "Backspace") && sel.size && !typing) { e.preventDefault(); bulkDelete([...sel]); }
+  if ((e.key === "Delete" || e.key === "Backspace") && !typing) {
+    if (sel.size) { e.preventDefault(); bulkDelete([...sel]); }
+    else if (fsel.size) { e.preventDefault(); deleteFolders([...fsel]); }
+  }
 });
 
 /* ---------------- organize ---------------- */
