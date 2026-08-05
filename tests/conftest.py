@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from bismuth.adapters.llm.fake import FakeLLM
+from bismuth.api.app import create_app
 from bismuth.config import Settings
 from bismuth.container import Bismuth, build
 from bismuth.domain.document import Entity, EntityKind
@@ -93,6 +95,14 @@ def llm(script: ScriptedModel) -> FakeLLM:
 @pytest.fixture
 def engine(settings: Settings, llm: FakeLLM) -> Bismuth:
     return build(settings, llm=llm)
+
+
+@pytest.fixture
+def client(settings: Settings, llm: FakeLLM) -> Iterator[TestClient]:
+    app = create_app(settings)
+    app.state.engine = build(settings, llm=llm)
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 @pytest.fixture

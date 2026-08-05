@@ -12,15 +12,17 @@ from urllib.parse import quote
 
 import anyio
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from bismuth import __version__
 from bismuth.adapters.llm import list_models, suggest_models
+from bismuth.api.progress import ProgressBus, stream
 from bismuth.config import PROVIDERS, Settings, load_env_file, provider, save_user_config
 from bismuth.container import Bismuth, build
 from bismuth.domain.document import sidecar_name
 from bismuth.domain.errors import BismuthError
+from bismuth.domain.progress import Progress, Stage
 from bismuth.logging_setup import configure_logging
 from bismuth.ports.vault import INBOX
 from bismuth.services.agent import DEFAULT_ORGANIZE_INSTRUCTION
@@ -55,6 +57,7 @@ def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(title="Bismuth", version=__version__, lifespan=lifespan)
     app.state.engine = engine
     app.state.settings = settings
+    app.state.progress = ProgressBus()
 
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception) -> JSONResponse:
@@ -216,10 +219,22 @@ def create_app(settings: Settings) -> FastAPI:
         """Read whatever is sitting unprocessed in the inbox, including hand-dropped files."""
         return [await _process(engine, rel) for rel in engine.ingest.pending_inbox()]
 
+    @app.get("/api/progress")
+    async def progress_stream() -> StreamingResponse:
+        """Live ingest steps, so a slow document reads as working rather than hung."""
+        return StreamingResponse(
+            stream(app.state.progress),
+            media_type="text/event-stream",
+            # x-accel-buffering: a reverse proxy would otherwise hold the stream until it ends.
+            headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+        )
+
     async def _process(engine: Bismuth, rel: PurePosixPath) -> IngestOut:
+        bus: ProgressBus = app.state.progress
         try:
-            result = await engine.ingest.process(rel)
+            result = await engine.ingest.process(rel, on_progress=bus.publish)
         except BismuthError as exc:
+            bus.publish(Progress(stage=Stage.FAILED, filename=rel.name, note=str(exc)))
             return IngestOut(filename=rel.name, ok=False, reason=str(exc))
         return _result_of(result)
 

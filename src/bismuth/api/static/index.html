@@ -136,11 +136,37 @@ h2 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.01em; }
 .up .dupflag { color: var(--warn); font-weight: 600; }
 
 /* uploads toast */
-#uploads { position: fixed; right: 18px; bottom: 18px; width: 340px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+#uploads { position: fixed; right: 18px; bottom: 18px; width: 360px; display: flex; flex-direction: column; gap: 8px; z-index: 50; max-height: 82vh; overflow-y: auto; }
 .up { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 13px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.08); }
 .up .fn { font-weight: 600; }
 .up .dest { color: var(--accent); }
 .up.err .fn { color: var(--danger); }
+
+/* live progress: a slow document must read as working, not as hung */
+.job { display: flex; flex-direction: column; gap: 7px; }
+.job + .job { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.job .head { display: flex; align-items: baseline; gap: 8px; }
+.job .head .fn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job .count { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; flex: none; }
+.bar { height: 3px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); border-radius: 99px; width: 0; transition: width .35s ease; }
+/* Indeterminate: a step with no measure still has to look alive. */
+.bar.wait > i { width: 35%; animation: slide 1.25s ease-in-out infinite; }
+@keyframes slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+.bar.done > i { background: var(--ok); width: 100% !important; animation: none; }
+.bar.fail > i { background: var(--danger); width: 100% !important; animation: none; }
+
+.steps { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.steps li { display: flex; gap: 7px; align-items: baseline; color: var(--dim); list-style: none; }
+.steps li .mark { flex: none; width: 11px; text-align: center; font-size: 10px; }
+.steps li.past .mark { color: var(--ok); }
+.steps li.now { color: var(--ink); font-weight: 550; }
+.steps li.now .mark { color: var(--accent); }
+.steps li.fail, .steps li.fail .mark { color: var(--danger); }
+.steps li .what { min-width: 0; overflow-wrap: anywhere; }
+.found { display: flex; flex-wrap: wrap; gap: 4px; margin: 1px 0 2px 18px; }
+.found span { font-size: 11px; line-height: 1.5; padding: 0 6px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); }
+@media (prefers-reduced-motion: reduce) { .bar > i, .bar.wait > i { transition: none; animation: none; } }
 
 /* setup + modal */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px; overflow-y: auto; z-index: 100; }
@@ -568,19 +594,126 @@ async function deleteFolder(path, count) {
   } catch (err) { alert(err.message); }
 }
 
+/* ---------------- live progress ----------------
+   The server streams one event per step. Repeated reading steps collapse into a
+   single line that counts up; every other stage appends. Nothing here invents
+   progress -- a step appears only once the server says it happened. */
+
+const ORDER = ["received", "parsing", "parsed", "reading", "densifying", "carded",
+               "placing", "placed", "filing", "notes", "done", "duplicate", "failed"];
+const jobs = new Map();   // filename -> { el, lines: Map(stage -> li), found: Set, chips: el }
+
+function jobCard(filename) {
+  const el = document.createElement("div");
+  el.className = "job";
+  el.innerHTML = `<div class="head"><span class="fn"></span><span class="count"></span></div>
+    <div class="bar wait"><i></i></div><ul class="steps"></ul>`;
+  el.querySelector(".fn").textContent = filename;
+  return { el, lines: new Map(), found: new Set(), chips: null, measured: false };
+}
+
+function ensureJob(filename, container) {
+  let job = jobs.get(filename);
+  if (job) return job;
+  job = jobCard(filename);
+  jobs.set(filename, job);
+  (container || standaloneBox()).appendChild(job.el);
+  return job;
+}
+
+// Progress for something this tab did not upload (a scan, or another tab) still deserves a box.
+function standaloneBox() {
+  let box = $("uploads").querySelector(".up.live");
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "up live";
+    $("uploads").prepend(box);
+  }
+  return box;
+}
+
+function renderStep(p) {
+  const job = jobs.get(p.filename);
+  if (!job) return;
+  const { el, lines } = job;
+
+  let li = lines.get(p.stage);
+  if (!li) {
+    // The "uploading" placeholder is a guess; the first real step replaces it.
+    if (!lines.size) el.querySelector(".steps").innerHTML = "";
+    li = document.createElement("li");
+    li.innerHTML = `<span class="mark">◦</span><span class="what"></span>`;
+    lines.set(p.stage, li);
+    el.querySelector(".steps").appendChild(li);
+  }
+  li.querySelector(".what").textContent = p.label;
+
+  // Everything before the current stage is settled; only the newest line is "now".
+  const rank = ORDER.indexOf(p.stage);
+  for (const [stage, node] of lines) {
+    const done = ORDER.indexOf(stage) < rank;
+    node.className = done ? "past" : "now";
+    node.querySelector(".mark").textContent = done ? "✓" : "▸";
+  }
+
+  // Facts accumulate across the reading steps; they are the proof it is really reading.
+  if (p.found?.length) {
+    if (!job.chips) {
+      job.chips = document.createElement("div");
+      job.chips.className = "found";
+      li.after(job.chips);
+    }
+    for (const fact of p.found) {
+      if (job.found.has(fact) || job.found.size >= 12) continue;
+      job.found.add(fact);
+      const chip = document.createElement("span");
+      chip.textContent = fact;
+      job.chips.appendChild(chip);
+    }
+  }
+
+  const bar = el.querySelector(".bar");
+  const fill = bar.querySelector("i");
+  el.querySelector(".count").textContent = p.stage === "reading" && p.steps ? `${p.step}/${p.steps} 조각` : "";
+  if (p.stage === "failed") { bar.className = "bar fail"; li.className = "fail"; li.querySelector(".mark").textContent = "✕"; }
+  else if (p.terminal) { bar.className = "bar done"; li.querySelector(".mark").textContent = "✓"; li.className = "past"; }
+  else if (p.fraction != null) { job.measured = true; bar.className = "bar"; fill.style.width = `${Math.round(p.fraction * 100)}%`; }
+  else if (job.measured) { bar.className = "bar"; }   // past the measurable part: hold the fill, don't rewind
+  else { bar.className = "bar wait"; fill.style.width = ""; }
+}
+
+function watchProgress() {
+  const src = new EventSource("/api/progress");   // EventSource reconnects on its own
+  src.onmessage = (ev) => {
+    let p; try { p = JSON.parse(ev.data); } catch { return; }
+    ensureJob(p.filename, null);
+    renderStep(p);
+    if (p.terminal) {
+      const job = jobs.get(p.filename);
+      // Held briefly so the last line is readable, then the batch summary takes over.
+      setTimeout(() => { jobs.delete(p.filename); job?.el.parentElement?.classList.contains("live") && job.el.remove(); }, 4000);
+    }
+  };
+}
+watchProgress();
+
 /* ---------------- uploads ---------------- */
 
 async function upload(files) {
   if (!files.length) return;
   const box = document.createElement("div");
   box.className = "up";
-  box.innerHTML = `<span class="muted">문서 ${files.length}개를 읽는 중…</span>`;
   $("uploads").prepend(box);
+  for (const f of files) {
+    const job = ensureJob(f.name, box);
+    job.el.querySelector(".steps").innerHTML = `<li class="now"><span class="mark">▸</span><span class="what">올리는 중…</span></li>`;
+  }
 
   const fd = new FormData();
   for (const f of files) fd.append("files", f);
   try {
     const results = await api("/documents", { method: "POST", body: fd });
+    for (const f of files) jobs.delete(f.name);   // the summary below replaces the live cards
     box.innerHTML = results.map((r) => r.ok
       ? (r.duplicate
           ? `<div><span class="dupflag">⚠ 중복</span> <span class="fn">${esc(r.filename)}</span>
@@ -605,6 +738,7 @@ async function upload(files) {
     const landedFolders = [...new Set(results.filter((r) => r.ok && r.placed).map((r) => r.destination))];
     if (landedFolders.length) autoReview(landedFolders[0]);
   } catch (err) {
+    for (const f of files) jobs.delete(f.name);
     box.className = "up err";
     box.innerHTML = `<span class="fn">${esc(err.message)}</span>`;
     setTimeout(() => box.remove(), 8000);

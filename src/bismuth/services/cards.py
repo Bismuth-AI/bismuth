@@ -12,10 +12,12 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from typing import TypeVar
 
 from bismuth.domain.document import Coverage, DocumentCard, Extraction, Window
 from bismuth.domain.errors import StructuredOutputError
+from bismuth.domain.progress import Progress, ProgressSink, Stage, report
 from bismuth.logging_setup import log_trace
 from bismuth.ports.llm import LLM, ModelProfile
 from bismuth.prompts import cards as card_prompts
@@ -26,6 +28,16 @@ T = TypeVar("T")
 
 _EMPTY_SUMMARY = "(요약 없음)"
 _UNKNOWN_TYPE = "문서"
+
+
+@dataclass(frozen=True, slots=True)
+class _Folded:
+    """One window's effect on the card. ``found`` is for the person waiting; ``contributed`` for coverage."""
+
+    card: DocumentCard
+    found: tuple[str, ...]
+    contributed: bool
+    failed: bool
 
 
 class CardService:
@@ -43,7 +55,12 @@ class CardService:
         self._max_windows = max_windows
 
     async def describe(
-        self, extraction: Extraction, *, filename: str, document_id: str = "-"
+        self,
+        extraction: Extraction,
+        *,
+        filename: str,
+        document_id: str = "-",
+        on_progress: ProgressSink | None = None,
     ) -> DocumentCard:
         """Read a document and say what it is and what it is about."""
         started = time.perf_counter()
@@ -83,6 +100,20 @@ class CardService:
                 len(selected),
             )
 
+        def step(position: int, found: tuple[str, ...] = ()) -> None:
+            report(
+                on_progress,
+                Progress(
+                    stage=Stage.READING,
+                    filename=filename,
+                    document_id=document_id,
+                    step=position,
+                    steps=len(selected),
+                    found=found,
+                ),
+            )
+
+        step(1)
         card = await self._first(
             selected[0],
             filename=filename,
@@ -93,11 +124,17 @@ class CardService:
         failed = 0
 
         for position, window in enumerate(selected[1:], start=2):
-            card, added, error = await self._fold(
+            step(position)
+            folded = await self._fold(
                 window, card=card, filename=filename, document_id=document_id, read=position
             )
-            contributed += int(added)
-            failed += int(error)
+            card = folded.card
+            contributed += int(folded.contributed)
+            failed += int(folded.failed)
+            # Reported again after the call: the first report moves the bar, this one says
+            # what the window actually turned up. A bar with nothing behind it is the thing
+            # we are trying to get rid of.
+            step(position, found=folded.found)
 
         coverage = Coverage(
             chars_total=chars_total,
@@ -110,6 +147,16 @@ class CardService:
         )
 
         if len(selected) > 1:
+            report(
+                on_progress,
+                Progress(
+                    stage=Stage.DENSIFYING,
+                    filename=filename,
+                    document_id=document_id,
+                    step=len(selected),
+                    steps=len(selected),
+                ),
+            )
             card = await self._densify(card, filename=filename, document_id=document_id)
 
         card = card.model_copy(update={"coverage": coverage})
@@ -176,8 +223,8 @@ class CardService:
 
     async def _fold(
         self, window: Window, *, card: DocumentCard, filename: str, document_id: str, read: int
-    ) -> tuple[DocumentCard, bool, bool]:
-        """Revise the card with one further window. Returns (card, contributed, failed)."""
+    ) -> _Folded:
+        """Revise the card with one further window."""
         started = time.perf_counter()
         try:
             update = await self._llm.structured(
@@ -198,7 +245,7 @@ class CardService:
             logger.warning(
                 "%s: window %s failed, keeping the card so far: %s", filename, window.label, exc
             )
-            return card, False, True
+            return _Folded(card=card, found=(), contributed=False, failed=True)
 
         topics = _added(card.topics, _clean(update.new_topics))
         entities = _added(card.entities, update.new_entities, key=lambda e: e.key())
@@ -208,6 +255,9 @@ class CardService:
         # New facts, not the model's self-report: asked whether it learned something, a
         # model says yes about a page of boilerplate. Both go to the trace so the
         # disagreement stays visible.
+        # Topics and entity names, not keywords or questions: this is what gets shown
+        # while the user waits, and it should read as things, not as prose.
+        found = tuple(topics) + tuple(e.name for e in entities)
         added = bool(topics or entities or keywords or questions)
 
         revised = card.model_copy(
@@ -240,7 +290,7 @@ class CardService:
                 "questions": questions,
             },
         )
-        return revised, added, False
+        return _Folded(card=revised, found=found, contributed=added, failed=False)
 
     async def _densify(
         self, card: DocumentCard, *, filename: str, document_id: str

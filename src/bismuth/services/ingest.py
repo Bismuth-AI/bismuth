@@ -11,8 +11,10 @@ import anyio
 
 from bismuth.domain.charter import CHARTER_FILENAME
 from bismuth.domain.document import DocumentCard, Extraction, SourceRef, sidecar_name
+from bismuth.domain.errors import BismuthError
 from bismuth.domain.journal import Actor, JournalEntry, Operation, OperationKind
 from bismuth.domain.placement import Placement
+from bismuth.domain.progress import Progress, ProgressSink, Stage, report
 from bismuth.ports.catalog import Catalog
 from bismuth.ports.parser import ParserRegistry
 from bismuth.ports.vault import INBOX, Vault
@@ -75,9 +77,24 @@ class IngestService:
         )
         return PurePosixPath(target)
 
-    async def process(self, rel: PurePosixPath) -> IngestResult:
+    async def process(
+        self, rel: PurePosixPath, *, on_progress: ProgressSink | None = None
+    ) -> IngestResult:
         """The whole loop for one document. Safe to call again on the same file."""
         source = await self._describe_source(rel)
+
+        def say(stage: Stage, **fields: object) -> None:
+            report(
+                on_progress,
+                Progress(
+                    stage=stage,
+                    filename=source.filename,
+                    document_id=source.document_id,
+                    **fields,  # type: ignore[arg-type]
+                ),
+            )
+
+        say(Stage.RECEIVED)
 
         if existing := self._catalog.find_by_hash(source.sha256):
             logger.info("%s already ingested as %s; leaving it alone", rel, existing)
@@ -88,6 +105,7 @@ class IngestService:
                 if prior and prior.is_placed and prior.target is not None
                 else PurePosixPath(rel).parent
             )
+            say(Stage.DUPLICATE, note=str(where) or "/")
             return IngestResult(
                 document_id=existing,
                 filename=source.filename,
@@ -96,21 +114,39 @@ class IngestService:
                 duplicate=True,
             )
 
+        say(Stage.PARSING, note=self._parser_name(rel))
         extraction = await self._extract(rel)
-        card = await self._cards.describe(
-            extraction, filename=source.filename, document_id=source.document_id
-        )
+        # The window count rides on the reading events instead of being computed here:
+        # counting means slicing the whole text, and the first reading event is next anyway.
+        say(Stage.PARSED, note=_extent(extraction))
 
+        card = await self._cards.describe(
+            extraction,
+            filename=source.filename,
+            document_id=source.document_id,
+            on_progress=on_progress,
+        )
+        say(Stage.CARDED, note=f"{card.title} ({card.doc_type})", found=card.topics)
+
+        folders = self._charters.folder_views()
+        say(Stage.PLACING, steps=len(folders))
         placement = await self._placement.decide(
             document_id=source.document_id,
             card=card,
-            folders=self._charters.folder_views(),
+            folders=folders,
             existing_paths=frozenset(str(f) for f in self._vault.iter_folders() if f.parts),
         )
 
         destination = placement.target if placement.is_placed else INBOX
         assert destination is not None
+        say(
+            Stage.PLACED,
+            note=f"{destination}{' (새 폴더)' if placement.created_folder else ''}"
+            if placement.is_placed
+            else f"인박스 — {placement.rationale}",
+        )
 
+        say(Stage.FILING)
         await self._commit(
             rel=rel,
             destination=destination,
@@ -123,8 +159,10 @@ class IngestService:
         self._catalog.save_card(source.document_id, card, source=source)
         self._catalog.save_placement(placement)
 
+        say(Stage.NOTES)
         await self._reconcile_notes(placement)
 
+        say(Stage.DONE, note=str(destination) or "/")
         return IngestResult(
             document_id=source.document_id,
             filename=source.filename,
@@ -141,6 +179,13 @@ class IngestService:
             if self._catalog.find_by_hash(digest) is None:
                 pending.append(rel)
         return pending
+
+    def _parser_name(self, rel: PurePosixPath) -> str:
+        """Which parser will read this, for the progress line. Unsupported types fail in _extract."""
+        try:
+            return self._parsers.for_path(Path(*rel.parts)).name
+        except BismuthError:
+            return rel.suffix.lstrip(".") or "알 수 없는 형식"
 
     async def _describe_source(self, rel: PurePosixPath) -> SourceRef:
         absolute = Path(self._vault.root) / Path(*rel.parts)
@@ -231,6 +276,14 @@ class IngestService:
             ),
             payloads={op.target: payload for op, payload in operations},
         )
+
+
+def _extent(extraction: Extraction) -> str:
+    """How much text came out, in the terms a person thinks in."""
+    size = f"{len(extraction.text):,}자"
+    if extraction.page_count:
+        size = f"{extraction.page_count}쪽 · {size}"
+    return f"{size}{' (추출 한도에서 잘림)' if extraction.truncated else ''}"
 
 
 def _ancestors(path: PurePosixPath) -> list[PurePosixPath]:
