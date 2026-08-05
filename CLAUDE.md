@@ -85,6 +85,7 @@ window 하나가 실패해도 카드는 유지(첫 window 실패만 치명적).
 - **설정** (`config.py`): 자기 키 하나만 읽음(`Settings.api_key`). `OPENAI_API_KEY` 등 앰비언트 env는 안 읽고 LiteLLM엔 명시 인자로 전달. 우선순위: 명시 인자 > `BISMUTH_*` > `./.env` > `~/.bismuth/config.json` > 기본값.
 - **파일시스템** (`adapters/vault/filesystem.py`): 원자적 쓰기(같은 디렉토리 temp → `os.replace`). `unique_target`은 case-insensitive(Linux `Report.pdf`/`report.pdf`가 Windows에서 충돌 안 나게). RMDIR 비재귀. 사이드카·노트는 문서 카운트에서 제외.
 - **파서** (`adapters/parsers/`): 확장자 기반, 등록 first-wins. `.hwpx`만(레거시 `.hwp` 아님). 깨진 추출은 실패 처리.
+- **일괄 삭제** (`services/deletion.py`): 여러 폴더도 **저널 엔트리 하나** — 폴더 3개 지웠는데 undo를 3번 해야 하면 약속한 것보다 나쁜 거래다. `_outermost`가 상위에 이미 포함된 선택을 흡수(트리에서 부모+자식 동시 선택은 정상 행동이고, 안 흡수하면 문서가 두 번 세어지고 같은 디렉토리에 RMDIR이 두 번 걸린다). 하나라도 잘못된 경로(루트·인박스·없는 폴더)면 아무것도 안 지운다. UI는 트리 ctrl/shift+클릭(평범한 클릭은 그대로 열기), 확인창에 **실제 삭제될 폴더·문서 개수**를 세어 보여준다.
 
 ## 에이전트 (agentkit)
 
