@@ -59,6 +59,18 @@
 
 window 하나가 실패해도 카드는 유지(첫 window 실패만 치명적).
 
+## 진행 표시 (`domain/progress.py`, `api/progress.py`)
+
+문서 하나가 오래 걸린다(파싱 + window마다 모델 호출 + 배치). "처리 중"만 띄우면 느린 파이프라인이 멈춘 것처럼 보여서, 단계마다 **무엇을 하고 무엇을 찾았는지**를 흘린다.
+
+`ingest.process(rel, on_progress=…)` → `Progress` 값을 순서대로 방출. `report()`는 리스너 예외를 삼킨다 — **UI가 깨져도 인제스트는 안 죽는다**가 계약.
+
+**업로드 POST는 안 건드렸다.** 진행은 별도 SSE(`GET /api/progress`)로 나간다. 기존 API 계약이 유지되고, `/api/scan`(손으로 넣은 파일 재처리)도 공짜로 같은 표시를 받는다. 버스는 인메모리·비영속(로컬 단일 사용자) — 못 따라오는 탭은 **단계를 잃지 인제스트를 막지 않는다**(`QueueFull` 무시).
+
+**`fraction`은 위치와 총량이 둘 다 있어야 성립.** placing은 폴더 수(`steps`)는 알지만 몇 번째인지(`step`)는 모른다 — 이걸 0%로 보내면 읽기 단계가 채운 막대가 뒤로 돌아간다. UI도 한 번 측정된 뒤엔 막대를 되감지 않는다.
+
+한국어 문구는 `Progress.label()`에 둔다(`Coverage.summary_line()`과 같은 자리). 클라이언트가 여럿이어도 같은 말을 하게.
+
 ## 폴더 노트(charter, `_folder.md`)
 
 폴더가 **직접 관장하는 것(직속 문서 + 직속 하위폴더)**을 서술. placement 재사용 판단과 에이전트 탐색에 쓰임. frontmatter가 authoritative, 본문은 거기서 생성.
