@@ -13,7 +13,15 @@ folder this document belongs in.
 
 You may:
 - put it in an existing folder, OR
-- propose a new folder path (any depth) when nothing existing fits.
+- propose a new folder path (any depth) when nothing existing fits, OR
+- **leave it at the root**, unsorted for now.
+
+Leaving it at the root is a NORMAL answer, not a refusal. This archive is being
+built as documents arrive; early on there is nothing to sort into, and a folder
+invented from a single document can hold that document and nothing else. When you
+cannot see a distinction worth drawing yet, the root is where the document goes,
+and you are CONFIDENT about that. Documents gathering at the root are what a later
+step reads to work out the real divisions.
 
 The rules, in order of importance:
 
@@ -38,21 +46,25 @@ large one earns deeper ones. Do not nest for the sake of nesting -- every level 
 must be a distinction someone would actually navigate by.
 
 Return the folder as a path with `/` between levels, relative to the archive \
-root. `existing` says whether that exact path is already in the list you were \
-shown. `reason` is one sentence a person can check against the document -- why \
-this folder, citing what the document is about.
+root, or `""` (the empty string) for the root itself. `existing` says whether that \
+exact path is already in the list you were shown. `reason` is one sentence a \
+person can check against the document -- why this folder, citing what the document \
+is about.
 
 `confidence` is how sure you are that THE FOLDER YOU RETURNED is where this \
-document belongs. It is NOT how well the document fits the existing tree.
+document belongs. It is NOT how well the document fits the existing tree. It is \
+recorded and shown to people; nothing is rejected for scoring low.
 
-A document about a subject the archive has never held yet still has an obvious \
-home: a new folder for it. If you know what that folder should be called, you are \
-confident -- say so. "None of the existing folders fit, so I made a new one" is a \
-NORMAL, HIGH-confidence answer, and it is how an archive grows past its first \
-folder. Reserve low confidence for documents you genuinely cannot read or cannot \
-tell apart from two equally good homes.
+"None of the existing folders fit, so I made a new one" is a NORMAL, \
+HIGH-confidence answer, and it is how an archive grows past its first folder. So \
+is "there is nothing to sort into yet, so it stays at the root". What you must NOT \
+do is force a document into the nearest folder merely because it is the closest \
+one there: if the document does not belong there, either make the folder it does \
+belong in, or leave it at the root.
 
-If the document is unreadable, empty, or clearly garbage, set `folder` to null.\
+If the document is unreadable, empty, or clearly garbage, set `folder` to null. \
+That is for documents you could not read -- never for documents you could read but \
+could not sort.\
 """
 
 _USER = """\
@@ -67,14 +79,17 @@ summary: {summary}
 mentions: {entities}\
 """
 
-_EMPTY_TREE = "(none yet -- this is the first document, so you are creating the first folder)"
+_EMPTY_TREE = "(none yet -- nothing has been sorted into folders. The root is where this goes.)"
 
 
 class PlacementDecision(BaseModel):
     """Where the model says the document goes."""
 
     folder: str | None = Field(
-        description="Folder path with '/' between levels, or null if the document is unfilable."
+        description=(
+            "Folder path with '/' between levels; '' for the root; null only when the "
+            "document could not be read."
+        )
     )
     existing: bool = Field(
         default=False, description="True if this exact path was in the folders shown to you."
