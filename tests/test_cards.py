@@ -10,7 +10,11 @@ from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.domain.document import Entity, EntityKind, Extraction, Section
 from bismuth.domain.errors import StructuredOutputError
 from bismuth.prompts import cards as card_prompts
-from bismuth.services.cards import CardService
+from bismuth.services.cards import (
+    LABEL_MAX_CHARS,
+    NAME_MAX_CHARS,
+    CardService,
+)
 
 from .conftest import ScriptedModel
 
@@ -168,6 +172,76 @@ class TestDescribe:
         assert card.coverage is not None
         assert not card.coverage.whole_document
         assert card.coverage.extraction_truncated
+
+
+class TestLabelHygiene:
+    """A real run put a whole bibliography into `topics`; that lands in the sidecar and in
+    every later placement prompt, so it is filtered at the source rather than in the UI."""
+
+    async def test_an_entry_too_long_to_be_a_label_is_dropped(self, script: ScriptedModel) -> None:
+        script.set(
+            card_prompts.CardDraft,
+            card_prompts.CardDraft(
+                title="논문",
+                summary="요약",
+                doc_type="학술논문",
+                language="ko",
+                topics=["생태계서비스", "참" * (LABEL_MAX_CHARS + 1)],
+                entities=[
+                    Entity(name="환경부", kind=EntityKind.ORGANIZATION),
+                    Entity(name="A" * (NAME_MAX_CHARS + 1), kind=EntityKind.PERSON),
+                ],
+                keywords=["ESV", "가" * (LABEL_MAX_CHARS + 1)],
+            ),
+        )
+        card = await CardService(FakeLLM(handler=script), context_chars=10_000).describe(
+            _extraction("논문 본문"), filename="논문.pdf"
+        )
+
+        assert card.topics == ("생태계서비스",)
+        assert [e.name for e in card.entities] == ["환경부"]
+        assert card.keywords == ("ESV",)
+
+    async def test_a_label_at_the_limit_survives(self, script: ScriptedModel) -> None:
+        exact = "가" * LABEL_MAX_CHARS
+        script.set(
+            card_prompts.CardDraft,
+            card_prompts.CardDraft(
+                title="t", summary="s", doc_type="문서", language="ko", topics=[exact]
+            ),
+        )
+        card = await CardService(FakeLLM(handler=script), context_chars=10_000).describe(
+            _extraction("본문"), filename="t.pdf"
+        )
+        assert card.topics == (exact,)
+
+    async def test_what_was_dropped_is_recorded_rather_than_swallowed(
+        self, script: ScriptedModel, tmp_path
+    ) -> None:  # type: ignore[no-untyped-def]
+        from bismuth.logging_setup import configure_logging
+
+        logs = configure_logging(log_dir=tmp_path / "logs")
+        script.set(
+            card_prompts.CardDraft,
+            card_prompts.CardDraft(
+                title="t",
+                summary="s",
+                doc_type="문서",
+                language="ko",
+                topics=["참" * 200],
+            ),
+        )
+        await CardService(FakeLLM(handler=script), context_chars=10_000).describe(
+            _extraction("본문"), filename="t.pdf", document_id="abc"
+        )
+
+        lines = [
+            json.loads(line)
+            for line in (logs / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        rejected = next(line for line in lines if line["event"] == "card.rejected")
+        assert rejected["rejected"]["topics"] == ["참" * 200]
+        assert rejected["document_id"] == "abc"
 
 
 class TestTrace:

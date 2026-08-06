@@ -14,7 +14,10 @@ from bismuth.api.progress import ProgressBus, as_event, stream
 from bismuth.container import Bismuth
 from bismuth.domain.document import Extraction, Section
 from bismuth.domain.progress import Progress, Stage, report
+from bismuth.prompts import placement as placement_prompts
 from bismuth.services.cards import CardService
+
+from .conftest import ScriptedModel
 
 
 def _p(stage: Stage, **kw: object) -> Progress:
@@ -27,6 +30,15 @@ class TestProgressValue:
         assert p.label() == "3/8조각 읽는 중 — 지연배상, 대한물산"
         assert p.fraction == pytest.approx(0.375)
         assert not p.terminal
+
+    def test_a_window_full_of_finds_still_fits_on_one_line(self) -> None:
+        """A real run turned up a dozen things in one window; the line is a status, not a list."""
+        p = _p(Stage.READING, step=2, steps=5, found=tuple(f"주제{i}" for i in range(9)))
+        assert p.label() == "2/5조각 읽는 중 — 주제0, 주제1, 주제2 외 6개"
+
+    def test_exactly_three_finds_need_no_counter(self) -> None:
+        p = _p(Stage.READING, step=1, steps=2, found=("가", "나", "다"))
+        assert p.label() == "1/2조각 읽는 중 — 가, 나, 다"
 
     def test_a_step_with_no_measure_has_no_fraction(self) -> None:
         assert _p(Stage.FILING).fraction is None
@@ -164,6 +176,29 @@ class TestIngestProgress:
         parsed = next(p for p in seen if p.stage is Stage.PARSED)
         assert parsing.note == "plain"
         assert "자" in parsed.note
+
+    async def test_parking_reports_the_suggestion_not_the_whole_rationale(
+        self, engine: Bismuth, script: ScriptedModel, make_document: Callable[..., Path]
+    ) -> None:
+        """The rationale is a paragraph; a progress line that long buries every other step."""
+        script.set(
+            placement_prompts.PlacementDecision,
+            placement_prompts.PlacementDecision(
+                folder="환경/생태계",
+                existing=False,
+                confidence=0.12,
+                reason="제시된 폴더들은 미생물학 자료에 한정되어 있고 " * 8,
+            ),
+        )
+        seen: list[Progress] = []
+        source = make_document("논문.txt", "생태계서비스 논문")
+        await engine.ingest.process(
+            engine.ingest.stage(source.read_bytes(), source.name), on_progress=seen.append
+        )
+
+        placed = next(p for p in seen if p.stage is Stage.PLACED)
+        assert placed.note == "인박스 — 환경/생태계 를 제안했지만 확신 12%"
+        assert len(placed.note) < 60
 
     async def test_the_final_step_says_where_it_landed(
         self, engine: Bismuth, make_document: Callable[..., Path]
