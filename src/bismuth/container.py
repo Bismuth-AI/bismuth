@@ -35,6 +35,9 @@ class Bismuth:
 
     settings: Settings
     llm: LLM
+    chat: ChatModel
+    """The agent's model. Exposed so its calls can be counted too -- a spend total that
+    omits the post-upload review is wrong, not just incomplete."""
     vault: Vault
     catalog: Catalog
     journal: JournalStore
@@ -94,6 +97,7 @@ def build(
     return Bismuth(
         settings=settings,
         llm=model,
+        chat=chat,
         vault=vault,
         catalog=catalog,
         journal=journal,
