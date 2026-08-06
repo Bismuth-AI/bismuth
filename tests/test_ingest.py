@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
+import pytest
+
 from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.container import Bismuth
 from bismuth.domain.placement import Verdict
@@ -125,7 +127,8 @@ class TestSidecar:
 
 
 class TestRefusal:
-    """Placement declines to the inbox: null folder, low confidence, unusable path."""
+    """The inbox is for documents that could not be read. Anything readable is filed,
+    even if only at the root (SPEC.md 3.4)."""
 
     async def test_the_model_declining_parks_the_document(
         self, engine: Bismuth, script: ScriptedModel
@@ -137,24 +140,41 @@ class TestRefusal:
         assert result.placement.verdict is Verdict.INBOX
         assert (engine.vault.root / "_inbox/garbage.txt").is_file()
 
-    async def test_low_confidence_parks_the_document(
+    async def test_low_confidence_is_filed_anyway(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
+        """There is no threshold. Being unsure is answered by the root, not by waiting."""
         script.set(placement_prompts.PlacementDecision, place_at("아폴로/2023", confidence=0.2))
 
         result = await add(engine, "vague.txt")
 
-        assert result.placement.verdict is Verdict.INBOX
-        assert (engine.vault.root / "_inbox/vague.txt").is_file()
+        assert result.placement.verdict is Verdict.PLACED
+        assert result.placement.confidence == pytest.approx(0.2)
+        assert (engine.vault.root / "아폴로/2023/vague.txt").is_file()
 
-    async def test_an_unusable_path_parks_the_document(
+    async def test_the_root_is_a_normal_answer(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        script.set(placement_prompts.PlacementDecision, place_at(""))
+
+        result = await add(engine, "unsorted.txt")
+
+        assert result.placement.verdict is Verdict.PLACED
+        assert result.destination == PurePosixPath()
+        assert (engine.vault.root / "unsorted.txt").is_file()
+        assert not (engine.vault.root / "_inbox/unsorted.txt").exists()
+
+    async def test_an_unusable_path_falls_back_to_the_root(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         script.set(placement_prompts.PlacementDecision, place_at("...///..."))
 
         result = await add(engine, "weird.txt")
 
-        assert result.placement.verdict is Verdict.INBOX
+        # A broken path is not a request for the root, but it is also not a reason to
+        # refuse a document we read perfectly well.
+        assert result.placement.verdict is Verdict.PLACED
+        assert result.destination == PurePosixPath()
 
 
 class TestUndo:

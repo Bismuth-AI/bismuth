@@ -18,6 +18,7 @@ from bismuth.ports.llm import ModelProfile, Prompt
 from bismuth.prompts import cards as card_prompts
 from bismuth.prompts import charters as charter_prompts
 from bismuth.prompts import placement as placement_prompts
+from bismuth.prompts import subdivision as subdivision_prompts
 
 
 @pytest.fixture
@@ -63,6 +64,14 @@ class ScriptedModel:
                 existing=False,
                 confidence=0.9,
                 reason="아폴로 사업 2023년 계약서라 아폴로/2023 에 둡니다.",
+            ),
+            # Default: no division. A test that wants one scripts it, so every other
+            # test keeps the tree its assertions were written against.
+            subdivision_prompts.Division: subdivision_prompts.Division(
+                divide=False, reason="아직 나눌 구분이 없습니다."
+            ),
+            subdivision_prompts.Review: subdivision_prompts.Review(
+                holds=True, reason="기존 구분이 아직 맞습니다."
             ),
             charter_prompts.CharterDraft: charter_prompts.CharterDraft(
                 title="아폴로 2023",
