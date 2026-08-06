@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
-from bismuth.adapters.parsers.registry import build_extraction
+from bismuth.adapters.parsers.registry import build_extraction, require
 from bismuth.domain.document import Extraction, Section
 from bismuth.domain.errors import ParserUnavailableError
 
@@ -21,13 +21,12 @@ class PdfParser:
     def extensions(self) -> frozenset[str]:
         return frozenset({".pdf"})
 
+    def warm(self) -> None:
+        require("pypdf", "Reading PDFs needs pypdf: pip install 'bismuth-kb[parsers]'")
+
     def parse(self, path: Path, *, max_chars: int) -> Extraction:
-        try:
-            from pypdf import PdfReader
-        except ImportError as exc:  # pragma: no cover - exercised by install shape, not tests
-            raise ParserUnavailableError(
-                "Reading PDFs needs pypdf: pip install 'bismuth-kb[parsers]'"
-            ) from exc
+        self.warm()
+        from pypdf import PdfReader
 
         try:
             reader = PdfReader(str(path))

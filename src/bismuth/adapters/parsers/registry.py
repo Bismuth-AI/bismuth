@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+import importlib
+import logging
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+from types import ModuleType
 
 from bismuth.domain.document import Extraction, Section
 from bismuth.domain.errors import ParserUnavailableError
 from bismuth.ports.parser import DocumentParser
+
+logger = logging.getLogger(__name__)
+
+
+def require(module: str, hint: str) -> ModuleType:
+    """Import an optional parser dependency, or say how to install it."""
+    try:
+        return importlib.import_module(module)
+    except ImportError as exc:
+        raise ParserUnavailableError(hint) from exc
 
 
 class ExtensionRegistry:
@@ -32,6 +45,19 @@ class ExtensionRegistry:
 
     def supported_extensions(self) -> frozenset[str]:
         return frozenset(self._by_extension)
+
+    def warm(self) -> dict[str, str]:
+        """Import every parser's dependency now, so a missing extra is a boot-time line
+        in the log instead of a surprise on somebody's first upload."""
+        unavailable: dict[str, str] = {}
+        for parser in dict.fromkeys(self._by_extension.values()):
+            try:
+                parser.warm()
+            except ParserUnavailableError as exc:
+                # Not fatal: a minimal install is a supported way to run this.
+                unavailable[parser.name] = str(exc)
+                logger.warning("parser %s is unavailable: %s", parser.name, exc)
+        return unavailable
 
 
 def build_extraction(

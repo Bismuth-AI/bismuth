@@ -9,7 +9,8 @@ from typing import Any
 
 from agentkit import AssistantMessage, Message, ToolCall, ToolSpec
 
-from bismuth.adapters.llm.litellm_adapter import _load_litellm
+from bismuth.adapters.llm.litellm_adapter import _load_litellm, usage_of
+from bismuth.ports.llm import Usage
 
 
 class LiteLLMChatModel:
@@ -29,6 +30,7 @@ class LiteLLMChatModel:
         self._api_base = api_base
         self._timeout = timeout
         self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._usage: list[Usage] = []
 
     async def complete(
         self,
@@ -56,7 +58,15 @@ class LiteLLMChatModel:
         async with self._semaphore:
             response = await _load_litellm().acompletion(**kwargs)
 
+        # The agent runs on every upload; leaving its calls out of the total would make
+        # the reported cost quietly wrong rather than merely incomplete.
+        self._usage.append(usage_of(response, self._model))
         return _from_wire(response.choices[0].message)
+
+    def drain_usage(self) -> list[Usage]:
+        """Return usage recorded since the last drain, and reset."""
+        drained, self._usage = self._usage, []
+        return drained
 
 
 def _to_wire(message: Message) -> dict[str, Any]:
