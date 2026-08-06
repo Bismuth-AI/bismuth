@@ -1,6 +1,6 @@
 # 0007 — Place agentically: the model reads the folder tree and picks or creates
 
-**Status:** accepted
+**Status:** accepted, amended by [0008](0008-place-broadly-then-subdivide.md)
 **Supersedes:** [0002](0002-two-loops.md), [0003](0003-derived-paths-not-chosen-folders.md), [0005](0005-humans-choose-the-axis-order.md)
 
 ## Context
@@ -35,6 +35,11 @@ order, no discovery, no arithmetic, no slow loop.
 The first document creates the first folder. Every document after it is filed by
 looking at what earlier ones built. Structure emerges; it is never declared.
 
+> **Amended by [0008](0008-place-broadly-then-subdivide.md).** Placement alone made
+> every first decision permanent, so the documents that arrived first wrote the
+> structure. Filing now has a second operation — subdivide a folder once it has
+> grown — which makes a first placement provisional.
+
 **Drift — the real cost — is handled by showing the whole tree every time.** The
 old design prevented drift with determinism (arithmetic gives the same path every
 time). This design prevents it by making the model *see* the existing folders and
@@ -51,9 +56,11 @@ enough, and it is what buys the simplicity.
 - **Depth is unbounded and per-document.** `법무/계약/대한물산/2023` and a flat
   `메모` can coexist; the model picks what fits the existing shape.
 - **The human decision is gone.** No axis order to choose. This trades a
-  human-perfected structure for a zero-effort evolving one — the right trade for
-  the personal and growing case this tool is really for. A team that genuinely
-  needs a fixed, human-designed top-level split is not this tool's user.
+  human-perfected structure for a zero-effort evolving one.
+  *(0008: the second sentence of this bullet originally read that the trade suited
+  "the personal and growing case this tool is really for", and that a team needing a
+  fixed top-level split was not this tool's user. That framing is withdrawn — a
+  library is not organised on different principles because it is large.)*
 - **~2000 lines deleted:** facet/taxonomy domain and service, discovery, the
   pressure/proposals slow loop, arithmetic path derivation, the reconcile step,
   and the discover/review CLI and API surface.
