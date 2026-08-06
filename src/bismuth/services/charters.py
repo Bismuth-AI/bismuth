@@ -1,4 +1,11 @@
-"""Reading and writing the folder notes that let the model see the structure."""
+"""Reading and writing the folder notes.
+
+Two audiences, and the second is the point of the product: placement reads them to
+see the structure it is filing into, and whoever searches this vault later reads
+them to decide which folders to open. For that second reader a note has to be a
+discriminator -- why here rather than the folder next to it -- not only a
+description of what is inside (SPEC.md 3.6).
+"""
 
 from __future__ import annotations
 

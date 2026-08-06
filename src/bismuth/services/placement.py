@@ -1,4 +1,11 @@
-"""Decides where one document goes, by looking at the folders that exist."""
+"""Decides where one document goes, by looking at the folders that exist.
+
+This answers "where in the tree as it stands", and that is all it can answer. It
+cannot answer "this folder should now be split" -- that is subdivision, the other
+half of filing (SPEC.md 3.4, ADR-0008), and it is not built yet. A folder swelling
+with documents that do not belong together is not a failure of judgement here and
+will not be fixed by sharpening this prompt.
+"""
 
 from __future__ import annotations
 
