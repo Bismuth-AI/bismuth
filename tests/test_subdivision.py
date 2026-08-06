@@ -237,6 +237,31 @@ class TestReview:
         assert not charter.due_for_review(59)
         assert charter.due_for_review(60)
 
+    async def test_a_divided_folder_is_measured_through_its_subtree(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Dividing empties a folder into its children. Counting only what sits directly
+        in it would drop to zero on the way out, and the division would never be looked
+        at again however much grew underneath."""
+        ids = await _fill(engine, script, 4)
+        script.set(
+            subdivision_prompts.Division,
+            subdivision_prompts.Division(
+                divide=True,
+                basis="주제",
+                groups=[_group("문학", "문학", ids[:2]), _group("과학", "과학", ids[2:])],
+                reason="r",
+            ),
+        )
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        charter = engine.charters.load(PurePosixPath())
+        assert charter is not None
+        # Four, not zero: all four are still under the root, just a level down now.
+        assert charter.split_at_documents == 4
+        assert engine.vault.count_files(PurePosixPath(), recursive=False) == 0
+
     def test_an_undivided_folder_is_never_due(self) -> None:
         charter = Charter(path=PurePosixPath("문학"), title="문학", purpose="p")
         assert not charter.divided
