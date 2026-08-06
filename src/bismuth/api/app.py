@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from bismuth import __version__
-from bismuth.adapters.llm import list_models, suggest_models
+from bismuth.adapters.llm import list_models, litellm_adapter, suggest_models
 from bismuth.api.progress import ProgressBus, stream
 from bismuth.config import PROVIDERS, Settings, load_env_file, provider, save_user_config
 from bismuth.container import Bismuth, build
@@ -24,6 +24,7 @@ from bismuth.domain.document import sidecar_name
 from bismuth.domain.errors import BismuthError
 from bismuth.domain.progress import Progress, Stage
 from bismuth.logging_setup import configure_logging
+from bismuth.ports.llm import Spend
 from bismuth.ports.vault import INBOX
 from bismuth.services.agent import DEFAULT_ORGANIZE_INSTRUCTION
 from bismuth.services.ingest import IngestResult
@@ -32,6 +33,26 @@ from bismuth.services.sidecar import read_sidecar_meta
 logger = logging.getLogger(__name__)
 
 STATIC = Path(__file__).parent / "static"
+
+
+def _preload(engine: Bismuth) -> None:
+    """Pull every deferred import in before the server accepts a request.
+
+    Two things import late: LiteLLM, to beat python-dotenv's upward ``.env`` scan, and
+    the document parsers, which are an optional extra. Both deferrals are about *when*,
+    not *whether* -- a server that pays a multi-second import inside the first upload,
+    or discovers a missing parser there, reported ready before it was.
+
+    A missing optional parser is logged, not fatal: a minimal install is supported.
+    """
+    litellm_adapter.preload()
+    if unavailable := engine.parsers.warm():
+        logger.warning(
+            "%d parser(s) unavailable; those formats will be refused: %s",
+            len(unavailable),
+            ", ".join(sorted(unavailable)),
+        )
+    logger.info("preloaded: litellm, %d parser(s)", len(engine.parsers.supported_extensions()))
 
 
 def get_engine(request: Request) -> Bismuth:
@@ -47,6 +68,7 @@ def create_app(settings: Settings) -> FastAPI:
     load_env_file()
     configure_logging()
     engine = build(settings)
+    _preload(engine)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -124,6 +146,9 @@ def create_app(settings: Settings) -> FastAPI:
         save_user_config(updated)
         app.state.settings = updated
         app.state.engine = build(updated)
+        # The wizard swaps the engine in a live process; the replacement has to be as
+        # warm as the one created at startup, or the first upload after setup pays for it.
+        _preload(app.state.engine)
         logger.info("configuration updated: %s", updated.redacted())
         return setup_state()
 
@@ -231,12 +256,26 @@ def create_app(settings: Settings) -> FastAPI:
 
     async def _process(engine: Bismuth, rel: PurePosixPath) -> IngestOut:
         bus: ProgressBus = app.state.progress
+        _drain(engine)  # anything left from an earlier document is not this one's bill
         try:
             result = await engine.ingest.process(rel, on_progress=bus.publish)
         except BismuthError as exc:
             bus.publish(Progress(stage=Stage.FAILED, filename=rel.name, note=str(exc)))
-            return IngestOut(filename=rel.name, ok=False, reason=str(exc))
-        return _result_of(result)
+            return IngestOut(filename=rel.name, ok=False, reason=str(exc), spend=_drain(engine))
+        return _result_of(result, spend=_drain(engine))
+
+    def _drain(engine: Bismuth) -> Spend:
+        """Collect and reset what the models have spent. Documents are processed one at a
+        time, so draining around one is what attributes the bill to it.
+
+        Draining is also what keeps the adapters' usage lists from growing for the life of
+        the process; before anything read them, nothing ever emptied them.
+        """
+        spend = Spend.of(engine.llm.drain_usage())
+        chat_drain = getattr(engine.chat, "drain_usage", None)
+        if chat_drain is not None:  # agentkit's ChatModel protocol does not require it
+            spend = spend + Spend.of(chat_drain())
+        return spend
 
     @app.post("/api/delete")
     async def delete(body: DeleteIn, engine: Engine) -> dict[str, Any]:
@@ -395,6 +434,7 @@ class IngestOut(BaseModel):
     created_folder: bool = False
     reason: str = ""
     duplicate: bool = False
+    spend: Spend = Spend()
 
 
 class SetupStateOut(BaseModel):
@@ -466,8 +506,9 @@ class SetupIn(BaseModel):
     vault_path: str
 
 
-def _result_of(result: IngestResult) -> IngestOut:
+def _result_of(result: IngestResult, *, spend: Spend) -> IngestOut:
     return IngestOut(
+        spend=spend,
         filename=result.filename,
         ok=True,
         document_id=result.document_id,

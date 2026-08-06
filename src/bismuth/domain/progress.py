@@ -88,7 +88,12 @@ class Progress(BaseModel):
                 return f"{self.note} — 이제 읽습니다"
             case Stage.READING:
                 base = f"{self.step}/{self.steps}조각 읽는 중"
-                return f"{base} — {', '.join(self.found)}" if self.found else base
+                if not self.found:
+                    return base
+                # A window can turn up a dozen things; the line is a status, not a list.
+                shown = ", ".join(self.found[:3])
+                rest = len(self.found) - 3
+                return f"{base} — {shown}{f' 외 {rest}개' if rest > 0 else ''}"
             case Stage.DENSIFYING:
                 return "찾은 것들을 요약에 반영하는 중"
             case Stage.CARDED:

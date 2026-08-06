@@ -35,6 +35,9 @@ class PlainTextParser:
     def extensions(self) -> frozenset[str]:
         return frozenset({".txt", ".md", ".markdown", ".rst", ".log", ".json", ".yaml", ".yml"})
 
+    def warm(self) -> None:
+        """Nothing to import: stdlib only."""
+
     def parse(self, path: Path, *, max_chars: int) -> Extraction:
         text = read_text_forgivingly(path)
         return build_extraction(_split_on_headings(text), parser=self.name, max_chars=max_chars)
@@ -50,6 +53,9 @@ class CsvParser:
     @property
     def extensions(self) -> frozenset[str]:
         return frozenset({".csv", ".tsv"})
+
+    def warm(self) -> None:
+        """Nothing to import: stdlib only."""
 
     def parse(self, path: Path, *, max_chars: int) -> Extraction:
         text = read_text_forgivingly(path)

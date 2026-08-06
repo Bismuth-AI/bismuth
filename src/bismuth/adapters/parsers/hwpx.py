@@ -27,6 +27,9 @@ class HwpxParser:
     def extensions(self) -> frozenset[str]:
         return frozenset({".hwpx"})
 
+    def warm(self) -> None:
+        """Nothing to import: HWPX is a zip of XML, both stdlib."""
+
     def parse(self, path: Path, *, max_chars: int) -> Extraction:
         try:
             archive = zipfile.ZipFile(path)

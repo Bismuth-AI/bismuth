@@ -22,10 +22,13 @@ second folder for something an existing folder already covers is the worst thing
 you can do here -- it splits one idea across two places and nobody finds either. \
 When two folders both fit, pick the more specific existing one.
 
-2. Only create a new folder when the document genuinely has no home. Then give it \
-a path that fits how the existing tree is organised: same language, same style, a \
-similar depth. If everything so far is `사업명/연도`, a new document about a new \
-project should look like `새사업명/2024`, not a flat `new_stuff`.
+2. CREATE a new folder when the document genuinely has no home among them. This is \
+expected and common, especially in a young archive: a collection of ten documents \
+about one subject is not a reason to file the eleventh, about a different subject, \
+in the wrong place. Give the new folder a path that fits how the existing tree is \
+organised: same language, same style, a similar depth. If everything so far is \
+`사업명/연도`, a new document about a new project should look like `새사업명/2024`, \
+not a flat `new_stuff`.
 
 3. Name folders in the DOCUMENT'S OWN LANGUAGE, using the words this organisation \
 would use. A Korean collection gets Korean folder names.
@@ -38,6 +41,16 @@ Return the folder as a path with `/` between levels, relative to the archive \
 root. `existing` says whether that exact path is already in the list you were \
 shown. `reason` is one sentence a person can check against the document -- why \
 this folder, citing what the document is about.
+
+`confidence` is how sure you are that THE FOLDER YOU RETURNED is where this \
+document belongs. It is NOT how well the document fits the existing tree.
+
+A document about a subject the archive has never held yet still has an obvious \
+home: a new folder for it. If you know what that folder should be called, you are \
+confident -- say so. "None of the existing folders fit, so I made a new one" is a \
+NORMAL, HIGH-confidence answer, and it is how an archive grows past its first \
+folder. Reserve low confidence for documents you genuinely cannot read or cannot \
+tell apart from two equally good homes.
 
 If the document is unreadable, empty, or clearly garbage, set `folder` to null.\
 """
@@ -90,7 +103,7 @@ def build(
         tree = "\n".join(
             f"  {path}" + (f"  — {purpose}" if purpose else "") for path, purpose in folders
         )
-        tree_note = f" ({len(folders)} so far -- reuse one of these before making a new one)"
+        tree_note = f" ({len(folders)} so far -- reuse one when the document fits it)"
     else:
         tree, tree_note = _EMPTY_TREE, ""
 

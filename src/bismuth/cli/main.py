@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import socket
 import sys
+import threading
+import time
+import webbrowser
 from pathlib import Path, PurePosixPath
 from typing import Annotated
+from urllib.parse import urlparse
 
 import anyio
 import typer
@@ -339,12 +344,6 @@ def serve(
 
 def _open_when_ready(url: str, *, timeout: float = 10.0) -> None:
     """Open a browser once the port answers, polled from a background thread (a cold LiteLLM import can take seconds)."""
-    import socket
-    import threading
-    import time
-    import webbrowser
-    from urllib.parse import urlparse
-
     parsed = urlparse(url)
     host, port = parsed.hostname or "127.0.0.1", parsed.port or 80
 

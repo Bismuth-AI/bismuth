@@ -33,6 +33,18 @@ class DocumentParser(Protocol):
         """
         ...
 
+    def warm(self) -> None:
+        """Import this parser's third-party dependency now.
+
+        Parsers import lazily because they are an optional extra, but a server that
+        finds out on the first upload is a server that said it was ready too early.
+        Called once at startup so a missing extra is a boot-time line in the log.
+
+        Raises:
+            ParserUnavailableError: if the optional dependency is missing.
+        """
+        ...
+
 
 @runtime_checkable
 class ParserRegistry(Protocol):
@@ -44,4 +56,9 @@ class ParserRegistry(Protocol):
 
     def supported_extensions(self) -> frozenset[str]:
         """Used by the CLI and the upload form, so the two cannot disagree."""
+        ...
+
+    def warm(self) -> dict[str, str]:
+        """Import every registered parser's dependency. Returns parser name -> why it is
+        unavailable, for the ones that are; an empty mapping means everything loaded."""
         ...

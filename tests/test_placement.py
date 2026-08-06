@@ -7,6 +7,7 @@ from pathlib import PurePosixPath
 import pytest
 
 from bismuth.adapters.llm.fake import FakeLLM
+from bismuth.config import Settings
 from bismuth.domain.document import DocumentCard
 from bismuth.domain.paths import sanitize_segment
 from bismuth.domain.placement import Verdict
@@ -96,6 +97,40 @@ class TestPlacementService:
     async def test_an_unusable_path_declines(self) -> None:
         placement = await _decide(_decision("...///..."))
         assert placement.verdict is Verdict.INBOX
+
+    async def test_a_parked_document_keeps_the_number_it_was_parked_for(self) -> None:
+        """Tuning the threshold needs the figure as a figure, not inside a Korean sentence."""
+        placement = await _decide(_decision("환경/생태계", confidence=0.42))
+
+        assert placement.verdict is Verdict.INBOX
+        assert placement.confidence == pytest.approx(0.42)
+        assert "42%" in placement.rationale
+
+    async def test_a_parked_document_keeps_the_folder_the_model_wanted(self) -> None:
+        """The user re-deciding this by hand should not have to start from nothing."""
+        placement = await _decide(_decision("환경/생태계", confidence=0.42))
+        assert placement.suggested == PurePosixPath("환경/생태계")
+
+    async def test_the_suggestion_is_sanitised_like_a_real_target(self) -> None:
+        placement = await _decide(_decision("환경/../생태계", confidence=0.1))
+        assert placement.suggested == PurePosixPath("환경/생태계")
+
+    async def test_an_undecidable_document_has_no_suggestion(self) -> None:
+        placement = await _decide(_decision(None, confidence=0.3))
+        assert placement.suggested is None
+        assert placement.confidence == pytest.approx(0.3)
+
+    async def test_a_placed_document_has_no_suggestion_to_make(self) -> None:
+        placement = await _decide(_decision("아폴로/2023"))
+        assert placement.suggested is None
+        assert placement.confidence == pytest.approx(0.9)
+
+    async def test_the_default_threshold_matches_the_one_the_app_ships(self) -> None:
+        # The two drifting apart means direct callers are not testing shipped behaviour.
+        assert (
+            PlacementService(FakeLLM(queue=[]))._min_confidence
+            == Settings().placement_min_confidence
+        )
 
     async def test_created_folder_is_flagged_against_the_existing_set(self) -> None:
         # Decided against the real folder set, not the model's own `existing` flag.

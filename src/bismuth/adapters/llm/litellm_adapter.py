@@ -32,6 +32,36 @@ def _load_litellm() -> Any:
     return _litellm
 
 
+def preload() -> None:
+    """Do the deferred LiteLLM import now.
+
+    The deferral exists to win a race against python-dotenv, not to postpone the cost:
+    importing LiteLLM takes seconds, and paying that inside the first request makes a
+    started server look like a hung one. Call once, after the configuration is loaded.
+    """
+    _load_litellm()
+
+
+def usage_of(response: Any, model: str) -> Usage:
+    """Tokens and price for one completion. Shared with the chat adapter so the agent's
+    calls are counted the same way -- a total that silently omits them is a wrong total.
+
+    ``cost_usd`` is None when LiteLLM has no published rate for the model (local models,
+    anything unlisted); that is reported rather than guessed at.
+    """
+    raw = getattr(response, "usage", None)
+    try:
+        cost = _load_litellm().completion_cost(completion_response=response)
+    except Exception:
+        cost = None
+    return Usage(
+        model=model,
+        input_tokens=getattr(raw, "prompt_tokens", 0) or 0,
+        output_tokens=getattr(raw, "completion_tokens", 0) or 0,
+        cost_usd=cost,
+    )
+
+
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
@@ -234,17 +264,7 @@ class LiteLLMAdapter:
 
     @staticmethod
     def _usage_of(response: Any, model: str) -> Usage:
-        raw = getattr(response, "usage", None)
-        try:
-            cost = _load_litellm().completion_cost(completion_response=response)
-        except Exception:
-            cost = None
-        return Usage(
-            model=model,
-            input_tokens=getattr(raw, "prompt_tokens", 0) or 0,
-            output_tokens=getattr(raw, "completion_tokens", 0) or 0,
-            cost_usd=cost,
-        )
+        return usage_of(response, model)
 
 
 def _parse_json(raw: str) -> Any:
