@@ -139,12 +139,15 @@ class IngestService:
 
         destination = placement.target if placement.is_placed else INBOX
         assert destination is not None
-        say(
-            Stage.PLACED,
-            note=f"{destination}{' (새 폴더)' if placement.created_folder else ''}"
-            if placement.is_placed
-            else f"인박스 — {placement.rationale}",
-        )
+        # The full rationale is a paragraph and lives on the placement; a progress line
+        # that long pushes every other step off the panel.
+        if placement.is_placed:
+            landed = f"{destination}{' (새 폴더)' if placement.created_folder else ''}"
+        elif placement.suggested is not None:
+            landed = f"인박스 — {placement.suggested} 를 제안했지만 확신 {placement.confidence:.0%}"
+        else:
+            landed = f"인박스 — 확신 {placement.confidence:.0%}"
+        say(Stage.PLACED, note=landed)
 
         say(Stage.FILING)
         await self._commit(
