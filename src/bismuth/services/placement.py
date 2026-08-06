@@ -17,7 +17,10 @@ logger = logging.getLogger(__name__)
 class PlacementService:
     """Answers "where does this go?" by reading the current structure."""
 
-    def __init__(self, llm: LLM, *, min_confidence: float = 0.55) -> None:
+    # Keep in step with Settings.placement_min_confidence, which is what the app passes;
+    # this default is what a direct caller (a test, an embedder) gets, and the two drifting
+    # apart means they are not testing the shipped behaviour.
+    def __init__(self, llm: LLM, *, min_confidence: float = 0.65) -> None:
         self._llm = llm
         self._min_confidence = min_confidence
 
@@ -51,18 +54,37 @@ class PlacementService:
 
         if decision.folder is None:
             return Placement.to_inbox(
-                document_id, reason=decision.reason or "이 문서를 분석하거나 분류할 수 없습니다."
-            )
-        if decision.confidence < self._min_confidence:
-            return Placement.to_inbox(
                 document_id,
-                reason=f"어디에 둘지 확신이 낮습니다 ({decision.confidence:.0%}): {decision.reason}",
+                reason=decision.reason or "이 문서를 분석하거나 분류할 수 없습니다.",
+                confidence=decision.confidence,
             )
 
         target = _safe_path(decision.folder)
         if target is None:
             logger.warning("placement returned an unusable path %r; parking", decision.folder)
-            return Placement.to_inbox(document_id, reason="제안된 폴더 경로를 쓸 수 없습니다.")
+            return Placement.to_inbox(
+                document_id,
+                reason="제안된 폴더 경로를 쓸 수 없습니다.",
+                confidence=decision.confidence,
+            )
+
+        if decision.confidence < self._min_confidence:
+            # Keep both the number and the folder it named: the user re-deciding this by
+            # hand deserves the model's guess, and tuning the threshold needs the figure
+            # as a figure rather than as text inside a Korean sentence.
+            logger.info(
+                "parking %s: model wanted %s at %.0f%%, below the %.0f%% bar",
+                document_id,
+                target,
+                decision.confidence * 100,
+                self._min_confidence * 100,
+            )
+            return Placement.to_inbox(
+                document_id,
+                reason=f"어디에 둘지 확신이 낮습니다 ({decision.confidence:.0%}): {decision.reason}",
+                confidence=decision.confidence,
+                suggested=target,
+            )
 
         created = str(target) not in existing_paths
         return Placement(
