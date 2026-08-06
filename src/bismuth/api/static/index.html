@@ -143,6 +143,9 @@ h2 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.01em; }
 .up { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 13px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.08); }
 .up .fn { font-weight: 600; }
 .up .dest { color: var(--accent); }
+/* spend: never the loudest thing on screen, but never hidden either */
+.spend { color: var(--dim); font-variant-numeric: tabular-nums; }
+.up .spend { font-size: 11px; }
 .up.err .fn { color: var(--danger); }
 
 /* live progress: a slow document must read as working, not as hung */
@@ -168,7 +171,14 @@ h2 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.01em; }
 .steps li.fail, .steps li.fail .mark { color: var(--danger); }
 .steps li .what { min-width: 0; overflow-wrap: anywhere; }
 .found { display: flex; flex-wrap: wrap; gap: 4px; margin: 1px 0 2px 18px; }
-.found span { font-size: 11px; line-height: 1.5; padding: 0 6px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); }
+.found span { font-size: 11px; line-height: 1.5; padding: 0 6px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Finished documents fold to one line. Uploading ten files should not mean ten open
+   panels, and the steps of a document that is already filed are history. */
+.job.settled .steps, .job.settled .found, .job.settled .bar { display: none; }
+.job.settled .tail { color: var(--dim); font-size: 12px; }
+.job .tail { display: none; }
+.job.settled .tail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job.settled.failed .tail { color: var(--danger); }
 @media (prefers-reduced-motion: reduce) { .bar > i, .bar.wait > i { transition: none; animation: none; } }
 
 /* setup + modal */
@@ -200,6 +210,7 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
   <span class="badge" id="privacy">…</span>
   <div class="spacer"></div>
   <span class="hstat"><b id="hs-docs">0</b> 문서 · <b id="hs-folders">0</b> 폴더<span id="hs-inbox"></span></span>
+  <span class="hstat spend hidden" id="hs-spend" title="이 브라우저 세션에서 쓴 양"></span>
   <button class="ghost" id="btn-organize">구조 정리</button>
   <button class="ghost" id="btn-history">기록</button>
   <button class="ghost" id="btn-settings">설정</button>
@@ -503,7 +514,7 @@ async function renderInbox(el) {
     ${docs.length ? docs.map(docRow).join("") : `<div class="empty">인박스가 비었습니다.</div>`}`;
   $("rescan")?.addEventListener("click", async (e) => {
     e.target.disabled = true; e.target.textContent = "분류하는 중…";
-    try { await api("/scan", { method: "POST" }); await refresh(); }
+    try { (await api("/scan", { method: "POST" })).forEach((r) => addSpend(r.spend)); await refresh(); }
     catch (err) { alert(err.message); e.target.disabled = false; e.target.textContent = "전체 다시 분류"; }
   });
   bindDocs(el); syncSel();
@@ -683,15 +694,17 @@ async function deleteFolder(path, count) {
 
 const ORDER = ["received", "parsing", "parsed", "reading", "densifying", "carded",
                "placing", "placed", "filing", "notes", "done", "duplicate", "failed"];
+const CHIP_LIMIT = 8;   // beyond this the chips stop being scannable and become a wall
 const jobs = new Map();   // filename -> { el, lines: Map(stage -> li), found: Set, chips: el }
 
 function jobCard(filename) {
   const el = document.createElement("div");
   el.className = "job";
   el.innerHTML = `<div class="head"><span class="fn"></span><span class="count"></span></div>
-    <div class="bar wait"><i></i></div><ul class="steps"></ul>`;
+    <div class="bar wait"><i></i></div><ul class="steps"></ul><div class="tail"></div>`;
   el.querySelector(".fn").textContent = filename;
-  return { el, lines: new Map(), found: new Set(), chips: null, measured: false };
+  const more = document.createElement("span");
+  return { el, lines: new Map(), found: new Set(), chips: null, more, measured: false };
 }
 
 function ensureJob(filename, container) {
@@ -746,17 +759,27 @@ function renderStep(p) {
       li.after(job.chips);
     }
     for (const fact of p.found) {
-      if (job.found.has(fact) || job.found.size >= 12) continue;
+      if (job.found.has(fact)) continue;
       job.found.add(fact);
+      if (job.found.size > CHIP_LIMIT) { job.more.textContent = `외 ${job.found.size - CHIP_LIMIT}개`; continue; }
       const chip = document.createElement("span");
       chip.textContent = fact;
+      chip.title = fact;   // the chip is clipped by CSS; hovering still gives the whole thing
       job.chips.appendChild(chip);
+      job.chips.appendChild(job.more);   // keep the counter last
     }
   }
 
   const bar = el.querySelector(".bar");
   const fill = bar.querySelector("i");
   el.querySelector(".count").textContent = p.stage === "reading" && p.steps ? `${p.step}/${p.steps} 조각` : "";
+  if (p.terminal) {
+    // Fold to one line: the steps of a document that is already filed are history.
+    el.classList.add("settled");
+    el.classList.toggle("failed", p.stage === "failed");
+    el.querySelector(".tail").textContent = p.label;
+    el.querySelector(".tail").title = p.label;
+  }
   if (p.stage === "failed") { bar.className = "bar fail"; li.className = "fail"; li.querySelector(".mark").textContent = "✕"; }
   else if (p.terminal) { bar.className = "bar done"; li.querySelector(".mark").textContent = "✓"; li.className = "past"; }
   else if (p.fraction != null) { job.measured = true; bar.className = "bar"; fill.style.width = `${Math.round(p.fraction * 100)}%`; }
@@ -779,6 +802,50 @@ function watchProgress() {
 }
 watchProgress();
 
+/* ---------------- spend ----------------
+   Tokens and price for the work just done, and a running total for the session. Kept
+   in the browser rather than persisted: it answers "what did that just cost me?", and
+   a number that survives a restart would imply an accounting this does not do. */
+
+let sessionSpend = { calls: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0, priced_calls: 0 };
+
+function money(usd) {
+  if (usd == null) return "";
+  // One document costs a fraction of a cent, so rounding to cents would print "$0.00"
+  // for real spending and overstate a running total ($0.0168 shown as $0.02).
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  if (usd < 1) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
+function tokens(n) {
+  return n >= 10000 ? `${(n / 1000).toFixed(1)}k` : n.toLocaleString();
+}
+
+function spendText(s) {
+  if (!s || !s.calls) return "";
+  const parts = [`${s.calls}회 호출`, `${tokens(s.input_tokens + s.output_tokens)} 토큰`];
+  if (s.cost_usd != null) {
+    // Fewer priced calls than calls means some model has no published rate: a floor, not a figure.
+    parts.push(money(s.cost_usd) + (s.priced_calls < s.calls ? "+" : ""));
+  } else if (s.calls) {
+    parts.push("단가 미상");
+  }
+  return parts.join(" · ");
+}
+
+function addSpend(s) {
+  if (!s || !s.calls) return;
+  sessionSpend.calls += s.calls;
+  sessionSpend.input_tokens += s.input_tokens;
+  sessionSpend.output_tokens += s.output_tokens;
+  sessionSpend.priced_calls += s.priced_calls;
+  sessionSpend.cost_usd += s.cost_usd || 0;
+  const el = $("hs-spend");
+  el.classList.remove("hidden");
+  el.textContent = spendText(sessionSpend);
+}
+
 /* ---------------- uploads ---------------- */
 
 async function upload(files) {
@@ -796,14 +863,16 @@ async function upload(files) {
   try {
     const results = await api("/documents", { method: "POST", body: fd });
     for (const f of files) jobs.delete(f.name);   // the summary below replaces the live cards
+    for (const r of results) addSpend(r.spend);
+    const cost = (r) => { const t = spendText(r.spend); return t ? `<div class="spend">${esc(t)}</div>` : ""; };
     box.innerHTML = results.map((r) => r.ok
       ? (r.duplicate
           ? `<div><span class="dupflag">⚠ 중복</span> <span class="fn">${esc(r.filename)}</span>
              <div class="muted" style="font-size:12px">같은 내용이 이미 <code>${esc(r.destination)}/</code> 에 있어 넣지 않았습니다.</div></div>`
           : r.placed
-            ? `<div><span class="fn">${esc(r.filename)}</span> → <span class="dest">${esc(r.destination)}/</span>${r.created_folder ? ' <span class="muted">(새 폴더)</span>' : ""}</div>`
-            : `<div><span class="fn">${esc(r.filename)}</span> <span class="muted">— 인박스 (${esc(r.reason)})</span></div>`)
-      : `<div class="err-line"><span class="fn">실패: ${esc(r.filename)}</span> <span class="muted">${esc(r.reason)}</span></div>`
+            ? `<div><span class="fn">${esc(r.filename)}</span> → <span class="dest">${esc(r.destination)}/</span>${r.created_folder ? ' <span class="muted">(새 폴더)</span>' : ""}${cost(r)}</div>`
+            : `<div><span class="fn">${esc(r.filename)}</span> <span class="muted">— 인박스 (${esc(r.reason)})</span>${cost(r)}</div>`)
+      : `<div class="err-line"><span class="fn">실패: ${esc(r.filename)}</span> <span class="muted">${esc(r.reason)}</span>${cost(r)}</div>`
     ).join("");
     if (results.some((r) => !r.ok)) box.classList.add("err");
     else if (results.some((r) => r.duplicate)) box.classList.add("dup");
