@@ -2,9 +2,14 @@
 
 This answers "where in the tree as it stands", and that is all it can answer. It
 cannot answer "this folder should now be split" -- that is subdivision, the other
-half of filing (SPEC.md 3.4, ADR-0008), and it is not built yet. A folder swelling
-with documents that do not belong together is not a failure of judgement here and
-will not be fixed by sharpening this prompt.
+half of filing (SPEC.md 3.4, ADR-0008). A folder swelling with documents that do
+not belong together is not a failure of judgement here and will not be fixed by
+sharpening this prompt.
+
+There is no confidence threshold. "I do not know where this goes" is answered by
+the root, which is the folder for documents no distinction has been drawn around
+yet; parking such a document instead would be waiting for a person who is not
+coming (SPEC.md 3.4).
 """
 
 from __future__ import annotations
@@ -20,16 +25,14 @@ from bismuth.prompts import placement as placement_prompts
 
 logger = logging.getLogger(__name__)
 
+ROOT = PurePosixPath()
+
 
 class PlacementService:
     """Answers "where does this go?" by reading the current structure."""
 
-    # Keep in step with Settings.placement_min_confidence, which is what the app passes;
-    # this default is what a direct caller (a test, an embedder) gets, and the two drifting
-    # apart means they are not testing the shipped behaviour.
-    def __init__(self, llm: LLM, *, min_confidence: float = 0.65) -> None:
+    def __init__(self, llm: LLM) -> None:
         self._llm = llm
-        self._min_confidence = min_confidence
 
     async def decide(
         self,
@@ -60,40 +63,25 @@ class PlacementService:
         )
 
         if decision.folder is None:
+            # Reserved for documents that could not be read at all. Anything readable
+            # has somewhere to go, even if that somewhere is the root.
             return Placement.to_inbox(
                 document_id,
-                reason=decision.reason or "이 문서를 분석하거나 분류할 수 없습니다.",
+                reason=decision.reason or "이 문서를 읽을 수 없습니다.",
                 confidence=decision.confidence,
             )
 
         target = _safe_path(decision.folder)
-        if target is None:
-            logger.warning("placement returned an unusable path %r; parking", decision.folder)
-            return Placement.to_inbox(
-                document_id,
-                reason="제안된 폴더 경로를 쓸 수 없습니다.",
-                confidence=decision.confidence,
+        if target is None and decision.folder.strip():
+            # A non-empty path that sanitised away to nothing is a broken answer, not
+            # a request for the root.
+            logger.warning(
+                "placement returned an unusable path %r; using the root", decision.folder
             )
+            target = ROOT
+        target = target if target is not None else ROOT
 
-        if decision.confidence < self._min_confidence:
-            # Keep both the number and the folder it named: the user re-deciding this by
-            # hand deserves the model's guess, and tuning the threshold needs the figure
-            # as a figure rather than as text inside a Korean sentence.
-            logger.info(
-                "parking %s: model wanted %s at %.0f%%, below the %.0f%% bar",
-                document_id,
-                target,
-                decision.confidence * 100,
-                self._min_confidence * 100,
-            )
-            return Placement.to_inbox(
-                document_id,
-                reason=f"어디에 둘지 확신이 낮습니다 ({decision.confidence:.0%}): {decision.reason}",
-                confidence=decision.confidence,
-                suggested=target,
-            )
-
-        created = str(target) not in existing_paths
+        created = bool(target.parts) and str(target) not in existing_paths
         return Placement(
             document_id=document_id,
             verdict=Verdict.PLACED,

@@ -130,7 +130,6 @@ class Settings(BaseSettings):
             "and the gap is recorded on the card."
         ),
     )
-    placement_min_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
     host: str = "127.0.0.1"
     port: int = 8765
 

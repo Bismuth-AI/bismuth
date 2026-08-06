@@ -34,6 +34,13 @@ class Stage(StrEnum):
     PLACED = "placed"
     FILING = "filing"
     NOTES = "notes"
+    DIVIDING = "dividing"
+    """A folder is being examined for a distinction worth drawing."""
+
+    REVIEWING = "reviewing"
+    """A folder that was divided before is being asked whether that still holds."""
+
+    DIVIDED = "divided"
     DONE = "done"
     FAILED = "failed"
 
@@ -109,6 +116,12 @@ class Progress(BaseModel):
                 return "옮기고 사이드카 쓰는 중"
             case Stage.NOTES:
                 return "폴더 노트 갱신 중"
+            case Stage.DIVIDING:
+                return f"{self.note} 를 나눌지 보는 중"
+            case Stage.REVIEWING:
+                return f"{self.note} 의 기존 구분이 아직 맞는지 보는 중"
+            case Stage.DIVIDED:
+                return f"{self.note} 로 나눴습니다"
             case Stage.DONE:
                 return f"완료 — {self.note}"
             case Stage.FAILED:
