@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TypeVar
 
-from bismuth.domain.document import Coverage, DocumentCard, Extraction, Window
+from bismuth.domain.document import Coverage, DocumentCard, Entity, Extraction, Window
 from bismuth.domain.errors import StructuredOutputError
 from bismuth.domain.progress import Progress, ProgressSink, Stage, report
 from bismuth.logging_setup import log_trace
@@ -28,6 +28,83 @@ T = TypeVar("T")
 
 _EMPTY_SUMMARY = "(요약 없음)"
 _UNKNOWN_TYPE = "문서"
+
+LABEL_MAX_CHARS = 40
+"""How long a topic or keyword may be. These are filing labels: they go on the card, into
+the sidecar, and into every placement prompt afterwards."""
+
+NAME_MAX_CHARS = 60
+"""How long an entity name may be. Longer than a label because organisations have long
+legal names, short enough that a pasted author list is not one."""
+
+QUESTION_MAX_CHARS = 200
+
+
+def _labels(values: Iterable[str], *, limit: int) -> tuple[list[str], list[str]]:
+    """Split incoming strings into usable labels and rejects.
+
+    Overlong entries are dropped rather than truncated. Asked for topics, a model handed a
+    bibliography returns the whole bibliography as one; the first 40 characters of that is
+    not a worse label, it is a wrong one, and it would then be shown, filed, and weighed in
+    every later placement decision.
+    """
+    kept: list[str] = []
+    rejected: list[str] = []
+    for value in values:
+        stripped = " ".join(value.split())
+        if not stripped:
+            continue
+        (kept if len(stripped) <= limit else rejected).append(stripped)
+    return kept, rejected
+
+
+@dataclass(frozen=True, slots=True)
+class _Facts:
+    """What one model turn offered, after the entries that are not labels are removed."""
+
+    topics: list[str]
+    entities: list[Entity]
+    keywords: list[str]
+    questions: list[str]
+    rejected: dict[str, list[str]]
+
+    @property
+    def any_rejected(self) -> bool:
+        return any(self.rejected.values())
+
+
+def _sift(
+    *,
+    topics: Iterable[str],
+    entities: Iterable[Entity],
+    keywords: Iterable[str],
+    questions: Iterable[str],
+) -> _Facts:
+    """Keep the entries that are labels; report the rest rather than swallowing them."""
+    kept_topics, bad_topics = _labels(topics, limit=LABEL_MAX_CHARS)
+    kept_keywords, bad_keywords = _labels(keywords, limit=LABEL_MAX_CHARS)
+    kept_questions, bad_questions = _labels(questions, limit=QUESTION_MAX_CHARS)
+
+    kept_entities: list[Entity] = []
+    bad_entities: list[str] = []
+    for entity in _unique(entities, key=lambda e: e.key()):
+        if len(entity.name) <= NAME_MAX_CHARS:
+            kept_entities.append(entity)
+        else:
+            bad_entities.append(entity.name)
+
+    return _Facts(
+        topics=kept_topics,
+        entities=kept_entities,
+        keywords=kept_keywords,
+        questions=kept_questions,
+        rejected={
+            "topics": bad_topics,
+            "entities": bad_entities,
+            "keywords": bad_keywords,
+            "questions": bad_questions,
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,16 +267,24 @@ class CardService:
             schema=card_prompts.CardDraft,
             profile=ModelProfile.FAST,
         )
+        facts = _sift(
+            topics=draft.topics,
+            entities=draft.entities,
+            keywords=draft.keywords,
+            questions=draft.answers_questions,
+        )
         card = DocumentCard(
             title=draft.title.strip() or filename,
             summary=draft.summary.strip() or _EMPTY_SUMMARY,
             doc_type=draft.doc_type.strip() or _UNKNOWN_TYPE,
-            topics=tuple(_clean(draft.topics)),
-            entities=tuple(_unique(draft.entities, key=lambda e: e.key())),
-            keywords=tuple(_clean(draft.keywords)),
+            topics=tuple(facts.topics),
+            entities=tuple(facts.entities),
+            keywords=tuple(facts.keywords),
             language=draft.language.strip() or "unknown",
-            answers_questions=tuple(_clean(draft.answers_questions)),
+            answers_questions=tuple(facts.questions),
         )
+        if facts.any_rejected:
+            _report_rejects(document_id, filename, window, facts)
         log_trace(
             "card.window",
             document_id=document_id,
@@ -247,10 +332,19 @@ class CardService:
             )
             return _Folded(card=card, found=(), contributed=False, failed=True)
 
-        topics = _added(card.topics, _clean(update.new_topics))
-        entities = _added(card.entities, update.new_entities, key=lambda e: e.key())
-        keywords = _added(card.keywords, _clean(update.new_keywords))
-        questions = _added(card.answers_questions, _clean(update.new_questions))
+        facts = _sift(
+            topics=update.new_topics,
+            entities=update.new_entities,
+            keywords=update.new_keywords,
+            questions=update.new_questions,
+        )
+        if facts.any_rejected:
+            _report_rejects(document_id, filename, window, facts)
+
+        topics = _added(card.topics, facts.topics)
+        entities = _added(card.entities, facts.entities, key=lambda e: e.key())
+        keywords = _added(card.keywords, facts.keywords)
+        questions = _added(card.answers_questions, facts.questions)
         summary = update.summary.strip() or card.summary
         # New facts, not the model's self-report: asked whether it learned something, a
         # model says yes about a page of boilerplate. Both go to the trace so the
@@ -334,6 +428,25 @@ class CardService:
             length_delta=len(summary) - len(card.summary),
         )
         return card.model_copy(update={"summary": summary})
+
+
+def _report_rejects(document_id: str, filename: str, window: Window, facts: _Facts) -> None:
+    """Say what was thrown away. A model that keeps doing this is a prompt problem, and a
+    silent filter would hide it -- the card would just look thin."""
+    log_trace(
+        "card.rejected",
+        document_id=document_id,
+        filename=filename,
+        window=window.index,
+        limits={"label": LABEL_MAX_CHARS, "name": NAME_MAX_CHARS, "question": QUESTION_MAX_CHARS},
+        rejected={k: v for k, v in facts.rejected.items() if v},
+    )
+    logger.info(
+        "%s window %s: dropped %d entr(ies) that were not labels",
+        filename,
+        window.label,
+        sum(len(v) for v in facts.rejected.values()),
+    )
 
 
 def _window_fields(window: Window) -> dict[str, object]:
