@@ -304,7 +304,11 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
-let state = {}, tree = [], selected = "", expanded = new Set();
+// The vault root, as /api/tree names it. Documents live here until enough of them
+// arrive to show a distinction, which early on is most of them.
+const ROOT = ".";
+let state = {}, tree = [], selected = ROOT, expanded = new Set();
+let rootInfo = null;   // the root's own entry: its loose documents are the common early case
 let sel = new Set(), selAnchor = null, viewDocs = [], moveTargets = [];
 // Folders select separately from documents, and the two are mutually exclusive: the
 // action bar offers 이동 for documents only, and a mixed selection would have to grey
@@ -328,17 +332,26 @@ async function refresh() {
 
   if (!state.configured) { openSetup(false); return; }
 
-  tree = (await api("/tree")).filter((f) => f.depth > 0 && f.path.split("/")[0] !== "_inbox");
+  const all = await api("/tree");
+  rootInfo = all.find((f) => f.depth === 0) || null;
+  tree = all.filter((f) => f.depth > 0 && f.path.split("/")[0] !== "_inbox");
   renderTree();
   const onInbox = selected === "_inbox" && state.inbox;
-  if (!onInbox && (!selected || !tree.some((f) => f.path === selected))) {
-    selected = tree.length ? topLevel()[0]?.path ?? "" : (state.inbox ? "_inbox" : "");
+  const onRoot = selected === ROOT;
+  if (!onInbox && !onRoot && !tree.some((f) => f.path === selected)) {
+    selected = tree.length ? topLevel()[0]?.path ?? ROOT : ROOT;
   }
   renderMain();
 }
 
 const topLevel = () => tree.filter((f) => f.depth === 1);
 const childrenOf = (path) => tree.filter((f) => f.depth === path.split("/").length + 1 && f.path.startsWith(path + "/"));
+
+const rootRow = () => `<div class="node ${selected === ROOT ? "on" : ""}" data-path="${ROOT}" style="padding-left:8px">
+      <span class="twist"></span><span class="ic">📚</span>
+      <span class="nm">전체</span>
+      ${rootInfo?.files ? `<span class="ct">${rootInfo.files}</span>` : ""}
+    </div>`;
 
 const inboxRow = () => state.inbox
   ? `<div class="node inbox ${selected === "_inbox" ? "on" : ""}" data-path="_inbox" style="padding-left:8px">
@@ -350,8 +363,7 @@ const inboxRow = () => state.inbox
 function renderTree() {
   const el = $("tree");
   if (!tree.length) {
-    el.innerHTML = inboxRow()
-      || `<div class="muted" style="padding:16px;font-size:13px">아직 폴더가 없습니다. 문서를 넣으면 폴더가 생깁니다.</div>`;
+    el.innerHTML = rootRow() + inboxRow();
     bindTreeClicks(el);
     return;
   }
@@ -371,29 +383,31 @@ function renderTree() {
     }
   };
   walk(topLevel(), 0);
-  el.innerHTML = rows.join("") + inboxRow();
+  el.innerHTML = rootRow() + rows.join("") + inboxRow();
   bindTreeClicks(el);
 }
 
 function bindTreeClicks(el) {
   // The rows as drawn, which is what shift+click ranges over -- a collapsed subtree is
   // not on screen, so ranging into it would delete folders the user cannot see.
-  const visible = [...el.querySelectorAll(".node")].map((n) => n.dataset.path).filter((p) => p !== "_inbox");
+  const visible = [...el.querySelectorAll(".node")]
+    .map((n) => n.dataset.path)
+    .filter((p) => p !== "_inbox" && p !== ROOT);
 
   el.querySelectorAll(".node").forEach((n) => {
     const path = n.dataset.path;
     n.addEventListener("click", (e) => {
       if (e.target.dataset.twist !== undefined) { toggle(path); return; }
-      if (e.target.dataset.fkebab !== undefined) { e.stopPropagation(); if (path !== "_inbox") openFolderMenu(e, path); return; }
+      if (e.target.dataset.fkebab !== undefined) { e.stopPropagation(); if (path !== "_inbox" && path !== ROOT) openFolderMenu(e, path); return; }
 
       // Explorer conventions layered on top of the plain click, which still opens.
-      if (path !== "_inbox" && (e.ctrlKey || e.metaKey)) {
+      if (path !== "_inbox" && path !== ROOT && (e.ctrlKey || e.metaKey)) {
         sel.clear();
         fsel.has(path) ? fsel.delete(path) : fsel.add(path);
         fselAnchor = path;
         renderTree(); syncSel(); return;
       }
-      if (path !== "_inbox" && e.shiftKey && fselAnchor) {
+      if (path !== "_inbox" && path !== ROOT && e.shiftKey && fselAnchor) {
         sel.clear();
         const i = visible.indexOf(fselAnchor), j = visible.indexOf(path);
         // Replaces rather than adds: shift+click means "the range", so dragging the far
@@ -407,12 +421,12 @@ function bindTreeClicks(el) {
       sel.clear(); fsel.clear();
       // A plain click is the anchor a later shift+click extends from -- the usual way in
       // is click-then-shift-click, and leaving the anchor null made that do nothing.
-      fselAnchor = path === "_inbox" ? null : path;
+      fselAnchor = path === "_inbox" || path === ROOT ? null : path;
       selected = path;
       if (childrenOf(path).length) expanded.add(path);
       renderTree(); renderMain(); syncSel();
     });
-    if (path !== "_inbox") n.addEventListener("contextmenu", (e) => { e.preventDefault(); openFolderMenu(e, path); });
+    if (path !== "_inbox" && path !== ROOT) n.addEventListener("contextmenu", (e) => { e.preventDefault(); openFolderMenu(e, path); });
   });
 }
 
@@ -429,23 +443,20 @@ function toggle(path) { expanded.has(path) ? expanded.delete(path) : expanded.ad
 async function renderMain() {
   const el = $("main");
   if (selected === "_inbox") { renderInbox(el); return; }
-  if (!tree.length) {
-    el.innerHTML = `<div class="empty">왼쪽에 파일을 끌어다 놓으면<br>Bismuth 가 읽고 폴더에 정리합니다.</div>`;
-    return;
-  }
   if (!selected) { el.innerHTML = `<div class="empty">왼쪽에서 폴더를 고르세요.</div>`; return; }
 
+  const atRoot = selected === ROOT;
   let detail;
-  try { detail = await api("/folder?path=" + encodeURIComponent(selected)); }
+  try { detail = await api("/folder?path=" + encodeURIComponent(atRoot ? "" : selected)); }
   catch (err) { el.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
 
   const parts = selected.split("/");
-  const crumb = parts.map((p, i) => {
+  const crumb = atRoot ? "전체" : parts.map((p, i) => {
     const path = parts.slice(0, i + 1).join("/");
     return i < parts.length - 1 ? `<a data-go="${esc(path)}">${esc(p)}</a>` : `<span>${esc(p)}</span>`;
   }).join(" / ");
 
-  const kids = childrenOf(selected);
+  const kids = atRoot ? topLevel() : childrenOf(selected);
   const note = detail.charter;
   const docs = detail.documents;
 
@@ -453,16 +464,17 @@ async function renderMain() {
   el.innerHTML = `
     <div class="crumb">${crumb}</div>
     <div style="display:flex;align-items:center;gap:10px">
-      <h2 style="flex:1">${esc(parts[parts.length - 1])}/</h2>
-      <button class="ghost danger-btn" data-del-folder="${esc(selected)}" data-count="${totalFiles}">폴더 삭제</button>
+      <h2 style="flex:1">${atRoot ? "전체" : esc(parts[parts.length - 1]) + "/"}</h2>
+      ${atRoot ? "" : `<button class="ghost danger-btn" data-del-folder="${esc(selected)}" data-count="${totalFiles}">폴더 삭제</button>`}
     </div>
+    ${atRoot && docs.length ? `<div class="note-box"><div class="k">아직 나뉘지 않음</div>문서가 더 쌓이면 Bismuth 가 여기서 구분을 찾아 폴더로 나눕니다. 그때까지는 여기 그대로 있습니다.</div>` : ""}
     ${note?.purpose ? `<div class="note-box"><div class="k">이 폴더</div>${esc(note.purpose)}
       ${note.answers?.length ? `<div style="margin-top:8px;font-size:13px;color:var(--dim)">${note.answers.map((a) => "· " + esc(a)).join("<br>")}</div>` : ""}</div>` : ""}
     ${kids.length ? `<div class="sect">하위 폴더</div>
       ${kids.map((k) => `<div class="doc" data-go="${esc(k.path)}"><div class="t">📁 ${esc(k.name)}</div>
         ${k.purpose ? `<div class="sm">${esc(k.purpose)}</div>` : ""}</div>`).join("")}` : ""}
     ${docs.length ? `<div class="sect">문서 ${docs.length}개</div>
-      ${docs.map(docRow).join("")}` : (kids.length ? "" : `<div class="empty" style="padding:32px 0">이 폴더에 문서가 없습니다.</div>`)}`;
+      ${docs.map(docRow).join("")}` : (kids.length ? "" : `<div class="empty" style="padding:32px 0">${atRoot ? "왼쪽에 파일을 끌어다 놓으면 Bismuth 가 읽고 정리합니다." : "이 폴더에 문서가 없습니다."}</div>`)}`;
 
   el.querySelectorAll("[data-go]").forEach((n) => n.addEventListener("click", () => {
     sel.clear();
@@ -884,10 +896,6 @@ async function upload(files) {
     }
     await refresh();
     setTimeout(() => box.remove(), 6000);
-    // Autonomous: after documents land, let the agent judge the folder they landed
-    // in. If it proposes a reorganisation, surface it -- the user never had to ask.
-    const landedFolders = [...new Set(results.filter((r) => r.ok && r.placed).map((r) => r.destination))];
-    if (landedFolders.length) autoReview(landedFolders[0]);
   } catch (err) {
     for (const f of files) jobs.delete(f.name);
     box.className = "up err";
@@ -940,18 +948,6 @@ $("btn-organize").addEventListener("click", async () => {
   } catch (err) { $("o-body").innerHTML = `<div class="err">${esc(err.message)}</div>`; }
 });
 $("o-close").addEventListener("click", () => $("organize").classList.add("hidden"));
-
-async function autoReview(folder) {
-  // Fired automatically after an upload. Only surfaces if the agent proposes moves;
-  // stays silent otherwise, so it never nags.
-  try {
-    const plan = await api("/organize/propose", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ folder }) });
-    if ((plan.moves || []).length || (plan.renames || []).length) {
-      $("organize").classList.remove("hidden");
-      renderPlan(plan);
-    }
-  } catch (e) { /* autonomous check — stay silent on failure */ }
-}
 
 function renderPlan(plan) {
   const moves = plan.moves || [];
