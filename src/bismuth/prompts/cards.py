@@ -28,9 +28,12 @@ notes, invoice, spec. Use the word this document's own field would use.
 4. `topics` are the few things this document is ABOUT -- a project or engagement, \
 a client or organisation, a subject, a period. What someone would say if asked \
 which drawer it belongs in. Two to five of them, in the document's own words. Do \
-not force a fixed set of categories; report what is actually there.
-5. `entities` are named things, and ONLY of the listed kinds. Write each name \
-exactly as the document writes it. Skip anything you are not sure is a real named \
+not force a fixed set of categories; report what is actually there. Each one is a \
+FILING LABEL of a few words -- "지연배상", "생태계서비스 평가". Never a sentence, a \
+list, or a description; if it would not fit on a folder tab it is not a topic.
+5. `entities` are named things, and ONLY of the listed kinds. ONE name per entry, \
+written exactly as the document writes it -- a bibliography is many entities or, \
+more often, none worth recording. Skip anything you are not sure is a real named \
 entity -- two right ones beat ten wrong ones.
 6. `answers_questions` are questions a colleague could answer using this document, \
 phrased as they would ask them. Be specific: "아폴로 지원 계약 기간이 얼마인가?" \
@@ -60,7 +63,10 @@ part adds something more important than what is already there, drop the weaker \
 material to make room.
 3. Report only what is NEW in `new_topics`, `new_entities`, `new_keywords` and \
 `new_questions`. Do not repeat anything already on the card -- it is kept, not \
-replaced. Nothing is ever removed, so add only what you are sure of.
+replaced. Nothing is ever removed, so add only what you are sure of. Each entry is \
+a short label of a few words, one thing per entry: a page of references or a list \
+of headings is not a topic and not an entity. When a part is nothing but \
+bibliography, boilerplate or contact details, add nothing and say so in `note`.
 4. `title` and `doc_type` are usually already right. Set them ONLY if this part \
 shows the earlier guess was wrong -- for instance the real title appears after a \
 cover page. Leave them null otherwise.
