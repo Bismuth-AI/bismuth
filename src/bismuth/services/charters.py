@@ -42,11 +42,15 @@ class CharterService:
         return Charter.from_markdown(self._vault.read_text(path), path=folder)
 
     def folder_views(self) -> list[tuple[str, str]]:
-        """Every folder as ``(path, purpose)``."""
+        """Every folder a document can be filed into, as ``(path, purpose)``.
+
+        The root is not listed. It is always available and the prompt says so; putting
+        it in the list would invite the model to treat it as one folder among many
+        rather than as the place documents sit before a distinction exists.
+        """
         views: list[tuple[str, str]] = []
         for folder in self._vault.iter_folders():
             if not folder.parts or folder.parts[0] == INBOX.parts[0]:
-                # Root and inbox are never filing destinations.
                 continue
             purpose = ""
             try:

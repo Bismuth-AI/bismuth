@@ -22,6 +22,7 @@ from bismuth.services.cards import CardService
 from bismuth.services.charters import CharterService
 from bismuth.services.placement import PlacementService
 from bismuth.services.sidecar import render_sidecar
+from bismuth.services.subdivision import SubdivisionService
 from bismuth.services.transactor import Transactor
 
 logger = logging.getLogger(__name__)
@@ -53,8 +54,10 @@ class IngestService:
         placement: PlacementService,
         charters: CharterService,
         transactor: Transactor,
+        subdivision: SubdivisionService | None = None,
         extraction_max_chars: int = 200_000,
     ) -> None:
+        self._subdivision = subdivision
         self._vault = vault
         self._catalog = catalog
         self._parsers = parsers
@@ -141,12 +144,12 @@ class IngestService:
         assert destination is not None
         # The full rationale is a paragraph and lives on the placement; a progress line
         # that long pushes every other step off the panel.
-        if placement.is_placed:
-            landed = f"{destination}{' (새 폴더)' if placement.created_folder else ''}"
-        elif placement.suggested is not None:
-            landed = f"인박스 — {placement.suggested} 를 제안했지만 확신 {placement.confidence:.0%}"
+        if not placement.is_placed:
+            landed = "인박스 — 읽지 못했습니다"
+        elif not destination.parts:
+            landed = "루트 — 아직 나눌 구분이 없습니다"
         else:
-            landed = f"인박스 — 확신 {placement.confidence:.0%}"
+            landed = f"{destination}{' (새 폴더)' if placement.created_folder else ''}"
         say(Stage.PLACED, note=landed)
 
         say(Stage.FILING)
@@ -164,6 +167,15 @@ class IngestService:
 
         say(Stage.NOTES)
         await self._reconcile_notes(placement)
+
+        # The other half of filing: this document may be the one that makes a
+        # distinction visible in the folder it landed in (SPEC.md 3.4).
+        if self._subdivision is not None:
+            divided = await self._subdivision.consider(
+                destination, filename=source.filename, on_progress=on_progress
+            )
+            for result in divided:
+                say(Stage.DIVIDED, note=f"{result.folder or '/'} → {len(result.created)}개")
 
         say(Stage.DONE, note=str(destination) or "/")
         return IngestResult(

@@ -11,9 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 class Verdict(StrEnum):
     PLACED = "placed"
     INBOX = "inbox"
-    """The document waits in the inbox instead of being guessed at: unreadable, or the
-    model was not sure enough. Expected to be uncommon -- if a vault is filling its inbox
-    the placement prompt is the thing to look at, not the threshold."""
+    """The document could not be read, so there is nothing to file it by. Not for
+    documents that are merely hard to sort -- those go to the root (SPEC.md 3.4)."""
 
 
 class Placement(BaseModel):
@@ -41,13 +40,6 @@ class Placement(BaseModel):
             "left no way to ask how close a parked document came without parsing prose."
         ),
     )
-    suggested: PurePosixPath | None = Field(
-        default=None,
-        description=(
-            "Where the model would have put it, when the verdict is INBOX and it named a "
-            "folder. Thrown away previously, which left the user re-deciding from nothing."
-        ),
-    )
     rationale: str = Field(
         default="",
         description="Why this folder, in a sentence a person can check against the document.",
@@ -58,18 +50,10 @@ class Placement(BaseModel):
         return self.verdict is Verdict.PLACED and self.target is not None
 
     @classmethod
-    def to_inbox(
-        cls,
-        document_id: str,
-        *,
-        reason: str,
-        confidence: float = 0.0,
-        suggested: PurePosixPath | None = None,
-    ) -> Placement:
+    def to_inbox(cls, document_id: str, *, reason: str, confidence: float = 0.0) -> Placement:
         return cls(
             document_id=document_id,
             verdict=Verdict.INBOX,
             rationale=reason,
             confidence=confidence,
-            suggested=suggested,
         )

@@ -41,7 +41,40 @@ class Charter(BaseModel):
         default=True,
         description="False for a note a human wrote. Bismuth reads those but never rewrites them.",
     )
+    split_basis: str = Field(
+        default="",
+        description=(
+            "The distinction this folder was divided along, in its own words. Empty when "
+            "it has never been divided. Read back when asking whether the division still "
+            "holds -- without it the only question available is 'how would you divide "
+            "this', which has an answer every time and so never settles."
+        ),
+    )
+    split_at_documents: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "How many documents were here when it was divided. The division is reconsidered "
+            "once that number has doubled: a judgement made from thirty is not worth "
+            "revisiting at thirty-one."
+        ),
+    )
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def divided(self) -> bool:
+        return bool(self.split_basis)
+
+    def due_for_review(self, documents_now: int) -> bool:
+        """Whether the evidence has doubled since this folder was divided.
+
+        Scheduling, not judgement: asking late costs a late fix, never a wrong tree
+        (SPEC.md 6.1). The ratio is to the folder's own history, so nothing here is
+        tuned to a corpus.
+        """
+        if not self.divided or self.split_at_documents <= 0:
+            return False
+        return documents_now >= self.split_at_documents * 2
 
     def to_markdown(self) -> str:
         meta: dict[str, Any] = {
@@ -53,6 +86,9 @@ class Charter(BaseModel):
             "holds": list(self.holds),
             "answers": list(self.answers),
         }
+        if self.divided:
+            meta["split_basis"] = self.split_basis
+            meta["split_at_documents"] = self.split_at_documents
         front = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False, default_flow_style=False)
         return f"---\n{front}---\n\n{self._render_body()}\n"
 
@@ -96,6 +132,8 @@ class Charter(BaseModel):
                 holds=tuple(str(x) for x in meta.get("holds") or ()),
                 answers=tuple(str(x) for x in meta.get("answers") or ()),
                 managed=bool(meta.get("managed", True)),
+                split_basis=str(meta.get("split_basis") or ""),
+                split_at_documents=int(meta.get("split_at_documents") or 0),
                 updated_at=_parse_datetime(meta.get("updated_at")),
             )
         except (KeyError, TypeError, ValueError) as exc:

@@ -177,7 +177,7 @@ class TestIngestProgress:
         assert parsing.note == "plain"
         assert "자" in parsed.note
 
-    async def test_parking_reports_the_suggestion_not_the_whole_rationale(
+    async def test_the_landing_step_never_carries_the_whole_rationale(
         self, engine: Bismuth, script: ScriptedModel, make_document: Callable[..., Path]
     ) -> None:
         """The rationale is a paragraph; a progress line that long buries every other step."""
@@ -197,8 +197,26 @@ class TestIngestProgress:
         )
 
         placed = next(p for p in seen if p.stage is Stage.PLACED)
-        assert placed.note == "인박스 — 환경/생태계 를 제안했지만 확신 12%"
+        # Low confidence no longer parks anything; it is filed and the number is recorded.
+        assert placed.note == "환경/생태계 (새 폴더)"
         assert len(placed.note) < 60
+
+    async def test_the_root_reads_as_a_destination_not_a_failure(
+        self, engine: Bismuth, script: ScriptedModel, make_document: Callable[..., Path]
+    ) -> None:
+        script.set(
+            placement_prompts.PlacementDecision,
+            placement_prompts.PlacementDecision(
+                folder="", existing=False, confidence=0.9, reason="아직 나눌 구분이 없습니다."
+            ),
+        )
+        seen: list[Progress] = []
+        source = make_document("첫문서.txt", "무언가")
+        await engine.ingest.process(
+            engine.ingest.stage(source.read_bytes(), source.name), on_progress=seen.append
+        )
+
+        assert next(p for p in seen if p.stage is Stage.PLACED).note.startswith("루트")
 
     async def test_the_final_step_says_where_it_landed(
         self, engine: Bismuth, make_document: Callable[..., Path]

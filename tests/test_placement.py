@@ -7,7 +7,6 @@ from pathlib import PurePosixPath
 import pytest
 
 from bismuth.adapters.llm.fake import FakeLLM
-from bismuth.config import Settings
 from bismuth.domain.document import DocumentCard
 from bismuth.domain.paths import sanitize_segment
 from bismuth.domain.placement import Verdict
@@ -74,69 +73,54 @@ def _decision(folder: str | None, *, confidence: float = 0.9):
 
 async def _decide(decision, **kwargs):
     llm = FakeLLM(queue=[decision])
-    service = PlacementService(llm, min_confidence=0.55)
-    return await service.decide(
+    return await PlacementService(llm).decide(
         document_id="doc1", card=_card(), folders=[], existing_paths=frozenset(), **kwargs
     )
 
 
 class TestPlacementService:
-    async def test_a_confident_folder_is_placed(self) -> None:
+    """There is no confidence threshold: not knowing where a document goes is answered
+    by the root, which is what "no distinction drawn yet" means (SPEC.md 3.4)."""
+
+    async def test_a_folder_is_placed(self) -> None:
         placement = await _decide(_decision("아폴로/2023"))
         assert placement.verdict is Verdict.PLACED
         assert placement.target == PurePosixPath("아폴로/2023")
+        assert placement.created_folder is True
 
-    async def test_null_declines_to_the_inbox(self) -> None:
+    async def test_the_empty_string_means_the_root(self) -> None:
+        placement = await _decide(_decision(""))
+
+        assert placement.verdict is Verdict.PLACED
+        assert placement.target == PurePosixPath()
+        # The root is not created by anybody; it is where things start.
+        assert placement.created_folder is False
+
+    async def test_null_is_the_only_road_to_the_inbox(self) -> None:
+        """Reserved for documents that could not be read at all."""
         placement = await _decide(_decision(None))
         assert placement.verdict is Verdict.INBOX
 
-    async def test_low_confidence_declines(self) -> None:
-        placement = await _decide(_decision("아폴로/2023", confidence=0.2))
-        assert placement.verdict is Verdict.INBOX
+    async def test_low_confidence_still_files_the_document(self) -> None:
+        placement = await _decide(_decision("아폴로/2023", confidence=0.02))
 
-    async def test_an_unusable_path_declines(self) -> None:
-        placement = await _decide(_decision("...///..."))
-        assert placement.verdict is Verdict.INBOX
+        assert placement.verdict is Verdict.PLACED
+        assert placement.target == PurePosixPath("아폴로/2023")
 
-    async def test_a_parked_document_keeps_the_number_it_was_parked_for(self) -> None:
-        """Tuning the threshold needs the figure as a figure, not inside a Korean sentence."""
-        placement = await _decide(_decision("환경/생태계", confidence=0.42))
-
-        assert placement.verdict is Verdict.INBOX
+    async def test_the_number_is_recorded_even_though_it_gates_nothing(self) -> None:
+        placement = await _decide(_decision("아폴로/2023", confidence=0.42))
         assert placement.confidence == pytest.approx(0.42)
-        assert "42%" in placement.rationale
 
-    async def test_a_parked_document_keeps_the_folder_the_model_wanted(self) -> None:
-        """The user re-deciding this by hand should not have to start from nothing."""
-        placement = await _decide(_decision("환경/생태계", confidence=0.42))
-        assert placement.suggested == PurePosixPath("환경/생태계")
+    async def test_an_unusable_path_falls_back_to_the_root(self) -> None:
+        placement = await _decide(_decision("...///..."))
 
-    async def test_the_suggestion_is_sanitised_like_a_real_target(self) -> None:
-        placement = await _decide(_decision("환경/../생태계", confidence=0.1))
-        assert placement.suggested == PurePosixPath("환경/생태계")
-
-    async def test_an_undecidable_document_has_no_suggestion(self) -> None:
-        placement = await _decide(_decision(None, confidence=0.3))
-        assert placement.suggested is None
-        assert placement.confidence == pytest.approx(0.3)
-
-    async def test_a_placed_document_has_no_suggestion_to_make(self) -> None:
-        placement = await _decide(_decision("아폴로/2023"))
-        assert placement.suggested is None
-        assert placement.confidence == pytest.approx(0.9)
-
-    async def test_the_default_threshold_matches_the_one_the_app_ships(self) -> None:
-        # The two drifting apart means direct callers are not testing shipped behaviour.
-        assert (
-            PlacementService(FakeLLM(queue=[]))._min_confidence
-            == Settings().placement_min_confidence
-        )
+        assert placement.verdict is Verdict.PLACED
+        assert placement.target == PurePosixPath()
 
     async def test_created_folder_is_flagged_against_the_existing_set(self) -> None:
         # Decided against the real folder set, not the model's own `existing` flag.
         llm = FakeLLM(queue=[_decision("아폴로/2023")])
-        service = PlacementService(llm)
-        placement = await service.decide(
+        placement = await PlacementService(llm).decide(
             document_id="d",
             card=_card(),
             folders=[("아폴로/2023", "기존")],

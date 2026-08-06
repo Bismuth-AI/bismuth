@@ -43,8 +43,30 @@ it in the broadest class that fits, **and when a class grows they split it.**
 
 | | |
 |---|---|
-| **Place** | Put a new document in the folder that fits, at the broadest level that is still right. Create one when nothing fits. |
-| **Subdivide** | When a folder has grown, split it into sub-folders along whatever distinction its own contents suggest. |
+| **Place** | Put a new document in the folder that fits. |
+| **Subdivide** | When a folder's contents show a distinction worth making, split it, move the documents into the new sub-folders, and correct the parent's name if it no longer describes them. |
+
+**The root is a folder like any other, and the first documents do not get one.**
+Classification is the drawing of a distinction, and one document offers nothing to
+distinguish. A folder named from a single document can hold that document and
+nothing else, and every document after it is then measured against that name.
+
+Measured, not reasoned: two runs over the same kind of corpus, differing only in
+which document arrived first. The run whose first document produced `연구논문/...`
+filed 8 of 11, because everything is a 연구논문 and siblings could be added under
+it. The run whose first document produced `미디어/...` filed 6 of 15, and the nine
+refusals all read "not related to media" — the model will add a sibling under an
+existing top-level folder but will not open a second top-level branch. The
+difference between the two trees was one document, not one line of code.
+
+So documents accumulate at the root until their number shows a distinction, and
+then the root subdivides like anything else. A ten-document vault with no folders
+is not an unfinished vault; it is what ten documents look like.
+
+This is not the waiting-inbox that [0007](0007-agentic-placement.md) removed.
+Nothing is deferred: the document is parsed, carded, given its sidecar and is
+searchable the moment it arrives. Only the *distinction* waits, and it waits on
+evidence rather than on a person.
 
 The second is what makes the first survivable. With subdivision, an early
 placement is **provisional** — wrong-but-broad is a recoverable state, and the
@@ -68,7 +90,9 @@ check the result from outside, not to make the decision inside.
 
 - **The first placement no longer has to be right,** only broad enough to be a
   recoverable mistake. This is a weaker requirement than 0007 placed on it, and
-  weaker requirements are what the model can actually meet.
+  weaker requirements are what the model can actually meet. For the earliest
+  documents the requirement disappears entirely — there is no decision to get
+  wrong, because there is no folder to put them in yet.
 - **Documents move after they were filed.** 0007's tree only grew; this one is
   rewritten in place as it learns. Every such move is journalled and reversible
   like any other change, so "the model reorganised something" is inspectable and

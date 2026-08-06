@@ -26,6 +26,7 @@ from bismuth.services.deletion import DeletionService
 from bismuth.services.ingest import IngestService
 from bismuth.services.move import MoveService
 from bismuth.services.placement import PlacementService
+from bismuth.services.subdivision import SubdivisionService
 from bismuth.services.transactor import Transactor
 
 
@@ -46,6 +47,7 @@ class Bismuth:
     cards: CardService
     charters: CharterService
     placement: PlacementService
+    subdivision: SubdivisionService
     ingest: IngestService
     deletion: DeletionService
     move: MoveService
@@ -91,8 +93,11 @@ def build(
         max_windows=settings.card_max_windows,
     )
     charters = CharterService(vault, model, catalog)
-    placement = PlacementService(model, min_confidence=settings.placement_min_confidence)
+    placement = PlacementService(model)
     move = MoveService(vault=vault, transactor=transactor, charters=charters)
+    subdivision = SubdivisionService(
+        vault=vault, catalog=catalog, charters=charters, transactor=transactor, llm=model
+    )
 
     return Bismuth(
         settings=settings,
@@ -106,6 +111,7 @@ def build(
         cards=cards,
         charters=charters,
         placement=placement,
+        subdivision=subdivision,
         ingest=IngestService(
             vault=vault,
             catalog=catalog,
@@ -114,6 +120,7 @@ def build(
             placement=placement,
             charters=charters,
             transactor=transactor,
+            subdivision=subdivision,
             extraction_max_chars=settings.extraction_max_chars,
         ),
         deletion=DeletionService(
