@@ -54,9 +54,12 @@ class Charter(BaseModel):
         default=0,
         ge=0,
         description=(
-            "How many documents were here when it was divided. The division is reconsidered "
-            "once that number has doubled: a judgement made from thirty is not worth "
-            "revisiting at thirty-one."
+            "How many documents were under here, at any depth, when it was divided. The "
+            "division is reconsidered once that number has doubled: a judgement made from "
+            "thirty is not worth revisiting at thirty-one. Counted through the subtree, not "
+            "directly: dividing empties the folder into its children, so a direct count "
+            "would drop to zero on the way out and the division would never be looked at "
+            "again however much grew beneath it."
         ),
     )
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -67,6 +70,8 @@ class Charter(BaseModel):
 
     def due_for_review(self, documents_now: int) -> bool:
         """Whether the evidence has doubled since this folder was divided.
+
+        ``documents_now`` is the count through the subtree, matching what was recorded.
 
         Scheduling, not judgement: asking late costs a late fix, never a wrong tree
         (SPEC.md 6.1). The ratio is to the folder's own history, so nothing here is

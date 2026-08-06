@@ -150,7 +150,9 @@ class SubdivisionService:
 
         purpose = charter.purpose if charter else ""
         divided_before = charter is not None and charter.divided
-        total = len(contents.documents)
+        # Through the subtree: dividing moves this folder's documents into its children,
+        # so a direct count collapses to nothing and the division is never looked at again.
+        total = self._vault.count_files(folder, recursive=True)
 
         if divided_before:
             assert charter is not None
@@ -291,7 +293,9 @@ class SubdivisionService:
         # The parent records what it was divided along, so the next look can ask whether
         # that still holds rather than starting from nothing.
         remaining = len(contents.documents) - moved
-        parent = self._parent_note(folder, charter, plan, documents=len(contents.documents))
+        parent = self._parent_note(
+            folder, charter, plan, documents=self._vault.count_files(folder, recursive=True)
+        )
         operations.append(
             Operation(
                 kind=OperationKind.WRITE, target=folder / CHARTER_FILENAME, note="folder note"
