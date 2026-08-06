@@ -1,5 +1,8 @@
 # Architecture decision records
 
+**These records answer *why*. What has to be true is in [SPEC.md](../../SPEC.md),
+which outranks them — an ADR that contradicts the spec is the one that is wrong.**
+
 Each file records one decision, what it costs, and what would make us change our
 minds. They are here because the interesting thing about this project is not the
 code — it is the handful of judgement calls the code is a consequence of, and
@@ -16,4 +19,5 @@ decision should be revisited. Superseded records stay; they are not deleted.
 | [0004](0004-llm-provider-abstraction.md) | Route by profile, not by model name |
 | [0005](0005-humans-choose-the-axis-order.md) | ~~The human chooses the axis order~~ (superseded by 0007) |
 | [0006](0006-bismuth-owns-its-configuration.md) | Bismuth owns its configuration; the app is the settings UI |
-| [0007](0007-agentic-placement.md) | Place agentically: the model reads the folder tree and picks or creates |
+| [0007](0007-agentic-placement.md) | Place agentically: the model reads the folder tree and picks or creates *(amended by 0008)* |
+| [0008](0008-place-broadly-then-subdivide.md) | Place broadly, then subdivide; a first placement is provisional |
