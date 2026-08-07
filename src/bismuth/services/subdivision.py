@@ -86,6 +86,29 @@ class SubdivisionService:
         self._transactor = transactor
         self._llm = llm
 
+    async def consider_with_ancestors(
+        self,
+        folder: PurePosixPath,
+        *,
+        filename: str = "",
+        on_progress: ProgressSink | None = None,
+    ) -> list[Divided]:
+        """Consider the folder a document landed in, then every folder above it.
+
+        Without the walk up, a top-level division is permanent. Once the root has
+        children, documents land in the children and the root is never passed here
+        again -- so the division it made when it held thirteen documents would still
+        be its division at ten thousand. The ancestors are all divided already, so
+        each is gated by the doubling rule and usually costs nothing.
+        """
+        results = await self.consider(folder, filename=filename, on_progress=on_progress)
+        parent = folder.parent
+        while folder.parts:
+            results.extend(await self.consider(parent, filename=filename, on_progress=on_progress))
+            folder = parent
+            parent = folder.parent
+        return results
+
     async def consider(
         self,
         folder: PurePosixPath,
@@ -149,17 +172,14 @@ class SubdivisionService:
             return None
 
         purpose = charter.purpose if charter else ""
-        divided_before = charter is not None and charter.divided
         # Through the subtree: dividing moves this folder's documents into its children,
         # so a direct count collapses to nothing and the division is never looked at again.
         total = self._vault.count_files(folder, recursive=True)
 
-        if divided_before:
-            assert charter is not None
-            if not charter.due_for_review(total):
-                # Scheduling, not judgement: a call made from thirty is not worth
-                # re-litigating at thirty-one (docs/spec/subdivision.md 5.3).
-                return None
+        # Two different jobs, and only the second may move a document that is already
+        # filed. Drawing a new class out of the loose pile is additive and safe to ask
+        # often; redrawing a boundary is not, and waits for the evidence to double.
+        if charter is not None and charter.divided and charter.due_for_review(total):
             report(
                 on_progress,
                 Progress(stage=Stage.REVIEWING, filename=filename, note=str(folder) or "/"),
@@ -186,39 +206,87 @@ class SubdivisionService:
                 holds=review.holds,
                 reason=review.reason,
             )
-            if review.holds:
-                return None
-            return prompts.Division(
-                divide=True,
-                basis=review.basis or charter.split_basis,
-                groups=review.groups,
-                rename_to=review.rename_to,
-                reason=review.reason,
-            )
+            if not review.holds:
+                return prompts.Division(
+                    divide=True,
+                    basis=review.basis or charter.split_basis,
+                    groups=review.groups,
+                    rename_to=review.rename_to,
+                    reason=review.reason,
+                )
+            # A holding review is still a judgement made at this size, and it has to be
+            # recorded as one. Left unwritten, the folder stays past its doubling for
+            # ever: it was asked on every ingest from then on -- fourteen times in a row
+            # on one run, all of them holding -- and, worse, the answer returned here so
+            # the folder was never asked what else had grown in it.
+            self._rearm(folder, charter, documents=total)
+
+        if not Charter.due_for_first_look(len(contents.documents)):
+            return None
 
         report(
             on_progress, Progress(stage=Stage.DIVIDING, filename=filename, note=str(folder) or "/")
         )
-        division = await self._llm.structured(
-            prompts.build_divide(
+
+        # One class at a time, never a partition. Asked to split a heterogeneous pile the
+        # model has to put the remainder somewhere, and it names it -- three runs produced
+        # `그 밖의 무관한 학술 논문`, `그 밖의 주제`, `기타 주제`, the last one while the
+        # prompt banned exactly those words. Nothing here can express "the rest".
+        emerging = await self._llm.structured(
+            prompts.build_emerging(
                 path=str(folder),
                 purpose=purpose,
                 documents=contents.lines,
                 children=contents.children,
             ),
-            schema=prompts.Division,
+            schema=prompts.Emerging,
             profile=ModelProfile.REASONING,
         )
         log_trace(
-            "subdivide.judge",
+            "subdivide.emerging",
             folder=str(folder),
-            documents=total,
-            divide=division.divide,
-            basis=division.basis,
-            groups=[g.name for g in division.groups],
-            reason=division.reason,
+            documents=len(contents.documents),
+            subtree=total,
+            emerged=emerging.emerged,
+            name=emerging.name,
+            reason=emerging.reason,
         )
-        return division if division.divide else None
+        if not emerging.emerged or not emerging.name.strip():
+            return None
+
+        members = await self._llm.structured(
+            prompts.build_members(
+                path=str(folder),
+                purpose=purpose,
+                documents=contents.lines,
+                children=contents.children,
+                name=emerging.name,
+                note=emerging.note,
+            ),
+            schema=prompts.Members,
+            profile=ModelProfile.REASONING,
+        )
+        log_trace(
+            "subdivide.members",
+            folder=str(folder),
+            name=emerging.name,
+            claimed=len(members.document_ids),
+            of=len(contents.documents),
+            reason=members.reason,
+        )
+        if not members.document_ids:
+            return None
+
+        return prompts.Division(
+            divide=True,
+            basis=f"자란 부류부터 하나씩 꺼냄 — 최근: {emerging.name}",
+            groups=[
+                prompts.Group(
+                    name=emerging.name, note=emerging.note, document_ids=members.document_ids
+                )
+            ],
+            reason=members.reason,
+        )
 
     def _apply(
         self,
@@ -329,6 +397,24 @@ class SubdivisionService:
             moved=moved,
             renamed_to=plan.rename_to or "",
             basis=plan.basis,
+        )
+
+    def _rearm(self, folder: PurePosixPath, charter: Charter, *, documents: int) -> None:
+        """Record that the division was upheld at this size, so the next look waits."""
+        held = charter.model_copy(update={"split_at_documents": documents})
+        self._transactor.execute(
+            JournalEntry(
+                actor=Actor.BISMUTH,
+                reason=f"division of {folder or '/'} still holds at {documents}",
+                operations=(
+                    Operation(
+                        kind=OperationKind.WRITE,
+                        target=folder / CHARTER_FILENAME,
+                        note="folder note",
+                    ),
+                ),
+            ),
+            payloads={folder / CHARTER_FILENAME: held.to_markdown().encode("utf-8")},
         )
 
     def _parent_note(
