@@ -16,16 +16,33 @@ from bismuth.domain.journal import Actor, JournalEntry, Operation, OperationKind
 from bismuth.domain.placement import Placement
 from bismuth.domain.progress import Progress, ProgressSink, Stage, report
 from bismuth.ports.catalog import Catalog
+from bismuth.ports.llm import CURRENT_DOCUMENT
 from bismuth.ports.parser import ParserRegistry
 from bismuth.ports.vault import INBOX, Vault
 from bismuth.services.cards import CardService
-from bismuth.services.charters import CharterService
+from bismuth.services.charters import ROOT_NOTE, CharterService
 from bismuth.services.placement import PlacementService
 from bismuth.services.sidecar import render_sidecar
 from bismuth.services.subdivision import SubdivisionService
 from bismuth.services.transactor import Transactor
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class Prepared:
+    """A document read and catalogued, not yet filed.
+
+    Produced without reading or writing the tree, which is what makes reading several
+    documents at once safe while filing them stays one at a time.
+    """
+
+    rel: PurePosixPath
+    source: SourceRef
+    card: DocumentCard | None = None
+    extraction: Extraction | None = None
+    duplicate_of: str = ""
+    """Set when these bytes were already in the catalog; then nothing was read."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +101,21 @@ class IngestService:
         self, rel: PurePosixPath, *, on_progress: ProgressSink | None = None
     ) -> IngestResult:
         """The whole loop for one document. Safe to call again on the same file."""
+        prepared = await self.prepare(rel, on_progress=on_progress)
+        return await self.file(prepared, on_progress=on_progress)
+
+    async def prepare(
+        self, rel: PurePosixPath, *, on_progress: ProgressSink | None = None
+    ) -> Prepared:
+        """Read a document and work out what it is. Reads no folder and writes nothing.
+
+        This half depends on the document and nothing else, so a caller may run it for
+        several documents at once; :meth:`file` may not (see there). It is also where
+        the run's time goes -- cataloguing is about two thirds of the calls a document
+        costs and the great majority of its tokens.
+        """
         source = await self._describe_source(rel)
+        CURRENT_DOCUMENT.set(source.document_id)
 
         def say(stage: Stage, **fields: object) -> None:
             report(
@@ -101,6 +132,51 @@ class IngestService:
 
         if existing := self._catalog.find_by_hash(source.sha256):
             logger.info("%s already ingested as %s; leaving it alone", rel, existing)
+            return Prepared(rel=rel, source=source, duplicate_of=existing)
+
+        say(Stage.PARSING, note=self._parser_name(rel))
+        extraction = await self._extract(rel)
+        # The window count rides on the reading events instead of being computed here:
+        # counting means slicing the whole text, and the first reading event is next anyway.
+        say(Stage.PARSED, note=_extent(extraction))
+
+        card = await self._cards.describe(
+            extraction,
+            filename=source.filename,
+            document_id=source.document_id,
+            on_progress=on_progress,
+        )
+        say(Stage.CARDED, note=f"{card.title} ({card.doc_type})", found=card.topics)
+        return Prepared(rel=rel, source=source, card=card, extraction=extraction)
+
+    async def file(
+        self, prepared: Prepared, *, on_progress: ProgressSink | None = None
+    ) -> IngestResult:
+        """Put a prepared document in the tree and let the tree react.
+
+        **This half must run one document at a time.** Placement answers against the
+        folder tree as it stands and subdivision then rewrites it, so two of these at
+        once would decide against the same stale tree and race for the same folders.
+        The order is load-bearing too: which tree a collection produces from a given
+        order is a property the archive is measured on (SPEC.md 3.5).
+        """
+        rel, source = prepared.rel, prepared.source
+        CURRENT_DOCUMENT.set(source.document_id)
+
+        def say(stage: Stage, **fields: object) -> None:
+            report(
+                on_progress,
+                Progress(
+                    stage=stage,
+                    filename=source.filename,
+                    document_id=source.document_id,
+                    **fields,  # type: ignore[arg-type]
+                ),
+            )
+
+        # Re-checked here and not only in prepare(): two copies read at the same time
+        # both miss the catalog, and this is the half that runs alone.
+        if existing := (prepared.duplicate_of or self._catalog.find_by_hash(source.sha256)):
             prior = self._catalog.load_placement(existing)
             # Report where the existing copy lives, not where this duplicate landed.
             where = (
@@ -117,19 +193,8 @@ class IngestService:
                 duplicate=True,
             )
 
-        say(Stage.PARSING, note=self._parser_name(rel))
-        extraction = await self._extract(rel)
-        # The window count rides on the reading events instead of being computed here:
-        # counting means slicing the whole text, and the first reading event is next anyway.
-        say(Stage.PARSED, note=_extent(extraction))
-
-        card = await self._cards.describe(
-            extraction,
-            filename=source.filename,
-            document_id=source.document_id,
-            on_progress=on_progress,
-        )
-        say(Stage.CARDED, note=f"{card.title} ({card.doc_type})", found=card.topics)
+        card, extraction = prepared.card, prepared.extraction
+        assert card is not None and extraction is not None  # only a duplicate lacks them
 
         folders = self._charters.folder_views()
         say(Stage.PLACING, steps=len(folders))
@@ -171,7 +236,7 @@ class IngestService:
         # The other half of filing: this document may be the one that makes a
         # distinction visible in the folder it landed in (SPEC.md 3.4).
         if self._subdivision is not None:
-            divided = await self._subdivision.consider(
+            divided = await self._subdivision.consider_with_ancestors(
                 destination, filename=source.filename, on_progress=on_progress
             )
             for result in divided:
@@ -261,7 +326,14 @@ class IngestService:
         ).encode("utf-8")
 
         if needs_note:
-            charter = await self._charters.draft(destination, cards=[card], total_count=1)
+            # The root is not a class and must not be described as one: its note is fixed
+            # (see charters.ROOT_NOTE), or the first document becomes what the vault is
+            # "about" for good.
+            charter = (
+                ROOT_NOTE
+                if not destination.parts
+                else await self._charters.draft(destination, cards=[card], total_count=1)
+            )
             operation, payload = self._charters.write_operation(charter)
             operations.append(operation)
             payloads[operation.target] = payload
