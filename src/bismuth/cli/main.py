@@ -339,7 +339,12 @@ def serve(
     if open_browser:
         _open_when_ready(url)
 
-    uvicorn.run(create_app(settings), host=bound_host, port=bound_port, log_level="warning")
+    uvicorn.run(
+        create_app(settings, verbose=_verbose),
+        host=bound_host,
+        port=bound_port,
+        log_level="warning",
+    )
 
 
 def _open_when_ready(url: str, *, timeout: float = 10.0) -> None:
