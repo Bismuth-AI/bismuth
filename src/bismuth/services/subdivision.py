@@ -32,10 +32,6 @@ from bismuth.services.transactor import Transactor
 
 logger = logging.getLogger(__name__)
 
-MAX_DEPTH = 8
-"""Backstop only. Termination comes from every child being strictly smaller than its
-parent; this catches a mistake in that argument before it catches a process."""
-
 
 @dataclass(frozen=True, slots=True)
 class Divided:
@@ -115,11 +111,10 @@ class SubdivisionService:
         *,
         filename: str = "",
         on_progress: ProgressSink | None = None,
-        depth: int = 0,
     ) -> list[Divided]:
-        """Divide ``folder`` if it should be, then consider whatever that created.
+        """Draw one class out of ``folder``, if one has grown in it.
 
-        Children are strictly smaller than their parent, so the recursion ends.
+        At most one folder is created per call, and never below the one it creates.
 
         ``filename`` is the document whose arrival prompted this, carried only so the
         progress events join that document's run rather than opening one of their own.
@@ -146,20 +141,13 @@ class SubdivisionService:
         if not divided.happened:
             return []
 
-        results = [divided]
-        if depth >= MAX_DEPTH:
-            # Every child is strictly smaller than its parent, so this cannot be reached
-            # by a well-behaved division. It is here so that a mistake in that argument
-            # costs a log line rather than a process.
-            logger.warning("stopped dividing below %s at depth %d", folder or "/", depth)
-            return results
-        for child in divided.created:
-            results.extend(
-                await self.consider(
-                    child, filename=filename, on_progress=on_progress, depth=depth + 1
-                )
-            )
-        return results
+        # What was just created is not considered here. It was formed a moment ago from a
+        # judgement over these same documents, and asking it again adds no evidence -- it
+        # only re-judges. That recursion was worth having when a schedule could leave a
+        # new folder unasked for a long time; every arrival asks now, so a child is
+        # looked at as soon as anything lands in it. Measured with the recursion still
+        # in: a single ingest built 철학/현상학/체화된 인지, one document per level.
+        return [divided]
 
     async def _judge(
         self,
@@ -319,6 +307,20 @@ class SubdivisionService:
                 continue
             target = folder / name
             if target == folder or self._vault.exists(target):
+                continue
+            if folder.name and name.casefold() == folder.name.casefold():
+                # A sub-folder has to distinguish something inside its parent, and one
+                # carrying the parent's own name distinguishes nothing. Asked what has
+                # grown in 철학, the model answers 철학 -- true, and useless. It is only
+                # caught below when the class takes every document; taking three of five
+                # is how 철학/철학 and 과학·기술 연구/과학·기술 연구 were built.
+                logger.info("division of %s proposed its own name; not a distinction", folder)
+                log_trace(
+                    "subdivide.rejected",
+                    folder=str(folder),
+                    reason="class carries the folder's own name",
+                    proposed=[group.name],
+                )
                 continue
 
             members = [
