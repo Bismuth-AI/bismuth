@@ -222,6 +222,21 @@ class SubdivisionService:
             self._rearm(folder, charter, documents=total)
 
         if not Charter.due_for_first_look(len(contents.documents)):
+            # Said out loud, because otherwise a folder that was never asked and a
+            # folder that was asked and declined leave the same trace: none.
+            divided = charter is not None and charter.divided
+            log_trace(
+                "subdivide.skipped",
+                folder=str(folder),
+                documents=len(contents.documents),
+                subtree=total,
+                reason="not at a power of two",
+                next_at=_next_power_of_two(len(contents.documents)),
+                divided=divided,
+                # Both schedules, because "why did nothing happen here" is usually one
+                # of the two and the answer should not need the source to work out.
+                review_due_at=(charter.split_at_documents * 2 if divided and charter else None),
+            )
             return None
 
         report(
@@ -496,6 +511,14 @@ class SubdivisionService:
         except BismuthError as exc:
             logger.warning("unreadable folder note at %s: %s", folder or "/", exc)
             return None
+
+
+def _next_power_of_two(documents: int) -> int:
+    """The size this folder will next be asked at. For the trace, not for a decision."""
+    size = 2
+    while size <= documents:
+        size *= 2
+    return size
 
 
 def _describe(card: DocumentCard) -> str:
