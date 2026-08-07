@@ -1,4 +1,4 @@
-"""Dividing a folder: when it happens, what it moves, and what stops it repeating."""
+"""Drawing a class out of a folder: when it happens, what it moves, what it leaves."""
 
 from __future__ import annotations
 
@@ -16,14 +16,30 @@ def _group(name: str, note: str, ids: list[str]) -> subdivision_prompts.Group:
     return subdivision_prompts.Group(name=name, note=note, document_ids=ids)
 
 
-def _ids(engine: Bismuth) -> list[str]:
-    """Document ids ordered by filename, so doc0 is ids[0]. The catalog iterates in
-    hash order, which would make every assertion below a coin flip."""
-    by_name = {
+def _emerges(script: ScriptedModel, name: str, note: str, ids: list[str]) -> None:
+    """Script a class coming out of the pile: its name, then who belongs to it."""
+    script.set(
+        subdivision_prompts.Emerging,
+        subdivision_prompts.Emerging(emerged=True, name=name, note=note, reason="이 부류가 두껍습니다."),
+    )
+    script.set(
+        subdivision_prompts.Members,
+        subdivision_prompts.Members(document_ids=ids, reason="이 사인 아래 놓입니다."),
+    )
+
+
+def _by_name(engine: Bismuth) -> dict[str, str]:
+    return {
         source.filename: document_id
         for document_id, _ in engine.catalog.iter_cards()
         if (source := engine.catalog.load_source(document_id)) is not None
     }
+
+
+def _ids(engine: Bismuth) -> list[str]:
+    """Document ids ordered by filename, so doc0 is ids[0]. The catalog iterates in
+    hash order, which would make every assertion below a coin flip."""
+    by_name = _by_name(engine)
     return [by_name[name] for name in sorted(by_name)]
 
 
@@ -36,11 +52,11 @@ async def _fill(engine: Bismuth, script: ScriptedModel, count: int) -> list[str]
 
 
 class TestDivideDecision:
-    async def test_nothing_happens_when_there_is_no_distinction(
+    async def test_nothing_happens_when_nothing_has_gathered(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        """The scripted default is "no division"; a young folder stays flat."""
-        await _fill(engine, script, 3)
+        """The scripted default is "nothing emerged"; a young folder stays flat."""
+        await _fill(engine, script, 4)
 
         assert not (engine.vault.root / "문학").exists()
         assert (engine.vault.root / "doc0.txt").is_file()
@@ -51,11 +67,11 @@ class TestDivideDecision:
         llm,  # type: ignore[no-untyped-def]
     ) -> None:
         await engine.subdivision.consider(PurePosixPath())
-        assert not llm.prompts_for(subdivision_prompts.Division)
+        assert not llm.prompts_for(subdivision_prompts.Emerging)
 
     async def test_the_inbox_is_not_a_category(self, engine: Bismuth, llm) -> None:  # type: ignore[no-untyped-def]
         await engine.subdivision.consider(PurePosixPath("_inbox"))
-        assert not llm.prompts_for(subdivision_prompts.Division)
+        assert not llm.prompts_for(subdivision_prompts.Emerging)
 
     async def test_a_human_written_note_is_left_alone(
         self,
@@ -71,68 +87,81 @@ class TestDivideDecision:
 
         await engine.subdivision.consider(PurePosixPath())
 
-        assert not llm.prompts_for(subdivision_prompts.Division)
+        assert not llm.prompts_for(subdivision_prompts.Emerging)
 
-
-class TestDividing:
-    async def test_documents_move_into_the_new_folders(
+    async def test_naming_a_class_but_claiming_nobody_creates_nothing(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        ids = await _fill(engine, script, 3)
-        script.set(
-            subdivision_prompts.Division,
-            subdivision_prompts.Division(
-                divide=True,
-                basis="주제",
-                groups=[_group("문학", "문학 자료", ids[:2]), _group("과학", "과학 자료", ids[2:])],
-                reason="주제가 둘로 갈립니다.",
-            ),
-        )
+        await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료", [])
+
+        assert await engine.subdivision.consider(PurePosixPath()) == []
+        assert not (engine.vault.root / "문학").exists()
+
+
+class TestDrawingOutAClass:
+    async def test_the_documents_of_that_class_move_into_it(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료", ids[:2])
 
         divided = await engine.subdivision.consider(PurePosixPath())
 
         assert len(divided) == 1
-        assert divided[0].moved == 3
+        assert divided[0].moved == 2
         assert (engine.vault.root / "문학").is_dir()
-        assert (engine.vault.root / "과학").is_dir()
         # Existing documents are re-filed, not just future ones (SPEC.md 3.4).
         assert not (engine.vault.root / "doc0.txt").exists()
+
+    async def test_the_rest_stay_and_are_given_no_name(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """The whole point. A partition has to account for every document, so the
+        leftovers get a folder called "everything else"; drawing one class out cannot
+        express that, and SPEC.md 3.4 says they stay in the parent."""
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        folders = [
+            p.name
+            for p in engine.vault.root.iterdir()
+            if p.is_dir() and p.name not in ("_inbox", ".bismuth")
+        ]
+        assert folders == ["문학"]  # no sibling was invented to hold doc2 and doc3
+        assert (engine.vault.root / "doc2.txt").is_file()
+        assert (engine.vault.root / "doc3.txt").is_file()
+
+    async def test_one_look_can_only_produce_one_folder(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """The structural half of the fix: a reply carries one name, so a single look
+        cannot lay down a class and a bucket for what it did not cover."""
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+
+        divided = await engine.subdivision.consider(PurePosixPath())
+
+        assert divided[0].created == (PurePosixPath("문학"),)
 
     async def test_the_sidecar_travels_with_its_document(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await _fill(engine, script, 2)
-        script.set(
-            subdivision_prompts.Division,
-            subdivision_prompts.Division(
-                divide=True,
-                basis="주제",
-                groups=[_group("문학", "문학", ids[:1]), _group("과학", "과학", ids[1:])],
-                reason="r",
-            ),
-        )
+        _emerges(script, "문학", "문학", ids[:1])
 
         await engine.subdivision.consider(PurePosixPath())
 
         assert (engine.vault.root / "문학/doc0.txt.md").is_file()
         assert not (engine.vault.root / "doc0.txt.md").exists()
 
-    async def test_each_new_folder_gets_a_note_that_distinguishes_it(
+    async def test_the_new_folder_gets_a_note_that_distinguishes_it(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await _fill(engine, script, 2)
-        script.set(
-            subdivision_prompts.Division,
-            subdivision_prompts.Division(
-                divide=True,
-                basis="주제",
-                groups=[
-                    _group("문학", "소설과 시. 과학 자료가 아닌 것.", ids[:1]),
-                    _group("과학", "실험과 논문.", ids[1:]),
-                ],
-                reason="r",
-            ),
-        )
+        _emerges(script, "문학", "소설과 시. 과학 자료가 아닌 것.", ids[:1])
 
         await engine.subdivision.consider(PurePosixPath())
 
@@ -140,35 +169,11 @@ class TestDividing:
         assert charter is not None
         assert charter.purpose == "소설과 시. 과학 자료가 아닌 것."
 
-    async def test_a_document_in_no_group_stays_put(
-        self, engine: Bismuth, script: ScriptedModel
-    ) -> None:
-        ids = await _fill(engine, script, 3)
-        script.set(
-            subdivision_prompts.Division,
-            subdivision_prompts.Division(
-                divide=True, basis="주제", groups=[_group("문학", "문학", ids[:2])], reason="r"
-            ),
-        )
-
-        divided = await engine.subdivision.consider(PurePosixPath())
-
-        assert divided[0].moved == 2
-        assert (engine.vault.root / "doc2.txt").is_file()  # left behind, on purpose
-
-    async def test_dividing_is_one_undoable_batch(
+    async def test_drawing_a_class_out_is_one_undoable_batch(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await _fill(engine, script, 2)
-        script.set(
-            subdivision_prompts.Division,
-            subdivision_prompts.Division(
-                divide=True,
-                basis="주제",
-                groups=[_group("문학", "문학", ids[:1]), _group("과학", "과학", ids[1:])],
-                reason="r",
-            ),
-        )
+        _emerges(script, "문학", "문학", ids[:1])
         await engine.subdivision.consider(PurePosixPath())
 
         entry = next(e for e in engine.journal.iter_entries() if "divide" in e.reason)
@@ -181,20 +186,12 @@ class TestDividing:
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await _fill(engine, script, 2)
-        script.set(
-            subdivision_prompts.Division,
-            subdivision_prompts.Division(
-                divide=True,
-                basis="주제",
-                groups=[_group("...", "쓸 수 없는 이름", ids[:1]), _group("문학", "문학", ids[1:])],
-                reason="r",
-            ),
-        )
+        _emerges(script, "...", "쓸 수 없는 이름", ids[:1])
 
         divided = await engine.subdivision.consider(PurePosixPath())
 
-        assert divided[0].moved == 1
-        assert (engine.vault.root / "문학").is_dir()
+        assert divided == []
+        assert (engine.vault.root / "doc0.txt").is_file()
 
 
 class TestRemembering:
@@ -204,21 +201,13 @@ class TestRemembering:
         """Without this the only question available later is "how would you divide
         this", which has an answer every time and so never settles."""
         ids = await _fill(engine, script, 4)
-        script.set(
-            subdivision_prompts.Division,
-            subdivision_prompts.Division(
-                divide=True,
-                basis="주제 분야",
-                groups=[_group("문학", "문학", ids[:2]), _group("과학", "과학", ids[2:])],
-                reason="r",
-            ),
-        )
+        _emerges(script, "문학", "문학", ids[:2])
 
         await engine.subdivision.consider(PurePosixPath())
 
         charter = engine.charters.load(PurePosixPath())
         assert charter is not None
-        assert charter.split_basis == "주제 분야"
+        assert "문학" in charter.split_basis
         assert charter.split_at_documents == 4
         assert charter.divided
 
@@ -240,27 +229,19 @@ class TestReview:
     async def test_a_divided_folder_is_measured_through_its_subtree(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        """Dividing empties a folder into its children. Counting only what sits directly
-        in it would drop to zero on the way out, and the division would never be looked
-        at again however much grew underneath."""
+        """Dividing moves documents into a child. Counting only what sits directly in the
+        parent would undercount on the way out, and the division would be looked at again
+        far too early."""
         ids = await _fill(engine, script, 4)
-        script.set(
-            subdivision_prompts.Division,
-            subdivision_prompts.Division(
-                divide=True,
-                basis="주제",
-                groups=[_group("문학", "문학", ids[:2]), _group("과학", "과학", ids[2:])],
-                reason="r",
-            ),
-        )
+        _emerges(script, "문학", "문학", ids[:2])
 
         await engine.subdivision.consider(PurePosixPath())
 
         charter = engine.charters.load(PurePosixPath())
         assert charter is not None
-        # Four, not zero: all four are still under the root, just a level down now.
+        # Four, not the two still sitting loose: the pair that moved is a level down but
+        # still under the root, and the doubling rule is measured against all of it.
         assert charter.split_at_documents == 4
-        assert engine.vault.count_files(PurePosixPath(), recursive=False) == 0
 
     def test_an_undivided_folder_is_never_due(self) -> None:
         charter = Charter(path=PurePosixPath("문학"), title="문학", purpose="p")
@@ -275,32 +256,81 @@ class TestReview:
     ) -> None:
         """Not "how would you divide this" -- that has an answer every time."""
         ids = await _fill(engine, script, 2)
-        script.set(
-            subdivision_prompts.Division,
-            subdivision_prompts.Division(
-                divide=True, basis="주제", groups=[_group("문학", "문학", ids[:1])], reason="r"
-            ),
-        )
+        _emerges(script, "문학", "문학", ids[:1])
         await engine.subdivision.consider(PurePosixPath())  # divided at 2
         llm.calls.clear()
 
-        # Back to 2 loose documents at the root would be under the bar; push past it.
         script.set(placement_prompts.PlacementDecision, place_at(""))
         for index in range(4):
             await add(engine, f"more{index}.txt", f"추가 문서 {index}")
 
         assert llm.prompts_for(subdivision_prompts.Review)
 
+    async def test_a_holding_review_re_arms_the_doubling(
+        self,
+        engine: Bismuth,
+        script: ScriptedModel,
+        llm,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """Upholding a division is a judgement made at this size and is recorded as one.
+        Unrecorded, the folder stays past its doubling for ever and is asked on every
+        single ingest from then on -- and, worse, that answer used to end the look, so
+        the folder was never asked what else had grown in it."""
+        ids = await _fill(engine, script, 2)
+        _emerges(script, "문학", "문학", ids[:1])
+        await engine.subdivision.consider(PurePosixPath())  # divided, recorded at 2
+
+        script.set(placement_prompts.PlacementDecision, place_at(""))
+        for index in range(4):
+            await add(engine, f"more{index}.txt", f"추가 문서 {index}")
+
+        charter = engine.charters.load(PurePosixPath())
+        assert charter is not None
+        assert charter.split_at_documents > 2  # moved up with the holding review
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+        assert not llm.prompts_for(subdivision_prompts.Review)  # not due again yet
+
+    async def test_a_holding_review_still_lets_a_new_class_come_out(
+        self,
+        engine: Bismuth,
+        script: ScriptedModel,
+        llm,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """The two questions are different jobs. "The old split still holds" must not
+        answer "has anything new grown here", or the folder freezes at the size it was
+        first divided at -- measured: nineteen of twenty-nine documents stranded."""
+        ids = await _fill(engine, script, 2)
+        _emerges(script, "문학", "문학", ids[:1])
+        await engine.subdivision.consider(PurePosixPath())
+
+        script.set(placement_prompts.PlacementDecision, place_at(""))
+        for index in range(3):
+            await add(engine, f"more{index}.txt", f"추가 문서 {index}")
+
+        # Force the root well past its doubling so the review certainly runs first.
+        root = engine.charters.load(PurePosixPath())
+        assert root is not None
+        (engine.vault.root / "_folder.md").write_text(
+            root.model_copy(update={"split_at_documents": 1}).to_markdown(), encoding="utf-8"
+        )
+
+        # doc0 went into 문학; these two are still loose at the root.
+        by_name = _by_name(engine)
+        _emerges(script, "과학", "과학 자료", [by_name["more0.txt"], by_name["more1.txt"]])
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert llm.prompts_for(subdivision_prompts.Review)  # the review did run
+        assert (engine.vault.root / "과학").is_dir()  # and did not swallow the other question
+
     async def test_a_holding_review_moves_nothing(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await _fill(engine, script, 2)
-        script.set(
-            subdivision_prompts.Division,
-            subdivision_prompts.Division(
-                divide=True, basis="주제", groups=[_group("문학", "문학", ids[:1])], reason="r"
-            ),
-        )
+        _emerges(script, "문학", "문학", ids[:1])
         await engine.subdivision.consider(PurePosixPath())
         before = sorted(p.name for p in engine.vault.root.iterdir())
 
@@ -313,18 +343,13 @@ class TestReview:
 
 
 class TestTermination:
-    async def test_one_group_holding_everything_is_not_a_division(
+    async def test_a_class_that_takes_everything_is_not_a_division(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         """It only moves the folder a level deeper, leaving the same problem at the same
         size -- which recurses for ever."""
-        ids = await _fill(engine, script, 3)
-        script.set(
-            subdivision_prompts.Division,
-            subdivision_prompts.Division(
-                divide=True, basis="주제", groups=[_group("문학", "전부", ids)], reason="r"
-            ),
-        )
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "전부", ids)
 
         divided = await engine.subdivision.consider(PurePosixPath())
 
@@ -332,25 +357,16 @@ class TestTermination:
         assert not (engine.vault.root / "문학").exists()
         assert (engine.vault.root / "doc0.txt").is_file()
 
-    async def test_a_real_division_recurses_into_what_it_made(
+    async def test_what_was_drawn_out_is_itself_considered(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        """A child is strictly smaller than its parent, so this ends on its own."""
+        """A child is strictly smaller than its parent, so this ends on its own: the new
+        folder is asked in turn, and a class over its whole contents is refused above."""
         ids = await _fill(engine, script, 4)
-        script.set(
-            subdivision_prompts.Division,
-            subdivision_prompts.Division(
-                divide=True,
-                basis="주제",
-                groups=[_group("문학", "문학", ids[:2]), _group("과학", "과학", ids[2:])],
-                reason="r",
-            ),
-        )
+        _emerges(script, "문학", "문학", ids[:2])
 
         divided = await engine.subdivision.consider(PurePosixPath())
 
-        # Root divided; each child was then considered and, being a single group over
-        # its whole contents, correctly refused to divide further.
         assert len(divided) == 1
         assert (engine.vault.root / "문학/doc0.txt").is_file()
-        assert (engine.vault.root / "과학/doc2.txt").is_file()
+        assert (engine.vault.root / "문학/doc1.txt").is_file()

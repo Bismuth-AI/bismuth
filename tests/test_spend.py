@@ -74,10 +74,11 @@ class TestSpendOverHttp:
             for name in ("a.txt", "b.txt", "c.txt")
         ]
 
-        # The first costs more: it creates the folder tree, which is an extra call. From
-        # there it is steady state, and steady is the thing accumulation would break.
-        assert counts[1] == counts[2]
-        assert counts[1] < sum(counts[:2])
+        # Per-document cost is not uniform and is not meant to be: the first builds the
+        # tree, and subdivision is asked on a doubling schedule rather than every time.
+        # What must hold is that nobody pays for the documents before them.
+        assert counts[2] < sum(counts[:2])
+        assert counts[2] <= max(counts[:2])
 
     def test_a_duplicate_costs_almost_nothing(self, client: TestClient) -> None:
         payload = {"files": ("계약.txt", "같은 바이트".encode(), "text/plain")}
