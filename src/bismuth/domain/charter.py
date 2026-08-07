@@ -68,25 +68,15 @@ class Charter(BaseModel):
     def divided(self) -> bool:
         return bool(self.split_basis)
 
-    @staticmethod
-    def due_for_first_look(documents_now: int) -> bool:
-        """Whether an undivided folder is worth asking about at this size.
-
-        Powers of two, which is the doubling rule already used for review with no state
-        to keep: ask at 2, 4, 8, 16. Asking on every arrival is thirteen chances to say
-        yes about the same thirteen documents, and a judgement asked often enough
-        eventually slips -- which is how a folder of unrelated papers acquired a sign
-        reading "everything else".
-
-        Scheduling, not judgement (SPEC.md 6.1): asking late costs a late division,
-        never a wrong one.
-        """
-        return documents_now >= 2 and documents_now & (documents_now - 1) == 0
-
     def due_for_review(self, documents_now: int) -> bool:
         """Whether the evidence has doubled since this folder was divided.
 
         ``documents_now`` is the count through the subtree, matching what was recorded.
+
+        This rations the one question that may move a document that is already filed.
+        Growing a new class out of the loose pile is not rationed at all: it was, on a
+        power-of-two schedule, and a thirty-document archive got four questions -- all
+        of them early, all correctly declined, and none after the sixteenth document.
 
         Scheduling, not judgement: asking late costs a late fix, never a wrong tree
         (SPEC.md 6.1). The ratio is to the folder's own history, so nothing here is

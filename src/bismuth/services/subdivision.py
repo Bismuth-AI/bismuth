@@ -131,7 +131,10 @@ class SubdivisionService:
         charter = self._charter(folder)
 
         if charter is not None and not charter.managed:
-            return []  # a human wrote this note; their structure is not ours to redraw
+            # A human wrote this note; their structure is not ours to redraw. Traced
+            # because "nothing happened here" should never need the source to explain.
+            log_trace("subdivide.skipped", folder=str(folder), reason="folder note is not managed")
+            return []
 
         plan = await self._judge(
             folder, contents, charter, filename=filename, on_progress=on_progress
@@ -169,6 +172,7 @@ class SubdivisionService:
     ) -> prompts.Division | None:
         """Ask the model. Returns None when there is nothing to ask about."""
         if not contents.documents:
+            log_trace("subdivide.skipped", folder=str(folder), reason="nothing sitting here")
             return None
 
         purpose = charter.purpose if charter else ""
@@ -221,28 +225,19 @@ class SubdivisionService:
             # the folder was never asked what else had grown in it.
             self._rearm(folder, charter, documents=total)
 
-        if not Charter.due_for_first_look(len(contents.documents)):
-            # Said out loud, because otherwise a folder that was never asked and a
-            # folder that was asked and declined leave the same trace: none.
-            divided = charter is not None and charter.divided
-            log_trace(
-                "subdivide.skipped",
-                folder=str(folder),
-                documents=len(contents.documents),
-                subtree=total,
-                reason="not at a power of two",
-                next_at=_next_power_of_two(len(contents.documents)),
-                divided=divided,
-                # Both schedules, because "why did nothing happen here" is usually one
-                # of the two and the answer should not need the source to work out.
-                review_due_at=(charter.split_at_documents * 2 if divided and charter else None),
-            )
-            return None
-
         report(
             on_progress, Progress(stage=Stage.DIVIDING, filename=filename, note=str(folder) or "/")
         )
 
+        # Asked on every arrival, and it is the arrival that makes it worth asking. A
+        # power-of-two schedule was tried: the root of a thirty-document archive was asked
+        # at 2, 4, 8 and 16, declined all four -- correctly, the classes had not gathered
+        # yet -- and then waited for a thirty-second document that never came. Fourteen
+        # documents arrived unasked and nothing was ever filed. The schedule was built for
+        # the old question, "how would you divide this", which has an answer every time
+        # and so slipped into yes if asked often enough. This one declines and keeps
+        # declining, so there is nothing to ration.
+        #
         # One class at a time, never a partition. Asked to split a heterogeneous pile the
         # model has to put the remainder somewhere, and it names it -- three runs produced
         # `그 밖의 무관한 학술 논문`, `그 밖의 주제`, `기타 주제`, the last one while the
@@ -511,14 +506,6 @@ class SubdivisionService:
         except BismuthError as exc:
             logger.warning("unreadable folder note at %s: %s", folder or "/", exc)
             return None
-
-
-def _next_power_of_two(documents: int) -> int:
-    """The size this folder will next be asked at. For the trace, not for a decision."""
-    size = 2
-    while size <= documents:
-        size *= 2
-    return size
 
 
 def _describe(card: DocumentCard) -> str:
