@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from bismuth.ports.llm import CURRENT_DOCUMENT
 
 LOG_DIR = Path("logs")
 
@@ -76,9 +79,21 @@ def _attach_jsonl(logger_name: str, path: Path) -> None:
     logger.propagate = False
 
 
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
 def log_llm_call(record: dict[str, Any]) -> None:
-    """Append one model call as a JSON line. Called by the LLM adapter."""
-    logging.getLogger(LLM_LOGGER).debug("llm", extra={"record": record})
+    """Append one model call as a JSON line. Called by the LLM adapter.
+
+    Carries the document so this file can be joined to the trace. Line order used to
+    say which document a call belonged to; documents are now read several at a time,
+    and it does not.
+    """
+    logging.getLogger(LLM_LOGGER).debug(
+        "llm",
+        extra={"record": {"t": _now(), "document_id": CURRENT_DOCUMENT.get(""), **record}},
+    )
 
 
 def log_trace(event: str, **fields: Any) -> None:
@@ -86,5 +101,15 @@ def log_trace(event: str, **fields: Any) -> None:
 
     Every call must be reconstructible on its own: pass the ids, the inputs and the
     outcome, not a sentence about them.
+
+    ``t`` is stamped here rather than left to line order, which stopped meaning
+    chronological order when reading went concurrent.
+
+    ``document_id`` is filled in from the document being worked on unless the caller
+    passes one. Filtering by it is meant to reconstruct a whole run, and the lines that
+    did not carry it -- every subdivision decision -- were exactly the ones worth
+    reading when a document ends up somewhere surprising.
     """
-    logging.getLogger(TRACE_LOGGER).debug(event, extra={"record": {"event": event, **fields}})
+    record = {"t": _now(), "event": event, **fields}
+    record.setdefault("document_id", CURRENT_DOCUMENT.get(""))
+    logging.getLogger(TRACE_LOGGER).debug(event, extra={"record": record})
