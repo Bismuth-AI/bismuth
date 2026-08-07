@@ -9,6 +9,7 @@ from agentkit import ChatModel
 
 from bismuth.adapters.catalog import FileCatalog
 from bismuth.adapters.journal import JOURNAL_FILENAME, JsonlJournal
+from bismuth.adapters.ledger import LEDGER_FILENAME, JsonlSpendLedger
 from bismuth.adapters.llm import LiteLLMAdapter
 from bismuth.adapters.llm.chat import LiteLLMChatModel
 from bismuth.adapters.parsers import build_registry
@@ -16,6 +17,7 @@ from bismuth.adapters.vault import FileSystemVault
 from bismuth.config import Settings
 from bismuth.ports.catalog import Catalog
 from bismuth.ports.journal import JournalStore
+from bismuth.ports.ledger import SpendLedger
 from bismuth.ports.llm import LLM, ModelProfile
 from bismuth.ports.parser import ParserRegistry
 from bismuth.ports.vault import STATE_DIR, Vault
@@ -42,6 +44,8 @@ class Bismuth:
     vault: Vault
     catalog: Catalog
     journal: JournalStore
+    ledger: SpendLedger
+    """What this vault has cost so far. Survives the tab that spent it."""
     parsers: ParserRegistry
     transactor: Transactor
     cards: CardService
@@ -66,6 +70,7 @@ def build(
     state = Path(vault.root) / STATE_DIR
 
     journal = JsonlJournal(state / JOURNAL_FILENAME)
+    ledger = JsonlSpendLedger(state / LEDGER_FILENAME)
     catalog = FileCatalog(state)
     parsers = build_registry()
 
@@ -107,6 +112,7 @@ def build(
         vault=vault,
         catalog=catalog,
         journal=journal,
+        ledger=ledger,
         parsers=parsers,
         transactor=transactor,
         cards=cards,
