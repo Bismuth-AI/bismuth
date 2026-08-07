@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from bismuth.container import Bismuth
+from bismuth.domain.charter import Charter
 from bismuth.logging_setup import configure_logging, log_llm_call, log_trace
 from bismuth.ports.llm import CURRENT_DOCUMENT
 from bismuth.prompts import placement as placement_prompts
@@ -95,17 +96,34 @@ class TestPlacement:
 
 
 class TestSilence:
-    async def test_a_folder_that_was_not_asked_says_so(
+    async def test_every_arrival_asks(
         self, engine: Bismuth, script: ScriptedModel, logs: Path
     ) -> None:
-        """Not asked and asked-then-declined used to look identical: no line at all."""
+        """A power-of-two schedule asked the root of a thirty-document archive four
+        times, all of them early, and never again after the sixteenth document. Nothing
+        was ever filed. Arrival is what makes the question worth asking."""
+        script.set(placement_prompts.PlacementDecision, place_at(""))
+        for index in range(3):
+            await add(engine, f"doc{index}.txt", f"문서 {index}")
+
+        asked = [
+            line for line in _lines(logs / "trace.jsonl") if line["event"] == "subdivide.emerging"
+        ]
+
+        assert [line["documents"] for line in asked] == [1, 2, 3]
+
+    async def test_a_folder_left_alone_says_why(
+        self, engine: Bismuth, script: ScriptedModel, logs: Path
+    ) -> None:
+        """Not asked and asked-then-declined must not look identical."""
         script.set(placement_prompts.PlacementDecision, place_at(""))
         await add(engine, "one.txt", "문서 하나")
+        note = Charter(path=PurePosixPath(), title="내 서재", purpose="직접 정리함", managed=False)
+        (engine.vault.root / "_folder.md").write_text(note.to_markdown(), encoding="utf-8")
+
+        await engine.subdivision.consider(PurePosixPath())
 
         skipped = [
             line for line in _lines(logs / "trace.jsonl") if line["event"] == "subdivide.skipped"
         ]
-
-        assert skipped, "one document at the root is below the schedule; that must be visible"
-        assert skipped[-1]["documents"] == 1
-        assert skipped[-1]["next_at"] == 2  # and when it will next be asked
+        assert skipped[-1]["reason"] == "folder note is not managed"
