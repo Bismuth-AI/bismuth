@@ -20,6 +20,7 @@ from pathlib import PurePosixPath
 from bismuth.domain.document import DocumentCard
 from bismuth.domain.paths import sanitize_segment
 from bismuth.domain.placement import Placement, Verdict
+from bismuth.logging_setup import log_trace
 from bismuth.ports.llm import LLM, ModelProfile
 from bismuth.prompts import placement as placement_prompts
 
@@ -65,6 +66,16 @@ class PlacementService:
         if decision.folder is None:
             # Reserved for documents that could not be read at all. Anything readable
             # has somewhere to go, even if that somewhere is the root.
+            log_trace(
+                "place.decided",
+                document_id=document_id,
+                title=card.title,
+                folders_offered=len(folders),
+                chose=None,
+                verdict=Verdict.INBOX.value,
+                confidence=decision.confidence,
+                reason=decision.reason,
+            )
             return Placement.to_inbox(
                 document_id,
                 reason=decision.reason or "이 문서를 읽을 수 없습니다.",
@@ -82,6 +93,19 @@ class PlacementService:
         target = target if target is not None else ROOT
 
         created = bool(target.parts) and str(target) not in existing_paths
+        log_trace(
+            "place.decided",
+            document_id=document_id,
+            title=card.title,
+            folders_offered=len(folders),
+            asked_for=decision.folder,
+            chose=str(target),
+            root=not target.parts,
+            created_folder=created,
+            model_said_existing=decision.existing,
+            confidence=decision.confidence,
+            reason=decision.reason,
+        )
         return Placement(
             document_id=document_id,
             verdict=Verdict.PLACED,
