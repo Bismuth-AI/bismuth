@@ -20,7 +20,9 @@ def _emerges(script: ScriptedModel, name: str, note: str, ids: list[str]) -> Non
     """Script a class coming out of the pile: its name, then who belongs to it."""
     script.set(
         subdivision_prompts.Emerging,
-        subdivision_prompts.Emerging(emerged=True, name=name, note=note, reason="이 부류가 두껍습니다."),
+        subdivision_prompts.Emerging(
+            emerged=True, name=name, note=note, reason="이 부류가 두껍습니다."
+        ),
     )
     script.set(
         subdivision_prompts.Members,
