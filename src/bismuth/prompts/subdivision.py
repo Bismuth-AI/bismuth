@@ -130,9 +130,7 @@ class Emerging(BaseModel):
     """
 
     emerged: bool = Field(description="False when no single class has gathered yet.")
-    name: str = Field(
-        default="", description="Folder name for that class, one level. Not a path."
-    )
+    name: str = Field(default="", description="Folder name for that class, one level. Not a path.")
     note: str = Field(
         default="",
         description="One line: what belongs here, and how it differs from the folders beside it.",
