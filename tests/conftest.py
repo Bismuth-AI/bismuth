@@ -65,10 +65,13 @@ class ScriptedModel:
                 confidence=0.9,
                 reason="아폴로 사업 2023년 계약서라 아폴로/2023 에 둡니다.",
             ),
-            # Default: no division. A test that wants one scripts it, so every other
-            # test keeps the tree its assertions were written against.
-            subdivision_prompts.Division: subdivision_prompts.Division(
-                divide=False, reason="아직 나눌 구분이 없습니다."
+            # Default: nothing has grown out yet. A test that wants a folder scripts it,
+            # so every other test keeps the tree its assertions were written against.
+            subdivision_prompts.Emerging: subdivision_prompts.Emerging(
+                emerged=False, reason="아직 목록이 더 잘 보입니다."
+            ),
+            subdivision_prompts.Members: subdivision_prompts.Members(
+                document_ids=[], reason="이 사인에 속하는 문서가 없습니다."
             ),
             subdivision_prompts.Review: subdivision_prompts.Review(
                 holds=True, reason="기존 구분이 아직 맞습니다."

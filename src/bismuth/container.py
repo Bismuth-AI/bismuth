@@ -77,6 +77,7 @@ def build(
         timeout=settings.llm_timeout_seconds,
         max_schema_retries=settings.llm_max_schema_retries,
         max_concurrency=settings.llm_max_concurrency,
+        reasoning_effort=settings.reasoning_effort,
     )
     chat: ChatModel = chat_model or LiteLLMChatModel(
         model=settings.model_for(ModelProfile.REASONING),

@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextvars import ContextVar
 from enum import StrEnum
 from typing import Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
+
+CURRENT_DOCUMENT: ContextVar[str] = ContextVar("current_document", default="")
+"""Which document the call being made is for.
+
+Cost is reported per document, and once reading runs for several documents at a time a
+drain-before/drain-after bracket attributes whatever finished in the window rather than
+whatever belongs to the document. A context variable rides with the task instead, so the
+attribution stays right however the caller schedules the work.
+"""
 
 
 class ModelProfile(StrEnum):
@@ -47,6 +57,9 @@ class Usage(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     model: str
+    document_id: str = Field(
+        default="", description="The document this was spent on, when a call was made for one."
+    )
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float | None = None

@@ -8,7 +8,7 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from bismuth.domain.errors import StructuredOutputError
-from bismuth.ports.llm import ModelProfile, Prompt, Usage
+from bismuth.ports.llm import CURRENT_DOCUMENT, ModelProfile, Prompt, Usage
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
@@ -40,7 +40,14 @@ class FakeLLM:
         temperature: float = 0.0,
     ) -> SchemaT:
         self.calls.append((prompt, schema, profile))
-        self._usage.append(Usage(model=f"fake/{profile.value}", input_tokens=0, output_tokens=0))
+        self._usage.append(
+            Usage(
+                model=f"fake/{profile.value}",
+                document_id=CURRENT_DOCUMENT.get(""),
+                input_tokens=0,
+                output_tokens=0,
+            )
+        )
 
         if self._handler is not None:
             response = self._handler(prompt, schema, profile)

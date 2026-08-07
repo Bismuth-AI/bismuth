@@ -26,6 +26,20 @@ logger = logging.getLogger(__name__)
 
 _SAMPLE_SIZE = 12
 
+ROOT_NOTE = Charter(
+    path=PurePosixPath(),
+    title="전체",
+    purpose="아직 나뉘지 않은 문서들. 구분이 보이면 폴더로 나뉩니다.",
+)
+"""The root's note, fixed rather than written.
+
+The root is where documents wait for a distinction, so it is not about anything and
+a drafted note has to invent one. Written from the first document to arrive, it said
+the whole vault was about that document -- and it is written once and never
+refreshed, so every later judgement was handed that as fact and spent its reasoning
+arguing with it.
+"""
+
 
 class CharterService:
     """The folder notes: what each folder holds, so the model can reuse it."""

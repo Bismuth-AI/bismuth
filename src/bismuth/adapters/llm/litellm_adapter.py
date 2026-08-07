@@ -12,7 +12,7 @@ from pydantic import BaseModel, ValidationError
 
 from bismuth.domain.errors import StructuredOutputError
 from bismuth.logging_setup import log_llm_call
-from bismuth.ports.llm import ModelProfile, Prompt, Usage
+from bismuth.ports.llm import CURRENT_DOCUMENT, ModelProfile, Prompt, Usage
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
@@ -56,6 +56,7 @@ def usage_of(response: Any, model: str) -> Usage:
         cost = None
     return Usage(
         model=model,
+        document_id=CURRENT_DOCUMENT.get(""),
         input_tokens=getattr(raw, "prompt_tokens", 0) or 0,
         output_tokens=getattr(raw, "completion_tokens", 0) or 0,
         cost_usd=cost,
@@ -99,6 +100,7 @@ class LiteLLMAdapter:
         timeout: float = 120.0,
         max_schema_retries: int = 2,
         max_concurrency: int = 4,
+        reasoning_effort: str = "",
     ) -> None:
         self._models = {
             ModelProfile.FAST: model_fast,
@@ -106,6 +108,7 @@ class LiteLLMAdapter:
         }
         self._api_key = api_key
         self._api_base = api_base
+        self._reasoning_effort = reasoning_effort
         self._timeout = timeout
         self._max_retries = max_schema_retries
         self._semaphore = asyncio.Semaphore(max_concurrency)
@@ -144,7 +147,11 @@ class LiteLLMAdapter:
 
         for attempt in range(self._max_retries + 1):
             raw, usage = await self._call(
-                model, messages, schema=schema if native else None, temperature=temperature
+                model,
+                messages,
+                schema=schema if native else None,
+                temperature=temperature,
+                profile=profile,
             )
             self._usage.append(usage.model_copy(update={"retries": attempt}))
             attempt_log: dict[str, Any] = {
@@ -240,6 +247,7 @@ class LiteLLMAdapter:
         *,
         schema: type[BaseModel] | None,
         temperature: float,
+        profile: ModelProfile = ModelProfile.FAST,
     ) -> tuple[str, Usage]:
         kwargs: dict[str, Any] = {
             "model": model,
@@ -247,6 +255,10 @@ class LiteLLMAdapter:
             "temperature": temperature,
             "timeout": self._timeout,
         }
+        if self._reasoning_effort and profile is ModelProfile.REASONING:
+            # Only the profile it names, so turning thinking down is one variable and not
+            # also a change to cataloguing. drop_params discards it where unsupported.
+            kwargs["reasoning_effort"] = self._reasoning_effort
         if self._api_key:
             # Explicit every call, so a stale key in os.environ can't silently
             # override the one configured in .env.

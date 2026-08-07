@@ -187,3 +187,49 @@ class TestUndo:
 
         assert (engine.vault.root / "_inbox/contract.txt").is_file()
         assert not (engine.vault.root / "아폴로/2023/contract.txt").exists()
+
+
+class TestReadingAheadOfFiling:
+    """Reading a document depends on that document; filing depends on the tree and
+    changes it. The split is what lets a caller overlap the first and not the second."""
+
+    async def test_preparing_touches_nothing(self, engine: Bismuth) -> None:
+        rel = engine.ingest.stage("아폴로 지원 계약서, 2023.".encode(), "contract.txt")
+        before = sorted(p.name for p in engine.vault.root.iterdir())
+
+        prepared = await engine.ingest.prepare(rel)
+
+        assert prepared.card is not None
+        assert sorted(p.name for p in engine.vault.root.iterdir()) == before
+        assert (engine.vault.root / "_inbox/contract.txt").is_file()  # still where it was
+
+    async def test_documents_read_together_are_filed_in_order(self, engine: Bismuth) -> None:
+        import asyncio
+
+        rels = [
+            engine.ingest.stage(f"문서 {i} 고유 내용".encode(), f"doc{i}.txt") for i in range(4)
+        ]
+
+        prepared = await asyncio.gather(*(engine.ingest.prepare(rel) for rel in rels))
+        results = [await engine.ingest.file(p) for p in prepared]
+
+        assert [r.filename for r in results] == [f"doc{i}.txt" for i in range(4)]
+        assert all((engine.vault.root / "아폴로/2023" / r.filename).is_file() for r in results)
+
+    async def test_spend_stays_attributed_to_its_own_document(
+        self, engine: Bismuth, llm: FakeLLM
+    ) -> None:
+        """A drain-before/drain-after bracket cannot do this once reads overlap, so the
+        document rides with the call instead."""
+        import asyncio
+
+        rels = [
+            engine.ingest.stage(f"문서 {i} 고유 내용".encode(), f"doc{i}.txt") for i in range(3)
+        ]
+        llm.drain_usage()
+
+        prepared = await asyncio.gather(*(engine.ingest.prepare(rel) for rel in rels))
+
+        tagged = {p.source.document_id for p in prepared}
+        spent_on = {u.document_id for u in llm.drain_usage()}
+        assert spent_on == tagged  # every call landed on a real document, none blank

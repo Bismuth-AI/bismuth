@@ -112,6 +112,16 @@ class Settings(BaseSettings):
         default="", description="Decisions worth paying for. Bare model name."
     )
 
+    reasoning_effort: str = Field(
+        default="",
+        description=(
+            "How hard the REASONING profile thinks, when the provider takes it "
+            "(OpenAI: minimal/low/medium/high). Empty leaves the provider's default. "
+            "Applies to that profile only, so it can be varied without also changing "
+            "cataloguing."
+        ),
+    )
+
     llm_timeout_seconds: float = 120.0
     llm_max_schema_retries: int = Field(default=2, ge=0)
     llm_max_concurrency: int = Field(default=4, ge=1)
