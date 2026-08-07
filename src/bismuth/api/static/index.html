@@ -210,7 +210,7 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
   <span class="badge" id="privacy">…</span>
   <div class="spacer"></div>
   <span class="hstat"><b id="hs-docs">0</b> 문서 · <b id="hs-folders">0</b> 폴더<span id="hs-inbox"></span></span>
-  <span class="hstat spend hidden" id="hs-spend" title="이 브라우저 세션에서 쓴 양"></span>
+  <span class="hstat spend hidden" id="hs-spend" title="이 볼트에 지금까지 쓴 양 (.bismuth/spend.jsonl)"></span>
   <button class="ghost" id="btn-organize">구조 정리</button>
   <button class="ghost" id="btn-history">기록</button>
   <button class="ghost" id="btn-settings">설정</button>
@@ -319,6 +319,8 @@ let fsel = new Set(), fselAnchor = null;
 
 async function refresh() {
   state = await api("/status");
+  // Authoritative, and it already includes anything addSpend() just counted locally.
+  setSpend(state.spend);
 
   const pv = $("privacy");
   pv.className = "badge " + (!state.configured ? "" : state.runs_locally ? "local" : "cloud");
@@ -815,11 +817,14 @@ function watchProgress() {
 watchProgress();
 
 /* ---------------- spend ----------------
-   Tokens and price for the work just done, and a running total for the session. Kept
-   in the browser rather than persisted: it answers "what did that just cost me?", and
-   a number that survives a restart would imply an accounting this does not do. */
+   Tokens and price for the work just done, and a running total for the vault. The total
+   used to live only here, on the argument that it answered "what did that just cost
+   me?" and that a number surviving a restart would imply an accounting this does not
+   do. It did not survive a refresh, which is when people ask. It is now kept in the
+   vault (.bismuth/spend.jsonl) and seeded from /status on load; uploads add to it here
+   so the header moves without a round trip. */
 
-let sessionSpend = { calls: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0, priced_calls: 0 };
+let vaultSpend = { calls: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0, priced_calls: 0 };
 
 function money(usd) {
   if (usd == null) return "";
@@ -846,16 +851,29 @@ function spendText(s) {
   return parts.join(" · ");
 }
 
+function drawSpend() {
+  const el = $("hs-spend");
+  const text = spendText(vaultSpend);
+  el.classList.toggle("hidden", !text);
+  el.textContent = text;
+}
+
+function setSpend(s) {
+  // From /status: the vault's own total, so a refresh does not reset it to zero.
+  vaultSpend = s && s.calls
+    ? { ...s, cost_usd: s.cost_usd || 0 }
+    : { calls: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0, priced_calls: 0 };
+  drawSpend();
+}
+
 function addSpend(s) {
   if (!s || !s.calls) return;
-  sessionSpend.calls += s.calls;
-  sessionSpend.input_tokens += s.input_tokens;
-  sessionSpend.output_tokens += s.output_tokens;
-  sessionSpend.priced_calls += s.priced_calls;
-  sessionSpend.cost_usd += s.cost_usd || 0;
-  const el = $("hs-spend");
-  el.classList.remove("hidden");
-  el.textContent = spendText(sessionSpend);
+  vaultSpend.calls += s.calls;
+  vaultSpend.input_tokens += s.input_tokens;
+  vaultSpend.output_tokens += s.output_tokens;
+  vaultSpend.priced_calls += s.priced_calls;
+  vaultSpend.cost_usd += s.cost_usd || 0;
+  drawSpend();
 }
 
 /* ---------------- uploads ---------------- */

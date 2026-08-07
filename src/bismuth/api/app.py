@@ -181,6 +181,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             unplaced=inbox_count,
             runs_locally=app.state.settings.runs_locally,
             supported_formats=sorted(engine.parsers.supported_extensions()),
+            spend=engine.ledger.total(),
         )
 
     @app.get("/api/tree", response_model=list[FolderOut])
@@ -281,6 +282,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         chat_drain = getattr(engine.chat, "drain_usage", None)
         if chat_drain is not None:  # agentkit's ChatModel protocol does not require it
             spend = spend + Spend.of(chat_drain())
+        engine.ledger.record(spend)
         return spend
 
     @app.post("/api/delete")
@@ -384,6 +386,8 @@ class StatusOut(BaseModel):
     unplaced: int
     runs_locally: bool
     supported_formats: list[str]
+    spend: Spend = Spend()
+    """Everything this vault has cost, not just this tab's share of it."""
 
 
 class FolderOut(BaseModel):
