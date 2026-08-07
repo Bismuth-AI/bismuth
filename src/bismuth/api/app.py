@@ -64,14 +64,20 @@ def get_engine(request: Request) -> Bismuth:
 Engine = Annotated[Bismuth, Depends(get_engine)]
 
 
-def create_app(settings: Settings) -> FastAPI:
+def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
     load_env_file()
-    configure_logging()
     engine = build(settings)
-    _preload(engine)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        # Logging is set up here and not in create_app because uvicorn configures its
+        # own with dictConfig, which closes every handler that already existed. Ours
+        # stayed attached to their loggers and stayed enabled, so nothing raised and
+        # nothing was written: a server that ingested thirty-three documents left two
+        # lines in bismuth.log and empty trace and llm files. Startup runs after that,
+        # so what is opened here survives.
+        configure_logging(verbose=verbose)
+        _preload(engine)
         if recovered := engine.recover():
             logger.warning("rolled back %d interrupted change(s) from a previous run", recovered)
         yield

@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from bismuth.adapters.llm import litellm_adapter
 from bismuth.adapters.parsers import build_registry
@@ -75,23 +76,28 @@ class TestWarm:
 
 
 class TestServerPreload:
-    def test_litellm_is_loaded_by_the_time_the_app_exists(
+    def test_litellm_is_loaded_by_the_time_the_server_answers(
         self,
         settings,
         llm,
+        tmp_path,
         monkeypatch,  # type: ignore[no-untyped-def]
     ) -> None:
         """A multi-second import inside the first request makes a started server look hung.
 
+        The deadline is the first request, not the app object: preloading moved into
+        startup so that logging could be set up after uvicorn has had its turn at it,
+        and startup still finishes before any request is accepted.
+
         Asserts the adapter's own cache rather than sys.modules: another test importing
         litellm would make the sys.modules version of this pass without preload running.
         """
+        monkeypatch.chdir(tmp_path)  # startup writes ./logs
         monkeypatch.setattr(litellm_adapter, "_litellm", None)
         assert litellm_adapter._litellm is None
 
-        create_app(settings)
-
-        assert litellm_adapter._litellm is not None
+        with TestClient(create_app(settings)):
+            assert litellm_adapter._litellm is not None
 
     def test_no_parser_import_is_left_for_the_first_upload(self, client) -> None:  # type: ignore[no-untyped-def]
         assert {"pypdf", "docx", "pptx", "openpyxl"} <= set(sys.modules)
