@@ -359,11 +359,13 @@ class TestTermination:
         assert not (engine.vault.root / "문학").exists()
         assert (engine.vault.root / "doc0.txt").is_file()
 
-    async def test_what_was_drawn_out_is_itself_considered(
+    async def test_what_was_just_created_is_not_immediately_re_judged(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        """A child is strictly smaller than its parent, so this ends on its own: the new
-        folder is asked in turn, and a class over its whole contents is refused above."""
+        """The new folder was formed a moment ago from a judgement over these same
+        documents; asking it again adds no evidence, only depth. With the recursion in,
+        one ingest built 철학/현상학/체화된 인지, a document per level. It is asked as soon
+        as anything lands in it, which is what actually counts as new evidence."""
         ids = await _fill(engine, script, 4)
         _emerges(script, "문학", "문학", ids[:2])
 
@@ -372,3 +374,21 @@ class TestTermination:
         assert len(divided) == 1
         assert (engine.vault.root / "문학/doc0.txt").is_file()
         assert (engine.vault.root / "문학/doc1.txt").is_file()
+        assert not (engine.vault.root / "문학/문학").exists()
+
+    async def test_a_class_may_not_carry_its_parents_name(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Asked what has grown in 철학 the model answers 철학 -- true, and useless. It
+        is caught below only when the class takes everything; taking three of five is
+        how 철학/철학 and 과학·기술 연구/과학·기술 연구 were built."""
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+
+        # Now 문학 holds two, and the model proposes 문학 again for one of them.
+        _emerges(script, "문학", "또 문학", ids[:1])
+        divided = await engine.subdivision.consider(PurePosixPath("문학"))
+
+        assert divided == []
+        assert not (engine.vault.root / "문학/문학").exists()
