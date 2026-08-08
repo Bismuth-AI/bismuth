@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from agentkit.testing import FakeModel, call, says
 from fastapi.testclient import TestClient
 
@@ -9,6 +11,7 @@ from bismuth.api.app import create_app
 from bismuth.config import Settings
 from bismuth.container import Bismuth, build
 from bismuth.services.agent import AgentService, build_propose_move_tool
+from tests.conftest import seed_folder
 from tests.test_ingest import add
 
 
@@ -64,7 +67,9 @@ def test_organize_api_propose_then_apply(settings: Settings, llm: object) -> Non
         ]
     )
     app = create_app(settings)
-    app.state.engine = build(settings, llm=llm, chat_model=chat)  # type: ignore[arg-type]
+    organized = build(settings, llm=llm, chat_model=chat)  # type: ignore[arg-type]
+    seed_folder(Path(organized.vault.root))  # placement chooses; it never creates
+    app.state.engine = organized
 
     with TestClient(app) as client:
         client.post(
@@ -89,7 +94,9 @@ def test_organize_api_applies_a_rename(settings: Settings, llm: object) -> None:
         ]
     )
     app = create_app(settings)
-    app.state.engine = build(settings, llm=llm, chat_model=chat)  # type: ignore[arg-type]
+    organized = build(settings, llm=llm, chat_model=chat)  # type: ignore[arg-type]
+    seed_folder(Path(organized.vault.root))  # placement chooses; it never creates
+    app.state.engine = organized
 
     with TestClient(app) as client:
         client.post(

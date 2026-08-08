@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +13,7 @@ from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.api.app import create_app
 from bismuth.config import Settings
 from bismuth.container import Bismuth, build
+from bismuth.domain.charter import CHARTER_FILENAME, Charter
 from bismuth.domain.document import Entity, EntityKind
 from bismuth.ports.llm import ModelProfile, Prompt
 from bismuth.prompts import cards as card_prompts
@@ -104,15 +105,35 @@ def llm(script: ScriptedModel) -> FakeLLM:
     return FakeLLM(handler=script)
 
 
+SCRIPTED_FOLDER = PurePosixPath("아폴로/2023")
+
+
+def seed_folder(root: Path, folder: PurePosixPath = SCRIPTED_FOLDER) -> None:
+    """Put a folder on disk so placement has somewhere to choose.
+
+    Placement chooses; it does not invent (see prompts/placement.py). A scripted
+    decision naming a folder that does not exist is read as the root, so a test that
+    wants a document filed somewhere has to put the somewhere there first.
+    """
+    target = root / Path(*folder.parts)
+    target.mkdir(parents=True, exist_ok=True)
+    note = Charter(path=folder, title=folder.name, purpose="아폴로 사업의 2023년 문서.")
+    (target / CHARTER_FILENAME).write_text(note.to_markdown(), encoding="utf-8")
+
+
 @pytest.fixture
 def engine(settings: Settings, llm: FakeLLM) -> Bismuth:
-    return build(settings, llm=llm)
+    engine = build(settings, llm=llm)
+    seed_folder(Path(engine.vault.root))
+    return engine
 
 
 @pytest.fixture
 def client(settings: Settings, llm: FakeLLM) -> Iterator[TestClient]:
     app = create_app(settings)
-    app.state.engine = build(settings, llm=llm)
+    engine = build(settings, llm=llm)
+    seed_folder(Path(engine.vault.root))
+    app.state.engine = engine
     with TestClient(app) as test_client:
         yield test_client
 

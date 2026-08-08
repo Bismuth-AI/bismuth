@@ -65,16 +65,22 @@ def _card() -> DocumentCard:
     return DocumentCard(title="t", summary="s", doc_type="문서", topics=("x",))
 
 
-def _decision(folder: str | None, *, confidence: float = 0.9):
+def _decision(folder: str | None, *, confidence: float = 0.9, existing: bool = False):
     return placement_prompts.PlacementDecision(
-        folder=folder, existing=False, confidence=confidence, reason="r"
+        folder=folder, existing=existing, confidence=confidence, reason="r"
     )
 
 
-async def _decide(decision, **kwargs):
+async def _decide(decision, *, exists: str | None = None, **kwargs):
+    """Decide against a tree that holds `exists`, if anything."""
     llm = FakeLLM(queue=[decision])
+    folders = [(exists, "기존")] if exists else []
     return await PlacementService(llm).decide(
-        document_id="doc1", card=_card(), folders=[], existing_paths=frozenset(), **kwargs
+        document_id="doc1",
+        card=_card(),
+        folders=folders,
+        existing_paths=frozenset({exists} if exists else set()),
+        **kwargs,
     )
 
 
@@ -83,10 +89,21 @@ class TestPlacementService:
     by the root, which is what "no distinction drawn yet" means (SPEC.md 3.4)."""
 
     async def test_a_folder_is_placed(self) -> None:
-        placement = await _decide(_decision("아폴로/2023"))
+        placement = await _decide(_decision("아폴로/2023"), exists="아폴로/2023")
         assert placement.verdict is Verdict.PLACED
         assert placement.target == PurePosixPath("아폴로/2023")
-        assert placement.created_folder is True
+        assert placement.created_folder is False  # nothing here creates one
+
+    async def test_a_folder_that_does_not_exist_is_read_as_the_root(self) -> None:
+        """Placement answers "where in the tree as it stands". A folder that is not in
+        the tree is not an answer it can give, and the root is (SPEC.md 3.4). Measured
+        without this: twenty invented folders, each named after a single document and
+        each becoming the precedent for the next."""
+        placement = await _decide(_decision("아폴로/2023"))
+
+        assert placement.verdict is Verdict.PLACED
+        assert placement.target == PurePosixPath()
+        assert placement.created_folder is False
 
     async def test_the_empty_string_means_the_root(self) -> None:
         placement = await _decide(_decision(""))
@@ -102,13 +119,13 @@ class TestPlacementService:
         assert placement.verdict is Verdict.INBOX
 
     async def test_low_confidence_still_files_the_document(self) -> None:
-        placement = await _decide(_decision("아폴로/2023", confidence=0.02))
+        placement = await _decide(_decision("아폴로/2023", confidence=0.02), exists="아폴로/2023")
 
         assert placement.verdict is Verdict.PLACED
         assert placement.target == PurePosixPath("아폴로/2023")
 
     async def test_the_number_is_recorded_even_though_it_gates_nothing(self) -> None:
-        placement = await _decide(_decision("아폴로/2023", confidence=0.42))
+        placement = await _decide(_decision("아폴로/2023", confidence=0.42), exists="아폴로/2023")
         assert placement.confidence == pytest.approx(0.42)
 
     async def test_an_unusable_path_falls_back_to_the_root(self) -> None:
@@ -117,13 +134,8 @@ class TestPlacementService:
         assert placement.verdict is Verdict.PLACED
         assert placement.target == PurePosixPath()
 
-    async def test_created_folder_is_flagged_against_the_existing_set(self) -> None:
-        # Decided against the real folder set, not the model's own `existing` flag.
-        llm = FakeLLM(queue=[_decision("아폴로/2023")])
-        placement = await PlacementService(llm).decide(
-            document_id="d",
-            card=_card(),
-            folders=[("아폴로/2023", "기존")],
-            existing_paths=frozenset({"아폴로/2023"}),
-        )
-        assert placement.created_folder is False
+    async def test_the_model_saying_existing_does_not_make_it_so(self) -> None:
+        """Decided against the real folder set, never the model's own `existing` flag."""
+        placement = await _decide(_decision("없는/폴더", existing=True), exists="아폴로/2023")
+
+        assert placement.target == PurePosixPath()

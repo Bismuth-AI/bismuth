@@ -14,7 +14,7 @@ from pathlib import PurePosixPath
 
 from bismuth.domain.charter import CHARTER_FILENAME, Charter
 from bismuth.domain.document import DocumentCard, sidecar_name
-from bismuth.domain.errors import CharterError
+from bismuth.domain.errors import BismuthError, CharterError
 from bismuth.domain.journal import Operation, OperationKind
 from bismuth.ports.catalog import Catalog
 from bismuth.ports.llm import LLM, ModelProfile
@@ -102,6 +102,14 @@ class CharterService:
             schema=charter_prompts.CharterDraft,
             profile=ModelProfile.REASONING,
         )
+        # A redraft rewrites what the folder holds, never how it came to hold it. The
+        # axis it was divided along and the size it was divided at are history: they are
+        # read back to ask whether the division still stands and to hold later classes to
+        # the same question, and they cannot be recovered from the documents. Without
+        # this, every document landing in a divided folder erased them on the way in --
+        # notes are redrawn before subdivision runs, so the record survived only until
+        # the next arrival.
+        history = self._history(folder)
         return Charter(
             path=folder,
             title=draft.title.strip() or (folder.name or "Vault root"),
@@ -109,7 +117,15 @@ class CharterService:
             holds=tuple(draft.holds),
             answers=tuple(draft.answers),
             managed=True,
+            split_basis=history.split_basis if history else "",
+            split_at_documents=history.split_at_documents if history else 0,
         )
+
+    def _history(self, folder: PurePosixPath) -> Charter | None:
+        try:
+            return self.load(folder)
+        except BismuthError:
+            return None
 
     def write_operation(self, charter: Charter) -> tuple[Operation, bytes]:
         """The operation and payload that persist a note."""

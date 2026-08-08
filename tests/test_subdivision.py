@@ -16,12 +16,14 @@ def _group(name: str, note: str, ids: list[str]) -> subdivision_prompts.Group:
     return subdivision_prompts.Group(name=name, note=note, document_ids=ids)
 
 
-def _emerges(script: ScriptedModel, name: str, note: str, ids: list[str]) -> None:
+def _emerges(
+    script: ScriptedModel, name: str, note: str, ids: list[str], *, axis: str = "주제"
+) -> None:
     """Script a class coming out of the pile: its name, then who belongs to it."""
     script.set(
         subdivision_prompts.Emerging,
         subdivision_prompts.Emerging(
-            emerged=True, name=name, note=note, reason="이 부류가 두껍습니다."
+            emerged=True, axis=axis, name=name, note=note, reason="이 부류가 두껍습니다."
         ),
     )
     script.set(
@@ -130,7 +132,7 @@ class TestDrawingOutAClass:
         folders = [
             p.name
             for p in engine.vault.root.iterdir()
-            if p.is_dir() and p.name not in ("_inbox", ".bismuth")
+            if p.is_dir() and p.name not in ("_inbox", ".bismuth", "아폴로")
         ]
         assert folders == ["문학"]  # no sibling was invented to hold doc2 and doc3
         assert (engine.vault.root / "doc2.txt").is_file()
@@ -209,7 +211,7 @@ class TestRemembering:
 
         charter = engine.charters.load(PurePosixPath())
         assert charter is not None
-        assert "문학" in charter.split_basis
+        assert charter.split_basis == "주제"  # the axis, not this one extraction
         assert charter.split_at_documents == 4
         assert charter.divided
 
@@ -392,3 +394,61 @@ class TestTermination:
 
         assert divided == []
         assert not (engine.vault.root / "문학/문학").exists()
+
+
+class TestOneAxisPerFolder:
+    """Sub-folders of one folder are answers to one question. Without that, siblings sit
+    on different distinctions and no name rules anything out -- measured on 300 legal
+    documents as 주제 (과학기술), 문서 종류 (시행규칙) and individual statute names side by
+    side at the same root."""
+
+    async def test_the_axis_is_recorded_when_the_first_class_comes_out(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야")
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        charter = engine.charters.load(PurePosixPath())
+        assert charter is not None
+        assert charter.split_basis == "주제 분야"
+
+    async def test_a_divided_folder_is_held_to_the_axis_it_has(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야")
+        await engine.subdivision.consider(PurePosixPath())
+        llm.calls.clear()
+
+        _emerges(script, "과학", "과학 자료", ids[2:], axis="완전히 다른 축")
+        await engine.subdivision.consider(PurePosixPath())
+
+        # The second look is told the axis rather than asked for one...
+        asked = llm.prompts_for(subdivision_prompts.Emerging)[-1]
+        assert "주제 분야" in asked.user
+        # ...and the folder keeps it, whatever the reply says.
+        charter = engine.charters.load(PurePosixPath())
+        assert charter is not None
+        assert charter.split_basis == "주제 분야"
+
+    async def test_redrawing_a_note_does_not_erase_the_axis(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Notes are redrawn every time a document lands, and before subdivision runs.
+        A redraft that dropped the history erased the axis on the way in, so it survived
+        only until the next arrival -- which is most of why sibling folders drifted."""
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야")
+        await engine.subdivision.consider(PurePosixPath())
+        before = engine.charters.load(PurePosixPath("문학"))
+        assert before is not None
+
+        script.set(placement_prompts.PlacementDecision, place_at("문학", existing=True))
+        await add(engine, "another.txt", "문학 문서 하나 더")
+
+        after = engine.charters.load(PurePosixPath("문학"))
+        assert after is not None
+        assert after.split_basis == before.split_basis
+        assert after.split_at_documents == before.split_at_documents

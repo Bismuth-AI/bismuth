@@ -230,12 +230,20 @@ class SubdivisionService:
         # model has to put the remainder somewhere, and it names it -- three runs produced
         # `그 밖의 무관한 학술 논문`, `그 밖의 주제`, `기타 주제`, the last one while the
         # prompt banned exactly those words. Nothing here can express "the rest".
+        # The axis this folder was divided along, if it has been. Every sub-folder here
+        # is one answer to it, and a later class has to answer the same question --
+        # otherwise the siblings sit on different distinctions and no name rules anything
+        # out. Measured without it: 주제 (과학기술), 문서 종류 (시행규칙) and individual
+        # statute names ended up side by side at the root of the same archive.
+        axis = charter.split_basis if charter is not None else ""
+
         emerging = await self._llm.structured(
             prompts.build_emerging(
                 path=str(folder),
                 purpose=purpose,
                 documents=contents.lines,
                 children=contents.children,
+                axis=axis,
             ),
             schema=prompts.Emerging,
             profile=ModelProfile.REASONING,
@@ -245,6 +253,8 @@ class SubdivisionService:
             folder=str(folder),
             documents=len(contents.documents),
             subtree=total,
+            axis=axis or emerging.axis,
+            axis_is_new=not axis,
             emerged=emerging.emerged,
             name=emerging.name,
             reason=emerging.reason,
@@ -277,7 +287,9 @@ class SubdivisionService:
 
         return prompts.Division(
             divide=True,
-            basis=f"자란 부류부터 하나씩 꺼냄 — 최근: {emerging.name}",
+            # The axis, not a sentence about this one extraction. It is read back on the
+            # next look and on review, and it is what holds the siblings to one question.
+            basis=axis or emerging.axis.strip() or emerging.name,
             groups=[
                 prompts.Group(
                     name=emerging.name, note=emerging.note, document_ids=members.document_ids

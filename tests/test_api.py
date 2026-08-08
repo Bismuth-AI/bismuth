@@ -12,7 +12,8 @@ class TestStatus:
     def test_status_reports_the_shape_of_the_vault(self, client: TestClient) -> None:
         body = client.get("/api/status").json()
         assert body["documents"] == 0
-        assert body["folders"] == 0
+        # 아폴로 and 아폴로/2023 are seeded so placement has somewhere to choose.
+        assert body["folders"] == 2
         assert "runs_locally" in body
 
 
@@ -46,7 +47,7 @@ class TestUpload:
         assert result["ok"] is True
         assert result["placed"] is True
         assert result["destination"] == "아폴로/2023"
-        assert result["created_folder"] is True
+        assert result["created_folder"] is False  # it was already there
 
     def test_upload_shows_up_in_the_tree(self, client: TestClient) -> None:
         client.post(

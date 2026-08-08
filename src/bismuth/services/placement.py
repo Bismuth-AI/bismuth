@@ -92,7 +92,24 @@ class PlacementService:
             target = ROOT
         target = target if target is not None else ROOT
 
-        created = bool(target.parts) and str(target) not in existing_paths
+        # Placement answers "where in the tree as it stands", so a folder that is not in
+        # the tree is not an answer it can give. Categories come from subdivision, which
+        # sees several documents before naming anything; here the honest reply is the
+        # root (SPEC.md 3.4). Measured without this: twenty invented folders, every one
+        # named after a single document, each becoming the precedent for the next.
+        invented = bool(target.parts) and str(target) not in existing_paths
+        if invented:
+            log_trace(
+                "place.invented",
+                document_id=document_id,
+                asked_for=str(target),
+                folders_offered=len(folders),
+                reason=decision.reason,
+            )
+            logger.info("placement asked for a folder that does not exist (%s); root", target)
+            target = ROOT
+
+        created = False  # only subdivision creates folders
         log_trace(
             "place.decided",
             document_id=document_id,
@@ -101,6 +118,7 @@ class PlacementService:
             asked_for=decision.folder,
             chose=str(target),
             root=not target.parts,
+            invented=invented,
             created_folder=created,
             model_said_existing=decision.existing,
             confidence=decision.confidence,

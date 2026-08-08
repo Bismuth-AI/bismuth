@@ -52,8 +52,17 @@ Signs and notes in the DOCUMENTS' OWN LANGUAGE.\
 """
 
 _EMERGING_SYSTEM = f"""\
-These documents have not been sorted. You are deciding ONE thing: whether a single \
-CLASS has gathered enough documents here to be worth a shelf of its own.
+These documents have not been sorted, and this folder has no sub-folders yet. You are \
+deciding TWO things, and the first one outlives this answer.
+
+**First, the AXIS.** Every sub-folder this folder ever gets will be one answer to a \
+single question, and you are choosing that question now. `소관 분야`, `법령의 종류`, \
+`사업 연도` are axes; they are the thing the shelves tell apart. You will be held to it: \
+later classes must be answers to the same question, so pick one that MORE of these \
+documents can answer, not one that fits the document in front of you.
+
+**Then, the first CLASS on it** -- the one value of that axis that has gathered enough \
+documents to be worth a shelf.
 
 {_SIGNS}
 
@@ -61,12 +70,31 @@ CLASS has gathered enough documents here to be worth a shelf of its own.
 Whatever does not belong to the class you name stays exactly where it is. Most of these \
 documents staying put is the normal outcome, not a failure.
 
-Name the one class that has grown thickest. If two have, name the thicker; you will be \
-asked again and the other can come out then.
+If two classes have grown, name the thicker; you will be asked again and the other can \
+come out then.
 
 `emerged` is false when nothing has gathered yet -- common in a young archive, and the \
 right answer more often than not. A collection whose documents are each about something \
 different is a list, and a list is best left as a list. Say so.\
+"""
+
+_EMERGING_ALONG_SYSTEM = f"""\
+This folder is already divided, and it is divided ALONG ONE AXIS. You are told what that \
+axis is and which answers to it already have shelves. You are deciding one thing: \
+whether ANOTHER answer to that same question has gathered enough documents here.
+
+**The axis is not yours to change.** A class on a different axis would put two kinds of \
+distinction side by side, and then no name here rules anything out -- a reader has to \
+open all of them, which is the cost the folders exist to avoid. If what has gathered is \
+real but belongs to a different question, the answer is no: it stays in this folder, and \
+a later look at a different level can take it.
+
+{_SIGNS}
+
+Whatever you do not name stays exactly where it is, and most of it staying is normal.
+
+`emerged` is false when nothing new has gathered along this axis. That is the common \
+answer and the safe one. Leave `axis` empty; this folder already has one.\
 """
 
 _MEMBERS_SYSTEM = f"""\
@@ -130,6 +158,14 @@ class Emerging(BaseModel):
     """
 
     emerged: bool = Field(description="False when no single class has gathered yet.")
+    axis: str = Field(
+        default="",
+        description=(
+            "What the sub-folders here tell apart, in a few words -- the question every "
+            "one of them is an answer to. Asked only the first time; after that the "
+            "folder already has one and you are held to it."
+        ),
+    )
     name: str = Field(default="", description="Folder name for that class, one level. Not a path.")
     note: str = Field(
         default="",
@@ -198,10 +234,23 @@ class Review(BaseModel):
 
 
 def build_emerging(
-    *, path: str, purpose: str, documents: list[tuple[str, str]], children: list[tuple[str, str]]
+    *,
+    path: str,
+    purpose: str,
+    documents: list[tuple[str, str]],
+    children: list[tuple[str, str]],
+    axis: str = "",
 ) -> Prompt:
-    """Step one: has any one class grown thick enough to come out?"""
-    return Prompt(system=_EMERGING_SYSTEM, user=_listing(path, purpose, documents, children))
+    """Step one: has any one class grown thick enough to come out?
+
+    With an ``axis``, the folder has been divided before and the question narrows to
+    "another answer to the same question?". Without one, the axis is chosen here and
+    every sub-folder this folder ever gets is held to it.
+    """
+    user = _listing(path, purpose, documents, children)
+    if not axis:
+        return Prompt(system=_EMERGING_SYSTEM, user=user)
+    return Prompt(system=_EMERGING_ALONG_SYSTEM, user=f"{user}\n\nTHE AXIS HERE: {axis}")
 
 
 def build_members(
