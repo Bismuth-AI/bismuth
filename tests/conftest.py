@@ -13,6 +13,7 @@ from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.api.app import create_app
 from bismuth.config import Settings
 from bismuth.container import Bismuth, build
+from bismuth import logging_setup
 from bismuth.domain.charter import CHARTER_FILENAME, Charter
 from bismuth.domain.document import Entity, EntityKind
 from bismuth.ports.llm import ModelProfile, Prompt
@@ -20,6 +21,17 @@ from bismuth.prompts import cards as card_prompts
 from bismuth.prompts import charters as charter_prompts
 from bismuth.prompts import placement as placement_prompts
 from bismuth.prompts import subdivision as subdivision_prompts
+
+
+@pytest.fixture(autouse=True)
+def _logs_go_somewhere_disposable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the suite out of the repository's ./logs.
+
+    LOG_DIR is relative, and anything that builds an app configures logging on startup --
+    so running the tests truncated whatever run was being investigated at the time. The
+    logs are the evidence; a test suite must not be able to destroy it.
+    """
+    monkeypatch.setattr(logging_setup, "LOG_DIR", tmp_path / "logs")
 
 
 @pytest.fixture
