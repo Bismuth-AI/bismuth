@@ -206,7 +206,16 @@ class Settings(BaseSettings):
         data = self.model_dump(mode="json")
         if self.api_key:
             data["api_key"] = f"…{self.api_key[-4:]}"
+        # Headers are here because a bearer token was not enough, which means whatever
+        # is in them is a credential too. The first one written was a session cookie,
+        # and it went into bismuth.log in full.
+        data["api_headers"] = {name: _tail(value) for name, value in self.api_headers.items()}
         return data
+
+
+def _tail(value: str) -> str:
+    """Enough to tell two credentials apart, not enough to use one."""
+    return f"…{value[-4:]}" if len(value) > 4 else "…"
 
 
 def save_user_config(settings: Settings) -> Path:
