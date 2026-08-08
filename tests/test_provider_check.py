@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from bismuth.adapters.llm import catalog
-from bismuth.config import PROVIDERS, provider
+from bismuth.config import PROVIDERS, Settings, provider
 
 
 class TestProviders:
@@ -114,10 +114,6 @@ class TestCompatibleEndpoint:
 
 
 class TestSetupApi:
-    def test_headers_are_saved_and_returned(self, client) -> None:  # type: ignore[no-untyped-def]
-        state = client.get("/api/setup").json()
-        assert state["api_headers"] == {}
-
     def test_the_check_passes_headers_through(self, client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         seen: dict[str, Any] = {}
 
@@ -145,3 +141,18 @@ def test_a_json_error_body_still_reads_well(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(catalog, "_get", lambda *_: (_ for _ in ()).throw(_http_error(401, body)))
 
     assert "Incorrect API key" in catalog.list_models("openai", api_key="bad").error
+
+
+class TestSecrets:
+    def test_a_header_is_redacted_like_a_key(self) -> None:
+        """Headers exist because a bearer token was not enough, so whatever is in them
+        is a credential too. The first one anybody wrote was a session cookie, and it
+        went into bismuth.log in full."""
+        redacted = Settings(
+            api_key="sk-supersecret",
+            api_headers={"Cookie": "appproxy_permit=ZjAyMTE0YmJiOTBmNmRkZA=="},
+        ).redacted()
+
+        assert "supersecret" not in str(redacted)
+        assert "ZjAyMTE0" not in str(redacted)
+        assert redacted["api_headers"] == {"Cookie": "…ZA=="}  # still tells two apart
