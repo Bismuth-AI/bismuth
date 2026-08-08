@@ -24,10 +24,12 @@ class LiteLLMChatModel:
         api_base: str | None = None,
         timeout: float = 120.0,
         max_concurrency: int = 4,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
         self._api_base = api_base
+        self._headers = dict(headers or {})
         self._timeout = timeout
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._usage: list[Usage] = []
@@ -54,6 +56,8 @@ class LiteLLMChatModel:
             kwargs["api_key"] = self._api_key
         if self._api_base:
             kwargs["api_base"] = self._api_base
+        if self._headers:
+            kwargs["extra_headers"] = self._headers
 
         async with self._semaphore:
             response = await _load_litellm().acompletion(**kwargs)

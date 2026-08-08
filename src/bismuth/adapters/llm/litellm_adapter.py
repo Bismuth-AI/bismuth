@@ -101,6 +101,7 @@ class LiteLLMAdapter:
         max_schema_retries: int = 2,
         max_concurrency: int = 4,
         reasoning_effort: str = "",
+        headers: dict[str, str] | None = None,
     ) -> None:
         self._models = {
             ModelProfile.FAST: model_fast,
@@ -108,6 +109,7 @@ class LiteLLMAdapter:
         }
         self._api_key = api_key
         self._api_base = api_base
+        self._headers = dict(headers or {})
         self._reasoning_effort = reasoning_effort
         self._timeout = timeout
         self._max_retries = max_schema_retries
@@ -265,6 +267,10 @@ class LiteLLMAdapter:
             kwargs["api_key"] = self._api_key
         if self._api_base:
             kwargs["api_base"] = self._api_base
+        if self._headers:
+            # Some endpoints sit behind a gateway that authenticates with a cookie or
+            # its own header; without these the call never reaches the model.
+            kwargs["extra_headers"] = self._headers
         if schema is not None:
             kwargs["response_format"] = schema
 

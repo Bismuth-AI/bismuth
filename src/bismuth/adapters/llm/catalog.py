@@ -28,46 +28,57 @@ class ProviderCheck:
 
 
 def list_models(
-    provider_id: str, *, api_key: str = "", api_base: str | None = None
+    provider_id: str,
+    *,
+    api_key: str = "",
+    api_base: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> ProviderCheck:
     """Fetch the models this credential can reach; doubles as the credential check. Never raises -- a failure is a message for the user."""
+    extra = headers or {}
     try:
         if provider_id == "openai":
-            return _openai(api_key, api_base or "https://api.openai.com/v1")
+            return _openai(api_key, api_base or "https://api.openai.com/v1", extra)
         if provider_id == "anthropic":
-            return _anthropic(api_key)
-        if provider_id == "ollama":
-            return _ollama(api_base or "http://localhost:11434")
+            return _anthropic(api_key, extra)
         if provider_id == "custom":
-            return _openai(api_key or "not-needed", api_base or "http://localhost:8000/v1")
+            return _custom(api_key, api_base or "http://localhost:11434/v1", extra)
     except Exception as exc:
         return ProviderCheck(ok=False, error=_explain(exc))
     return ProviderCheck(ok=False, error=f"알 수 없는 프로바이더: {provider_id}")
 
 
-def _openai(api_key: str, base: str) -> ProviderCheck:
-    body = _get(f"{base.rstrip('/')}/models", {"Authorization": f"Bearer {api_key}"})
+def _openai(api_key: str, base: str, extra: dict[str, str]) -> ProviderCheck:
+    body = _get(f"{base.rstrip('/')}/models", {"Authorization": f"Bearer {api_key}", **extra})
     models = sorted(entry["id"] for entry in body.get("data", []))
     return ProviderCheck(ok=True, models=tuple(models))
 
 
-def _anthropic(api_key: str) -> ProviderCheck:
+def _anthropic(api_key: str, extra: dict[str, str]) -> ProviderCheck:
     body = _get(
         "https://api.anthropic.com/v1/models",
-        {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+        {"x-api-key": api_key, "anthropic-version": "2023-06-01", **extra},
     )
     models = [entry["id"] for entry in body.get("data", [])]
     return ProviderCheck(ok=True, models=tuple(models))
 
 
-def _ollama(base: str) -> ProviderCheck:
-    body = _get(f"{base.rstrip('/')}/api/tags", {})
-    models = sorted(entry["name"] for entry in body.get("models", []))
-    if not models:
-        return ProviderCheck(
-            ok=False,
-            error="Ollama는 켜져 있는데 받아둔 모델이 없습니다. 먼저 받아주세요: ollama pull qwen3:8b",
-        )
+def _custom(api_key: str, base: str, extra: dict[str, str]) -> ProviderCheck:
+    """An OpenAI-shaped endpoint, where listing models is a courtesy rather than a rule.
+
+    vLLM, LM Studio and every gateway in front of them differ on whether `/models`
+    exists, whether it needs the same credential, and whether it needs one at all. A
+    KT Cloud proxy that served `/chat/completions` perfectly well answered `/models`
+    with `401 Not Authenticated - INVALIDCOOKIE`, and setup refused to continue --
+    over a listing nothing actually needs. So a failure here is reported and survived:
+    the model name gets typed instead.
+    """
+    request_headers = {**({"Authorization": f"Bearer {api_key}"} if api_key else {}), **extra}
+    try:
+        body = _get(f"{base.rstrip('/')}/models", request_headers)
+    except Exception as exc:
+        return ProviderCheck(ok=True, models=(), error=_explain(exc))
+    models = sorted(str(entry.get("id", "")) for entry in body.get("data", []) if entry.get("id"))
     return ProviderCheck(ok=True, models=tuple(models))
 
 
@@ -80,16 +91,26 @@ def _get(url: str, headers: dict[str, str]) -> dict[str, Any]:
 def _explain(exc: Exception) -> str:
     """Turn a provider's failure into a message that names the fix rather than the symptom."""
     if isinstance(exc, urllib.error.HTTPError):
+        raw = b""
         try:
-            detail = json.loads(exc.read()).get("error", {})
+            raw = exc.read()
+            detail = json.loads(raw).get("error", {})
             message = detail.get("message") if isinstance(detail, dict) else str(detail)
         except Exception:
-            message = ""
+            # Not every gateway answers in JSON, and the plain-text ones are often the
+            # only thing that says what is actually wrong.
+            message = raw.decode("utf-8", "replace").strip()[:200]
+        # The server's own words, always. A gateway that says
+        # "Not Authenticated - INVALIDCOOKIE" is telling you it wants a cookie; reporting
+        # that as "키가 거부되었습니다" sends you to check a key that was never the problem.
+        said = f'서버 응답: "{message}"' if message else ""
         if exc.code == 401:
-            return f"키가 거부되었습니다. {message}".strip()
+            return f"401 인증 실패 — 키나 헤더를 받아주지 않았습니다. {said}".strip()
         if exc.code == 403:
-            return f"유효한 키지만 이 작업 권한이 없습니다. {message}".strip()
-        return f"HTTP {exc.code}. {message}".strip()
+            return f"403 — 인증은 됐지만 이 작업 권한이 없습니다. {said}".strip()
+        if exc.code == 404:
+            return f"404 — 이 주소에 그런 경로가 없습니다. {said}".strip()
+        return f"HTTP {exc.code}. {said}".strip()
 
     if isinstance(exc, urllib.error.URLError):
         return (
