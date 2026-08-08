@@ -87,6 +87,18 @@ class TestCompatibleEndpoint:
         assert seen["headers"]["Cookie"] == "session=abc"
         assert seen["url"] == "https://gateway/v1/models"
 
+    def test_a_credential_is_sent_as_a_bearer_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A compatible endpoint may still want a key -- vLLM's --api-key, a LiteLLM
+        proxy. "Not required" is not "cannot be given"."""
+        seen: dict[str, Any] = {}
+        monkeypatch.setattr(
+            catalog, "_get", lambda url, headers: seen.update(headers) or {"data": []}
+        )
+
+        catalog.list_models("custom", api_key="sk-secret", api_base="https://gateway/v1")
+
+        assert seen["Authorization"] == "Bearer sk-secret"
+
     def test_no_credential_means_no_authorization_header(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
