@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -196,7 +197,9 @@ class LiteLLMAdapter:
             "attempts": [],
         }
 
+        began = time.monotonic()
         for attempt in range(self._max_retries + 1):
+            started = time.monotonic()
             raw, usage = await self._call(
                 model,
                 messages,
@@ -204,9 +207,14 @@ class LiteLLMAdapter:
                 temperature=temperature,
                 profile=profile,
             )
+            # Waiting for the semaphore counts: on a shared endpoint the queue is most
+            # of the wall clock, and a duration that excluded it would say every call
+            # was fast while the run took an hour.
+            elapsed_ms = round((time.monotonic() - started) * 1000)
             self._usage.append(usage.model_copy(update={"retries": attempt}))
             attempt_log: dict[str, Any] = {
                 "n": attempt + 1,
+                "ms": elapsed_ms,
                 "raw": raw,
                 "in_tokens": usage.input_tokens,
                 "out_tokens": usage.output_tokens,
@@ -216,6 +224,7 @@ class LiteLLMAdapter:
             try:
                 result = schema.model_validate(_parse_json(raw))
                 record["ok"] = True
+                record["ms"] = round((time.monotonic() - began) * 1000)
                 log_llm_call(record)
                 return result
             except (ValidationError, ValueError) as exc:
@@ -242,6 +251,7 @@ class LiteLLMAdapter:
                 ]
 
         record["ok"] = False
+        record["ms"] = round((time.monotonic() - began) * 1000)
         record["final_error"] = last_error
         log_llm_call(record)
         raise StructuredOutputError(
