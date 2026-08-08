@@ -82,8 +82,62 @@ def _custom(api_key: str, base: str, extra: dict[str, str]) -> ProviderCheck:
     return ProviderCheck(ok=True, models=tuple(models))
 
 
+_PROBE_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "probe",
+        "schema": {
+            "type": "object",
+            "properties": {"ok": {"type": "string"}},
+            "required": ["ok"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+}
+
+
+def supports_response_schema(
+    *, api_base: str, model: str, api_key: str = "", headers: dict[str, str] | None = None
+) -> bool:
+    """Whether this endpoint will constrain decoding to a JSON Schema.
+
+    Worth one call at setup, because the alternative is paid on every call afterwards.
+    LiteLLM answers this from a table of models it knows, so anything self-hosted is
+    "no" by default and every structured call falls back to describing the schema in the
+    prompt and hoping -- which cost two repair turns in eight calls on a 35B model,
+    returning eight topics where six were allowed and entities as strings.
+
+    Asked of the endpoint rather than of a table, because that is where the answer is.
+    """
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "ok"}],
+        "max_tokens": 16,
+        "response_format": _PROBE_SCHEMA,
+    }
+    request_headers = {
+        "Content-Type": "application/json",
+        **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
+        **(headers or {}),
+    }
+    try:
+        _post(f"{api_base.rstrip('/')}/chat/completions", request_headers, payload)
+    except Exception as exc:
+        logger.info("%s does not take a json_schema response_format: %s", api_base, _explain(exc))
+        return False
+    return True
+
+
 def _get(url: str, headers: dict[str, str]) -> dict[str, Any]:
     request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+        return json.loads(response.read())  # type: ignore[no-any-return]
+
+
+def _post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
         return json.loads(response.read())  # type: ignore[no-any-return]
 
