@@ -241,6 +241,12 @@ class IngestService:
             )
             for result in divided:
                 say(Stage.DIVIDED, note=f"{result.folder or '/'} → {len(result.created)}개")
+            # A folder that just gained a child describes something different now, and
+            # the note is what a searcher reads to rule it out (SPEC.md 3.6). Placement
+            # used to trigger this by creating the folder; it no longer creates any, so
+            # subdivision is the only thing left that changes the shape of the tree.
+            if gained := [r.folder for r in divided if r.happened]:
+                await self._redraw_notes(gained, reason="a folder gained a sub-folder")
 
         say(Stage.DONE, note=str(destination) or "/")
         return IngestResult(
@@ -348,19 +354,17 @@ class IngestService:
         )
 
     async def _reconcile_notes(self, placement: Placement) -> None:
-        """Keep folder notes true after a placement changed the tree."""
+        """Keep folder notes true after a document landed in one."""
         if not placement.is_placed or placement.target is None:
             return
-        dest = placement.target
-        affected = _ancestors(dest) if placement.created_folder else [dest]
-        operations = await self._charters.refresh_operations(affected)
+        await self._redraw_notes([placement.target], reason="refresh folder notes")
+
+    async def _redraw_notes(self, folders: list[PurePosixPath], *, reason: str) -> None:
+        operations = await self._charters.refresh_operations(folders)
         if not operations:
             return
         self._transactor.execute(
-            JournalEntry(
-                reason="refresh folder notes",
-                operations=tuple(op for op, _ in operations),
-            ),
+            JournalEntry(reason=reason, operations=tuple(op for op, _ in operations)),
             payloads={op.target: payload for op, payload in operations},
         )
 
