@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -25,14 +25,42 @@ def place_at(folder: str | None, *, confidence: float = 0.9, existing: bool = Fa
     )
 
 
+async def add_into(engine: Bismuth, script: ScriptedModel, name: str, folder: str, body: str = ""):
+    """File a document into `folder`, putting the folder there first.
+
+    Placement chooses and never creates, so a destination has to exist before a document
+    can be sent to it. Bodies differ by default: identity is the bytes, and a shared one
+    would make every document after the first a duplicate.
+    """
+    from tests.conftest import seed_folder
+
+    seed_folder(Path(engine.vault.root), PurePosixPath(folder))
+    script.set(placement_prompts.PlacementDecision, place_at(folder, existing=True))
+    return await add(engine, name, body or f"{folder} 문서 {name}")
+
+
 class TestPlacement:
-    async def test_first_document_creates_the_first_folder(self, engine: Bismuth) -> None:
+    async def test_a_document_goes_into_a_folder_that_exists(self, engine: Bismuth) -> None:
         result = await add(engine, "contract.txt")
 
         assert result.placement.verdict is Verdict.PLACED
         assert result.destination == PurePosixPath("아폴로/2023")
-        assert result.placement.created_folder is True
+        assert result.placement.created_folder is False  # it was already there
         assert (engine.vault.root / "아폴로/2023/contract.txt").is_file()
+
+    async def test_a_folder_that_does_not_exist_is_read_as_the_root(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Placement chooses; only subdivision creates. Asked for somewhere that is not
+        there, the honest answer is the root (SPEC.md 3.4) -- measured otherwise as
+        twenty folders each named after one document."""
+        script.set(placement_prompts.PlacementDecision, place_at("새로운/폴더"))
+
+        result = await add(engine, "contract.txt")
+
+        assert result.destination == PurePosixPath()
+        assert not (engine.vault.root / "새로운").exists()
+        assert (engine.vault.root / "contract.txt").is_file()
 
     async def test_the_file_is_moved_not_copied_and_never_edited(self, engine: Bismuth) -> None:
         body = "아폴로 지원 계약서, 2023. 고유 내용."
@@ -70,9 +98,12 @@ class TestPlacement:
         assert result.placement.created_folder is False
         assert (engine.vault.root / "아폴로/2023/second.txt").is_file()
 
-    async def test_a_deep_path_is_created_whole(
+    async def test_a_deep_existing_path_is_used_whole(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
+        from tests.conftest import seed_folder
+
+        seed_folder(Path(engine.vault.root), PurePosixPath("법무/계약/대한물산/2023"))
         script.set(placement_prompts.PlacementDecision, place_at("법무/계약/대한물산/2023"))
 
         result = await add(engine, "deep.txt")

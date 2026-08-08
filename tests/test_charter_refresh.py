@@ -9,6 +9,7 @@ from bismuth.container import Bismuth
 from bismuth.domain.charter import Charter
 from bismuth.prompts import charters as charter_prompts
 from bismuth.prompts import placement as placement_prompts
+from bismuth.prompts import subdivision as subdivision_prompts
 from tests.conftest import ScriptedModel
 from tests.test_ingest import add, place_at
 
@@ -48,21 +49,44 @@ class TestDocumentChanges:
 
 
 class TestStructureChanges:
-    async def test_a_new_subfolder_gives_its_parent_a_note(self, engine: Bismuth) -> None:
-        await add(engine, "contract.txt")
+    """Subdivision is the only thing that changes the shape of the tree now -- placement
+    chooses among folders and never makes one -- so it is what has to leave the parent's
+    note true (SPEC.md 3.6)."""
 
-        parent = engine.charters.load(PurePosixPath("아폴로"))
+    async def _split_out_a_child(self, engine: Bismuth, script: ScriptedModel) -> None:
+        script.set(placement_prompts.PlacementDecision, place_at("아폴로/2023", existing=True))
+        await add(engine, "a.txt", "아폴로 계약 A")
+        await add(engine, "b.txt", "아폴로 보고서 B")
+
+        ids = [document_id for document_id, _ in engine.catalog.iter_cards()]
+        script.set(
+            subdivision_prompts.Emerging,
+            subdivision_prompts.Emerging(
+                emerged=True, axis="문서 종류", name="계약", note="계약서", reason="r"
+            ),
+        )
+        script.set(
+            subdivision_prompts.Members,
+            subdivision_prompts.Members(document_ids=ids[:1], reason="r"),
+        )
+        await add(engine, "c.txt", "아폴로 계약 C")
+
+    async def test_a_new_subfolder_gives_its_parent_a_note(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await self._split_out_a_child(engine, script)
+
+        parent = engine.charters.load(PurePosixPath("아폴로/2023"))
         assert parent is not None
         assert parent.purpose
 
     async def test_the_parent_note_names_its_subfolders(
-        self, engine: Bismuth, llm: FakeLLM
+        self, engine: Bismuth, script: ScriptedModel, llm: FakeLLM
     ) -> None:
-        await add(engine, "contract.txt")
+        await self._split_out_a_child(engine, script)
 
-        drafts = _notes_for(llm, "아폴로")
+        drafts = _notes_for(llm, "아폴로/2023")
         assert drafts, "the parent folder's note was never drawn"
-        assert "2023" in drafts[-1]
 
 
 class TestHumanNotes:

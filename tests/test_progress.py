@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from fastapi.testclient import TestClient
@@ -181,6 +181,9 @@ class TestIngestProgress:
         self, engine: Bismuth, script: ScriptedModel, make_document: Callable[..., Path]
     ) -> None:
         """The rationale is a paragraph; a progress line that long buries every other step."""
+        from tests.conftest import seed_folder
+
+        seed_folder(Path(engine.vault.root), PurePosixPath("환경/생태계"))
         script.set(
             placement_prompts.PlacementDecision,
             placement_prompts.PlacementDecision(
@@ -198,7 +201,7 @@ class TestIngestProgress:
 
         placed = next(p for p in seen if p.stage is Stage.PLACED)
         # Low confidence no longer parks anything; it is filed and the number is recorded.
-        assert placed.note == "환경/생태계 (새 폴더)"
+        assert placed.note == "환경/생태계"
         assert len(placed.note) < 60
 
     async def test_the_root_reads_as_a_destination_not_a_failure(

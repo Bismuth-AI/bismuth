@@ -8,9 +8,8 @@ import pytest
 
 from bismuth.container import Bismuth
 from bismuth.domain.errors import VaultError
-from bismuth.prompts import placement as placement_prompts
 from tests.conftest import ScriptedModel
-from tests.test_ingest import add, place_at
+from tests.test_ingest import add, add_into
 
 
 class TestDeleteFile:
@@ -120,8 +119,7 @@ class TestDeleteFolders:
         # Distinct bodies: identity is the bytes, so a shared default would make every
         # document after the first a duplicate and place nothing.
         for name, folder in (("a.txt", "법무/계약"), ("b.txt", "재무/2024"), ("c.txt", "인사")):
-            script.set(placement_prompts.PlacementDecision, place_at(folder))
-            await add(engine, name, f"{folder} 문서 {name}")
+            await add_into(engine, script, name, folder)
 
     async def test_removes_several_folders_in_one_batch(
         self, engine: Bismuth, script: ScriptedModel
@@ -191,10 +189,8 @@ class TestDeleteFolders:
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         """법무 keeps its note after 법무/계약 goes; a parent being deleted too has none to redraw."""
-        script.set(placement_prompts.PlacementDecision, place_at("법무/계약"))
-        await add(engine, "a.txt", "계약 문서")
-        script.set(placement_prompts.PlacementDecision, place_at("법무/소송"))
-        await add(engine, "b.txt", "소송 문서")
+        await add_into(engine, script, "a.txt", "법무/계약", "계약 문서")
+        await add_into(engine, script, "b.txt", "법무/소송", "소송 문서")
 
         await engine.deletion.delete_folders([PurePosixPath("법무/계약")])
 
