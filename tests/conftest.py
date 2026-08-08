@@ -9,11 +9,11 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
+from bismuth import logging_setup
 from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.api.app import create_app
 from bismuth.config import Settings
 from bismuth.container import Bismuth, build
-from bismuth import logging_setup
 from bismuth.domain.charter import CHARTER_FILENAME, Charter
 from bismuth.domain.document import Entity, EntityKind
 from bismuth.ports.llm import ModelProfile, Prompt
