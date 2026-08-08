@@ -177,10 +177,12 @@ class Emerging(BaseModel):
     emerged: bool = Field(description="False when no single class has gathered yet.")
     axis: str = Field(
         default="",
+        max_length=40,
         description=(
-            "What the sub-folders here tell apart, in a few words -- the question every "
-            "one of them is an answer to. Asked only the first time; after that the "
-            "folder already has one and you are held to it."
+            "What the sub-folders here tell apart, in a FEW WORDS -- the question every "
+            "one of them is an answer to, like `소관 부처` or `법령의 종류`. Not a "
+            "sentence; the explanation goes in `reason`. Asked only the first time; "
+            "after that the folder already has one and you are held to it."
         ),
     )
     name: str = Field(default="", description="Folder name for that class, one level. Not a path.")
@@ -223,9 +225,11 @@ class Division(BaseModel):
     divide: bool = Field(default=True, description="False if, on writing them out, none work.")
     basis: str = Field(
         default="",
+        max_length=40,
         description=(
-            "The distinction the signs follow, in a few words. Recorded on the folder and "
-            "read back when this is reconsidered."
+            "The axis the signs follow, in a FEW WORDS. Recorded on the folder and read "
+            "back every time it is looked at again, so a sentence here is a sentence "
+            "every later question is asked against."
         ),
     )
     groups: list[Group] = Field(default_factory=list, max_length=12)
@@ -248,7 +252,15 @@ class Review(BaseModel):
         )
     )
     holds: bool = Field(description="True when the existing division is still right.")
-    basis: str = Field(default="", description="The new distinction, when replacing the old one.")
+    basis: str = Field(
+        default="",
+        max_length=40,
+        description=(
+            "The new axis in a FEW WORDS, when replacing the old one -- `소관 부처`, not a "
+            "sentence about why. Explanations belong in `reason`; this is read back as "
+            "the axis itself, so a paragraph here erases the folder's axis."
+        ),
+    )
     groups: list[Group] = Field(default_factory=list, max_length=12)
     rename_to: str | None = Field(default=None)
 
@@ -260,6 +272,7 @@ def build_emerging(
     documents: list[tuple[str, str]],
     children: list[tuple[str, str]],
     axis: str = "",
+    spent: list[str] | None = None,
 ) -> Prompt:
     """Step one: has any one class grown thick enough to come out?
 

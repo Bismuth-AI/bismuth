@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
+import pytest
+from pydantic import ValidationError
+
 from bismuth.container import Bismuth
 from bismuth.domain.charter import Charter
 from bismuth.prompts import placement as placement_prompts
@@ -452,3 +455,68 @@ class TestOneAxisPerFolder:
         assert after is not None
         assert after.split_basis == before.split_basis
         assert after.split_at_documents == before.split_at_documents
+
+
+class TestAnAxisIsSpentOnce:
+    """Within a folder, every ancestor's axis has one constant value -- that is what put
+    these documents together -- so none of them can separate anything here. Measured
+    without this: 시행규칙/과학기술정보통신부 소관/시행규칙, and beside it 시행령, which reads
+    as though an enforcement rule could contain an enforcement decree."""
+
+    async def _divide_root(self, engine: Bismuth, script: ScriptedModel) -> list[str]:
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "법률", "법률", ids[:2], axis="법령의 종류")
+        await engine.subdivision.consider(PurePosixPath())
+        return ids
+
+    async def test_an_axis_used_above_is_refused(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await self._divide_root(engine, script)
+        script.set(placement_prompts.PlacementDecision, place_at("법률", existing=True))
+        await add(engine, "more.txt", "법률 문서 하나 더")
+
+        # The child proposes the axis its parent was already divided along.
+        _emerges(script, "시행령", "시행령", ids[:1], axis="법령의 종류")
+        divided = await engine.subdivision.consider(PurePosixPath("법률"))
+
+        assert divided == []
+        assert not (engine.vault.root / "법률/시행령").exists()
+
+    async def test_a_different_axis_below_is_fine(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await self._divide_root(engine, script)
+
+        _emerges(script, "금융위원회", "금융위원회 소관", ids[:1], axis="소관 부처")
+        divided = await engine.subdivision.consider(PurePosixPath("법률"))
+
+        assert (engine.vault.root / "법률/금융위원회").is_dir()
+        assert divided[0].basis == "소관 부처"
+
+    async def test_a_class_may_not_carry_a_grandparents_name(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await self._divide_root(engine, script)
+        _emerges(script, "금융위원회", "금융위원회 소관", ids[:1], axis="소관 부처")
+        await engine.subdivision.consider(PurePosixPath("법률"))
+
+        # Two levels down, proposing the name of the top-level folder.
+        _emerges(script, "법률", "법률", ids[:1], axis="문서 성격")
+        divided = await engine.subdivision.consider(PurePosixPath("법률/금융위원회"))
+
+        assert divided == []
+        assert not (engine.vault.root / "법률/금융위원회/법률").exists()
+
+
+class TestTheAxisStaysAPhrase:
+    def test_an_essay_is_not_an_axis(self) -> None:
+        """Review filled `basis` with paragraphs of English, and that paragraph was then
+        read back as the axis on every later look -- so the folder lost its axis to the
+        explanation of why it had one."""
+        essay = "The existing sub-folder only covers one document type. " * 3
+
+        with pytest.raises(ValidationError):
+            subdivision_prompts.Review(reason="r", holds=False, basis=essay)
+        with pytest.raises(ValidationError):
+            subdivision_prompts.Emerging(reason="r", emerged=True, axis=essay, name="x")
