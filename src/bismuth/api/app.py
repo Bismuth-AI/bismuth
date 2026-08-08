@@ -13,7 +13,7 @@ from urllib.parse import quote
 import anyio
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from bismuth import __version__
 from bismuth.adapters.llm import list_models, litellm_adapter, suggest_models
@@ -104,6 +104,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             model_fast=current.model_fast,
             model_reasoning=current.model_reasoning,
             vault_path=str(current.vault_path),
+            api_headers=current.api_headers,
             api_key_tail=f"…{current.api_key[-4:]}" if current.api_key else "",
         )
 
@@ -116,7 +117,10 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         key = body.api_key or (app.state.settings.api_key if body.reuse_saved_key else "")
         check = await anyio.to_thread.run_sync(
             lambda: list_models(
-                chosen.id, api_key=key, api_base=body.api_base or chosen.default_api_base
+                chosen.id,
+                api_key=key,
+                api_base=body.api_base or chosen.default_api_base,
+                headers=body.api_headers,
             )
         )
         fast, reasoning = suggest_models(check.models)
@@ -143,6 +147,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             provider_id=chosen.id,
             api_key=key,
             api_base=body.api_base or chosen.default_api_base,
+            api_headers=body.api_headers,
             model_fast=body.model_fast,
             model_reasoning=body.model_reasoning,
         )
@@ -453,6 +458,7 @@ class SetupStateOut(BaseModel):
     provider_id: str = ""
     api_key_tail: str = ""
     api_base: str | None = None
+    api_headers: dict[str, str] = Field(default_factory=dict)
     model_fast: str = ""
     model_reasoning: str = ""
     vault_path: str = ""
@@ -462,6 +468,7 @@ class ProviderCheckIn(BaseModel):
     provider_id: str
     api_key: str = ""
     api_base: str | None = None
+    api_headers: dict[str, str] = Field(default_factory=dict)
     reuse_saved_key: bool = False
 
 
@@ -511,6 +518,7 @@ class SetupIn(BaseModel):
     api_key: str = ""
     reuse_saved_key: bool = False
     api_base: str | None = None
+    api_headers: dict[str, str] = Field(default_factory=dict)
     model_fast: str
     model_reasoning: str
     vault_path: str

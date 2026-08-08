@@ -129,13 +129,15 @@ class TestConfigured:
     def test_a_hosted_provider_without_a_key_is_not_enough(self, clean_env: None) -> None:
         assert not configured(api_key="").is_configured
 
-    def test_ollama_needs_no_key(self, clean_env: None) -> None:
+    def test_a_compatible_endpoint_needs_no_key(self, clean_env: None) -> None:
+        """Ollama, vLLM and LM Studio all speak the OpenAI protocol and most want no
+        credential; they are one provider now, told apart by the address."""
         assert configured(
-            provider_id="ollama", api_key="", api_base="http://localhost:11434"
+            provider_id="custom", api_key="", api_base="http://localhost:11434/v1"
         ).is_configured
 
-    def test_a_local_provider_still_needs_an_endpoint(self, clean_env: None) -> None:
-        assert not configured(provider_id="ollama", api_key="", api_base=None).is_configured
+    def test_a_compatible_endpoint_still_needs_an_address(self, clean_env: None) -> None:
+        assert not configured(provider_id="custom", api_key="", api_base=None).is_configured
 
 
 class TestModelNames:
@@ -150,17 +152,20 @@ class TestModelNames:
         settings = configured(model_fast="openrouter/meta/llama-3")
         assert settings.model_for(ModelProfile.FAST) == "openrouter/meta/llama-3"
 
-    def test_ollama_gets_its_own_prefix(self, clean_env: None) -> None:
-        settings = configured(provider_id="ollama", api_key="", model_fast="qwen3:8b")
-        assert settings.model_for(ModelProfile.FAST) == "ollama/qwen3:8b"
+    def test_a_compatible_endpoint_is_addressed_as_openai(self, clean_env: None) -> None:
+        """LiteLLM routes by protocol, and these speak OpenAI's."""
+        settings = configured(provider_id="custom", api_key="", model_fast="qwen3.6-35b")
+        assert settings.model_for(ModelProfile.FAST) == "openai/qwen3.6-35b"
 
 
 class TestLocality:
     """runs_locally is computed from the endpoint, not assumed."""
 
-    def test_ollama_is_local(self, clean_env: None) -> None:
+    def test_a_local_address_is_local(self, clean_env: None) -> None:
+        """Read off the address, never assumed from the provider's name -- the same
+        software is local on this machine and not local on someone else's."""
         assert configured(
-            provider_id="ollama", api_key="", api_base="http://localhost:11434"
+            provider_id="custom", api_key="", api_base="http://localhost:11434/v1"
         ).runs_locally
 
     def test_a_localhost_endpoint_is_local_whatever_the_provider_is_called(

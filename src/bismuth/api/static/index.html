@@ -43,11 +43,12 @@ button:disabled { opacity: .45; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.ghost { border-color: transparent; background: transparent; color: var(--dim); }
 button.ghost:hover { color: var(--ink); background: var(--accent-soft); }
-input, select {
+input, select, textarea {
   font: inherit; padding: 8px 11px; border-radius: 7px; border: 1px solid var(--line);
   background: var(--bg); color: var(--ink); width: 100%; max-width: 480px;
 }
-input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+textarea { resize: vertical; font-family: ui-monospace, monospace; font-size: 13px; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .hidden { display: none !important; }
 .muted { color: var(--dim); }
 
@@ -266,13 +267,19 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
     <label>엔드포인트 주소</label>
     <input type="text" id="s-base" spellcheck="false">
   </div>
+  <div class="field hidden" id="s-headers-field">
+    <label>추가 헤더 <span class="muted" style="font-weight:400">— 선택. 게이트웨이가 쿠키나 자체 헤더로 인증할 때만</span></label>
+    <textarea id="s-headers" spellcheck="false" rows="2" placeholder="Cookie: session=…&#10;X-Api-Token: …"></textarea>
+    <div class="muted" style="font-size:13px;margin-top:5px">한 줄에 하나, <code>이름: 값</code> 형식.</div>
+  </div>
   <button id="s-check" class="primary">다음</button>
   <div id="s-error" class="err hidden"></div>
   <div id="s-models" class="hidden">
     <hr>
     <p id="s-models-count" class="muted"></p>
-    <div class="field"><label>빠른 모델 <span class="muted" style="font-weight:400">— 문서마다 실행됩니다</span></label><select id="s-fast"></select></div>
-    <div class="field"><label>판단 모델 <span class="muted" style="font-weight:400">— 배치·폴더 노트에 실행됩니다</span></label><select id="s-reasoning"></select></div>
+    <div class="field"><label>빠른 모델 <span class="muted" style="font-weight:400">— 문서마다 실행됩니다</span></label><input type="text" id="s-fast" list="s-model-list" spellcheck="false" autocomplete="off"></div>
+    <div class="field"><label>판단 모델 <span class="muted" style="font-weight:400">— 배치·폴더 노트에 실행됩니다</span></label><input type="text" id="s-reasoning" list="s-model-list" spellcheck="false" autocomplete="off"></div>
+    <datalist id="s-model-list"></datalist>
     <div class="rowend">
       <button class="ghost" id="s-cancel">취소</button>
       <button id="s-save" class="primary">저장하고 시작</button>
@@ -1049,27 +1056,63 @@ function onProvider() {
   $("s-key").placeholder = setup.api_key_tail && p.id === setup.provider_id ? `저장된 키 ${setup.api_key_tail} — 그대로 쓰려면 비워 두세요` : "여기에 붙여넣으세요";
   $("s-base-field").classList.toggle("hidden", !p.needs_api_base);
   if (p.needs_api_base) $("s-base").value = setup.api_base || p.default_api_base || "";
+  // Only the OpenAI-compatible option sits behind arbitrary gateways; the hosted two
+  // authenticate the way they document.
+  $("s-headers-field").classList.toggle("hidden", p.id !== "custom");
+  $("s-headers").value = headerLines(setup.api_headers);
+}
+/* `Name: value` per line, both ways. A dict in a textarea is the smallest thing that
+   can express "this gateway wants a cookie", which is otherwise unreachable. */
+function parseHeaders(text) {
+  const out = {};
+  for (const line of (text || "").split("\n")) {
+    const at = line.indexOf(":");
+    if (at < 1) continue;
+    const name = line.slice(0, at).trim();
+    const value = line.slice(at + 1).trim();
+    if (name && value) out[name] = value;
+  }
+  return out;
+}
+const headerLines = (h) => Object.entries(h || {}).map(([k, v]) => `${k}: ${v}`).join("\n");
+
+function setupBody(p) {
+  return {
+    provider_id: p.id,
+    api_key: $("s-key").value,
+    reuse_saved_key: !$("s-key").value && p.id === setup.provider_id,
+    api_base: p.needs_api_base ? $("s-base").value : null,
+    api_headers: p.id === "custom" ? parseHeaders($("s-headers").value) : {},
+  };
 }
 function showErr(m) { const b = $("s-error"); b.textContent = m; b.classList.remove("hidden"); }
 $("s-check").addEventListener("click", async () => {
   const p = currentProvider(); if (!p) { showErr("먼저 하나 골라 주세요."); return; }
   const btn = $("s-check"); btn.disabled = true; btn.textContent = "프로바이더에 물어보는 중…"; $("s-error").classList.add("hidden");
   try {
-    const body = { provider_id: p.id, api_key: $("s-key").value, reuse_saved_key: !$("s-key").value && p.id === setup.provider_id, api_base: p.needs_api_base ? $("s-base").value : null };
-    const r = await api("/setup/check", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const r = await api("/setup/check", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(setupBody(p)) });
     if (!r.ok) { showErr(r.error); return; }
-    const opts = (sel) => r.models.map((m) => `<option ${m === sel ? "selected" : ""}>${esc(m)}</option>`).join("");
-    $("s-fast").innerHTML = opts(setup.model_fast || r.suggested_fast);
-    $("s-reasoning").innerHTML = opts(setup.model_reasoning || r.suggested_reasoning);
-    $("s-models-count").textContent = `이 키로 쓸 수 있는 모델 ${r.models.length}개. 무난한 조합을 골라 뒀으니 원하면 바꾸세요.`;
+    $("s-model-list").innerHTML = r.models.map((m) => `<option value="${esc(m)}">`).join("");
+    // The saved names belong to the saved provider; offering gpt-5.4-nano for a local
+    // endpoint is a name that will simply 404 on the first upload.
+    const saved = p.id === setup.provider_id;
+    $("s-fast").value = (saved && setup.model_fast) || r.suggested_fast || "";
+    $("s-reasoning").value = (saved && setup.model_reasoning) || r.suggested_reasoning || "";
+    // A missing catalogue is not a missing endpoint. Plenty of OpenAI-compatible servers
+    // never expose /models, or gate it differently from the thing we actually call.
+    $("s-models-count").textContent = r.models.length
+      ? `쓸 수 있는 모델 ${r.models.length}개. 무난한 조합을 골라 뒀으니 원하면 바꾸세요.`
+      : `모델 목록을 받지 못했습니다${r.error ? ` (${r.error})` : ""} — 쓸 모델 이름을 직접 적어 주세요.`;
     $("s-models").classList.remove("hidden");
   } catch (err) { showErr(err.message); } finally { btn.disabled = false; btn.textContent = "다음"; }
 });
 $("s-save").addEventListener("click", async () => {
   const p = currentProvider(); const btn = $("s-save"); btn.disabled = true;
   try {
+    const fast = $("s-fast").value.trim(), reasoning = $("s-reasoning").value.trim();
+    if (!fast || !reasoning) { showErr("두 모델 이름을 모두 적어 주세요."); return; }
     await api("/setup", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ provider_id: p.id, api_key: $("s-key").value, reuse_saved_key: !$("s-key").value && p.id === setup.provider_id, api_base: p.needs_api_base ? $("s-base").value : null, model_fast: $("s-fast").value, model_reasoning: $("s-reasoning").value, vault_path: $("s-vault").value }) });
+      body: JSON.stringify({ ...setupBody(p), model_fast: fast, model_reasoning: reasoning, vault_path: $("s-vault").value }) });
     $("setup").classList.add("hidden"); await refresh();
   } catch (err) { showErr(err.message); } finally { btn.disabled = false; }
 });
