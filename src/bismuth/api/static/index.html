@@ -1063,8 +1063,16 @@ function onProvider() {
   $("s-models").classList.add("hidden"); $("s-error").classList.add("hidden");
   if (!p) return;
   $("s-hint").textContent = p.hint || "";
-  $("s-key-field").classList.toggle("hidden", !p.needs_key);
-  $("s-key").placeholder = setup.api_key_tail && p.id === setup.provider_id ? `저장된 키 ${setup.api_key_tail} — 그대로 쓰려면 비워 두세요` : "여기에 붙여넣으세요";
+  // Shown for every provider. "A key is not required" is not "a key cannot be given":
+  // plenty of OpenAI-compatible servers are started with one, and hiding the field left
+  // no way to supply it but to hand-write an Authorization header.
+  $("s-key-field").classList.remove("hidden");
+  $("s-key-label").textContent = p.needs_key
+    ? (p.key_label || "API 키")
+    : `${p.key_label || "API 키"} — 선택`;
+  $("s-key").placeholder = setup.api_key_tail && p.id === setup.provider_id
+    ? `저장된 키 ${setup.api_key_tail} — 그대로 쓰려면 비워 두세요`
+    : (p.needs_key ? "여기에 붙여넣으세요" : "키를 요구하는 엔드포인트라면 여기에. 아니면 비워 두세요");
   $("s-base-field").classList.toggle("hidden", !p.needs_api_base);
   if (p.needs_api_base) $("s-base").value = setup.api_base || p.default_api_base || "";
   // Only the OpenAI-compatible option sits behind arbitrary gateways; the hosted two
