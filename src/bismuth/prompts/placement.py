@@ -1,4 +1,18 @@
-"""Deciding a document's folder by looking at the folders that already exist."""
+"""Choosing a document's folder from the folders that already exist.
+
+**Nothing here invents a folder.** Placement answers "where in the tree as it stands",
+and a tree that does not have a place for this document is answering "the root" -- which
+is what SPEC.md 3.4 says the root is for. Categories come from subdivision, the operation
+that sees several documents before it names anything.
+
+Measured on 300 legal documents: placement invented twenty folders, and every one of the
+twenty was named after a single document's title (`제조물 책임법`, `국제우편규정`). Three
+were created while the vault held two, three and six folders, which is exactly when the
+prompt says to use the root. The rest were the model correctly obeying "make a new folder
+that fits how the existing tree is organised" -- the tree was by then organised as a list
+of statute names, so it kept adding statute names. A first mistake became the precedent
+for every one after it.
+"""
 
 from __future__ import annotations
 
@@ -8,63 +22,50 @@ from bismuth.ports.llm import Prompt
 
 SYSTEM = """\
 You are a meticulous archivist filing one document into a shared folder tree. You \
-are shown the document and the folders that already exist. Decide the single \
-folder this document belongs in.
+are shown the document and the folders that exist. Choose the one it belongs in.
 
-You may:
-- put it in an existing folder, OR
-- propose a new folder path (any depth) when nothing existing fits, OR
-- **leave it at the root**, unsorted for now.
+There are exactly two answers:
 
-Leaving it at the root is a NORMAL answer, not a refusal. This archive is being
-built as documents arrive; early on there is nothing to sort into, and a folder
-invented from a single document can hold that document and nothing else. When you
-cannot see a distinction worth drawing yet, the root is where the document goes,
-and you are CONFIDENT about that. Documents gathering at the root are what a later
-step reads to work out the real divisions.
+- **one of the folders you were shown**, copied exactly, OR
+- **the root** (`""`), where it waits.
+
+**You cannot make a new folder.** Not a new name, not a new path, not a deeper level \
+under an existing one. If nothing shown fits, the answer is the root, and that is a \
+CONFIDENT answer rather than a refusal.
+
+The root is not a failure state, a holding pen, or an admission you could not decide. \
+It is where documents wait for a distinction to become visible, and it is read later by \
+a step that sees many documents at once and draws the real divisions from them. That \
+step is the only thing that makes folders here. It can see what you cannot from one \
+document: whether a class has enough behind it to deserve a shelf.
 
 The rules, in order of importance:
 
-1. REUSE an existing folder whenever the document reasonably fits one. Inventing a \
-second folder for something an existing folder already covers is the worst thing \
-you can do here -- it splits one idea across two places and nobody finds either. \
-When two folders both fit, pick the more specific existing one.
+1. REUSE the folder the document reasonably fits. When two fit, pick the more \
+specific one.
 
-2. CREATE a new folder when the document genuinely has no home among them. This is \
-expected and common, especially in a young archive: a collection of ten documents \
-about one subject is not a reason to file the eleventh, about a different subject, \
-in the wrong place. Give the new folder a path that fits how the existing tree is \
-organised: same language, same style, a similar depth. If everything so far is \
-`사업명/연도`, a new document about a new project should look like `새사업명/2024`, \
-not a flat `new_stuff`.
+2. If none fits, answer the root. Do not force a document into the nearest folder \
+merely because it is the closest one there -- a document filed where it does not \
+belong is worse than one waiting at the root, because nobody will look for it where \
+it ended up.
 
-3. Name folders in the DOCUMENT'S OWN LANGUAGE, using the words this organisation \
-would use. A Korean collection gets Korean folder names.
+3. The root is also the answer early on, when there is little or nothing to sort into. \
+An archive of ten documents with no folders is not unfinished; it is what ten \
+documents look like.
 
-4. Depth is yours to choose. A vault of ten documents wants shallow folders; a \
-large one earns deeper ones. Do not nest for the sake of nesting -- every level \
-must be a distinction someone would actually navigate by.
+Return the folder EXACTLY as it appears in the list, or `""` for the root. A path that \
+is not in the list is read as the root, so there is nothing to gain by inventing one. \
+`reason` is one sentence a person can check against the document -- why this folder, \
+citing what the document is about.
 
-Return the folder as a path with `/` between levels, relative to the archive \
-root, or `""` (the empty string) for the root itself. `existing` says whether that \
-exact path is already in the list you were shown. `reason` is one sentence a \
-person can check against the document -- why this folder, citing what the document \
-is about.
+`confidence` is how sure you are that THE FOLDER YOU RETURNED is where this document \
+belongs. It is NOT how well the document fits the existing tree, and "the root, because \
+nothing here fits yet" can be a 1.0. It is recorded and shown to people; nothing is \
+rejected for scoring low.
 
-`confidence` is how sure you are that THE FOLDER YOU RETURNED is where this \
-document belongs. It is NOT how well the document fits the existing tree. It is \
-recorded and shown to people; nothing is rejected for scoring low.
-
-"None of the existing folders fit, so I made a new one" is a NORMAL, \
-HIGH-confidence answer, and it is how an archive grows past its first folder. So \
-is "there is nothing to sort into yet, so it stays at the root". What you must NOT \
-do is force a document into the nearest folder merely because it is the closest \
-one there: if the document does not belong there, either make the folder it does \
-belong in, or leave it at the root.
-
-If the document is unreadable, empty, or clearly garbage, set `folder` to null. \
-That is for documents you could not read -- never for documents you could read but \
-could not sort.\
+If the document is unreadable, empty, or clearly garbage, set `folder` to null. That is \
+for documents you could not read -- never for documents you could read but could not \
+sort.\
 """
 
 _USER = """\
@@ -87,8 +88,9 @@ class PlacementDecision(BaseModel):
 
     folder: str | None = Field(
         description=(
-            "Folder path with '/' between levels; '' for the root; null only when the "
-            "document could not be read."
+            "One of the folder paths you were shown, copied exactly; '' for the root; "
+            "null only when the document could not be read. Anything else is read as "
+            "the root."
         )
     )
     existing: bool = Field(
@@ -118,7 +120,7 @@ def build(
         tree = "\n".join(
             f"  {path}" + (f"  — {purpose}" if purpose else "") for path, purpose in folders
         )
-        tree_note = f" ({len(folders)} so far -- reuse one when the document fits it)"
+        tree_note = f" ({len(folders)} -- choose one of these, or the root)"
     else:
         tree, tree_note = _EMPTY_TREE, ""
 
