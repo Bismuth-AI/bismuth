@@ -48,6 +48,14 @@ input, select, textarea {
   background: var(--bg); color: var(--ink); width: 100%; max-width: 480px;
 }
 textarea { resize: vertical; font-family: ui-monospace, monospace; font-size: 13px; }
+button.small { padding: 5px 9px; font-size: 13px; }
+/* Header rows: name and value are separate fields because they are separate things --
+   a colon inside a cookie value is not a separator, and typing one into a single box
+   silently split the value in half. */
+.hrow { display: grid; grid-template-columns: 170px 1fr 30px; gap: 6px; margin-bottom: 6px; max-width: 480px; }
+.hrow input { max-width: none; font-family: ui-monospace, monospace; font-size: 13px; }
+.hrow button { padding: 0; color: var(--dim); border-color: transparent; background: transparent; }
+.hrow button:hover { color: var(--warn); background: var(--accent-soft); }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .hidden { display: none !important; }
 .muted { color: var(--dim); }
@@ -269,8 +277,11 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
   </div>
   <div class="field hidden" id="s-headers-field">
     <label>추가 헤더 <span class="muted" style="font-weight:400">— 선택. 게이트웨이가 쿠키나 자체 헤더로 인증할 때만</span></label>
-    <textarea id="s-headers" spellcheck="false" rows="2" placeholder="Cookie: session=…&#10;X-Api-Token: …"></textarea>
-    <div class="muted" style="font-size:13px;margin-top:5px">한 줄에 하나, <code>이름: 값</code> 형식.</div>
+    <div id="s-headers-rows"></div>
+    <button type="button" class="ghost small" id="s-headers-add">+ 헤더 추가</button>
+    <div class="muted" style="font-size:13px;margin-top:6px">
+      잘 되던 요청의 Request Headers를 그대로 옮기면 됩니다. <code>Cookie: session=…</code> 통째로 붙여넣어도 나눠집니다.
+    </div>
   </div>
   <button id="s-check" class="primary">다음</button>
   <div id="s-error" class="err hidden"></div>
@@ -1059,22 +1070,55 @@ function onProvider() {
   // Only the OpenAI-compatible option sits behind arbitrary gateways; the hosted two
   // authenticate the way they document.
   $("s-headers-field").classList.toggle("hidden", p.id !== "custom");
-  $("s-headers").value = headerLines(setup.api_headers);
+  renderHeaders(setup.api_headers);
 }
-/* `Name: value` per line, both ways. A dict in a textarea is the smallest thing that
-   can express "this gateway wants a cookie", which is otherwise unreachable. */
-function parseHeaders(text) {
+
+/* ---- extra headers, one field per thing ----
+   A name and a value are separate, so they get separate boxes: a cookie value contains
+   colons of its own, and a single "Name: value" box cut them in half. */
+function headerRow(name = "", value = "") {
+  const row = document.createElement("div");
+  row.className = "hrow";
+  row.innerHTML = `<input class="h-name" spellcheck="false" autocomplete="off" placeholder="Cookie">
+    <input class="h-value" spellcheck="false" autocomplete="off" placeholder="session=…">
+    <button type="button" class="h-del" title="이 헤더 지우기">✕</button>`;
+  row.querySelector(".h-name").value = name;
+  row.querySelector(".h-value").value = value;
+  row.querySelector(".h-del").addEventListener("click", () => {
+    row.remove();
+    if (!$("s-headers-rows").children.length) $("s-headers-rows").append(headerRow());
+  });
+  // Pasting a whole header line into the name box splits it, because that is what
+  // people have on the clipboard when they come from the network tab.
+  row.querySelector(".h-name").addEventListener("paste", (e) => {
+    const text = (e.clipboardData || window.clipboardData).getData("text");
+    const at = text.indexOf(":");
+    if (at < 1) return;
+    e.preventDefault();
+    row.querySelector(".h-name").value = text.slice(0, at).trim();
+    row.querySelector(".h-value").value = text.slice(at + 1).trim();
+  });
+  return row;
+}
+
+function renderHeaders(headers) {
+  const box = $("s-headers-rows");
+  box.innerHTML = "";
+  for (const [name, value] of Object.entries(headers || {})) box.append(headerRow(name, value));
+  if (!box.children.length) box.append(headerRow());
+}
+
+function collectHeaders() {
   const out = {};
-  for (const line of (text || "").split("\n")) {
-    const at = line.indexOf(":");
-    if (at < 1) continue;
-    const name = line.slice(0, at).trim();
-    const value = line.slice(at + 1).trim();
+  for (const row of $("s-headers-rows").querySelectorAll(".hrow")) {
+    const name = row.querySelector(".h-name").value.trim();
+    const value = row.querySelector(".h-value").value.trim();
     if (name && value) out[name] = value;
   }
   return out;
 }
-const headerLines = (h) => Object.entries(h || {}).map(([k, v]) => `${k}: ${v}`).join("\n");
+
+$("s-headers-add").addEventListener("click", () => $("s-headers-rows").append(headerRow()));
 
 function setupBody(p) {
   return {
@@ -1082,7 +1126,7 @@ function setupBody(p) {
     api_key: $("s-key").value,
     reuse_saved_key: !$("s-key").value && p.id === setup.provider_id,
     api_base: p.needs_api_base ? $("s-base").value : null,
-    api_headers: p.id === "custom" ? parseHeaders($("s-headers").value) : {},
+    api_headers: p.id === "custom" ? collectHeaders() : {},
   };
 }
 function showErr(m) { const b = $("s-error"); b.textContent = m; b.classList.remove("hidden"); }
