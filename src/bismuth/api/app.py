@@ -16,7 +16,12 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from bismuth import __version__
-from bismuth.adapters.llm import list_models, litellm_adapter, suggest_models
+from bismuth.adapters.llm import (
+    list_models,
+    litellm_adapter,
+    suggest_models,
+    supports_response_schema,
+)
 from bismuth.api.progress import ProgressBus, stream
 from bismuth.config import PROVIDERS, Settings, load_env_file, provider, save_user_config
 from bismuth.container import Bismuth, build
@@ -106,6 +111,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             vault_path=str(current.vault_path),
             api_headers=current.api_headers,
             api_body=current.api_body,
+            native_schema=current.native_schema,
             api_key_tail=f"…{current.api_key[-4:]}" if current.api_key else "",
         )
 
@@ -134,7 +140,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         )
 
     @app.post("/api/setup", response_model=SetupStateOut)
-    def setup_save(body: SetupIn) -> SetupStateOut:
+    async def setup_save(body: SetupIn) -> SetupStateOut:
         """Persist the wizard's answers and rebuild the engine around them, in place."""
         chosen = provider(body.provider_id)
         if chosen is None:
@@ -143,6 +149,22 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         if chosen.needs_key and not key:
             raise HTTPException(400, f"{chosen.label} 에는 키가 필요합니다.")
 
+        # Asked of the endpoint, once, rather than of LiteLLM's table of known models:
+        # a self-hosted server is always absent from that table, so every structured
+        # call fell back to describing the schema in the prompt and repairing what came
+        # back. Only for the compatible option; the hosted two are in the table.
+        native: bool | None = None
+        if chosen.id == "custom":
+            native = await anyio.to_thread.run_sync(
+                lambda: supports_response_schema(
+                    api_base=body.api_base or chosen.default_api_base or "",
+                    model=body.model_fast,
+                    api_key=key,
+                    headers=body.api_headers,
+                )
+            )
+            logger.info("%s constrains decoding to a schema: %s", body.api_base, native)
+
         updated = Settings(
             vault_path=Path(body.vault_path).expanduser(),
             provider_id=chosen.id,
@@ -150,6 +172,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             api_base=body.api_base or chosen.default_api_base,
             api_headers=body.api_headers,
             api_body=body.api_body,
+            native_schema=native,
             model_fast=body.model_fast,
             model_reasoning=body.model_reasoning,
         )
@@ -462,6 +485,7 @@ class SetupStateOut(BaseModel):
     api_base: str | None = None
     api_headers: dict[str, str] = Field(default_factory=dict)
     api_body: dict[str, Any] = Field(default_factory=dict)
+    native_schema: bool | None = None
     model_fast: str = ""
     model_reasoning: str = ""
     vault_path: str = ""
