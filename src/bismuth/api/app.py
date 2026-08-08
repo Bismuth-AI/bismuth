@@ -105,6 +105,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             model_reasoning=current.model_reasoning,
             vault_path=str(current.vault_path),
             api_headers=current.api_headers,
+            api_body=current.api_body,
             api_key_tail=f"…{current.api_key[-4:]}" if current.api_key else "",
         )
 
@@ -148,6 +149,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             api_key=key,
             api_base=body.api_base or chosen.default_api_base,
             api_headers=body.api_headers,
+            api_body=body.api_body,
             model_fast=body.model_fast,
             model_reasoning=body.model_reasoning,
         )
@@ -459,6 +461,7 @@ class SetupStateOut(BaseModel):
     api_key_tail: str = ""
     api_base: str | None = None
     api_headers: dict[str, str] = Field(default_factory=dict)
+    api_body: dict[str, Any] = Field(default_factory=dict)
     model_fast: str = ""
     model_reasoning: str = ""
     vault_path: str = ""
@@ -519,6 +522,7 @@ class SetupIn(BaseModel):
     reuse_saved_key: bool = False
     api_base: str | None = None
     api_headers: dict[str, str] = Field(default_factory=dict)
+    api_body: dict[str, Any] = Field(default_factory=dict)
     model_fast: str
     model_reasoning: str
     vault_path: str
