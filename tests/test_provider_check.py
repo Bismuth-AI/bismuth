@@ -14,7 +14,8 @@ from typing import Any
 
 import pytest
 
-from bismuth.adapters.llm import catalog
+from bismuth.adapters.llm import LiteLLMAdapter, catalog
+from bismuth.adapters.llm.litellm_adapter import apply_body
 from bismuth.config import PROVIDERS, Settings, provider
 
 
@@ -156,3 +157,63 @@ class TestSecrets:
         assert "supersecret" not in str(redacted)
         assert "ZjAyMTE0" not in str(redacted)
         assert redacted["api_headers"] == {"Cookie": "…ZA=="}  # still tells two apart
+
+
+class TestRequestBody:
+    """A server can want values Bismuth has no opinion about, and LiteLLM drops the
+    interesting ones on the floor unless they are smuggled past it."""
+
+    def test_standard_values_stay_top_level(self) -> None:
+        """LiteLLM translates these per provider, so it has to see them itself."""
+        kwargs: dict[str, Any] = {"model": "m", "temperature": 0.0}
+
+        apply_body(kwargs, {"temperature": 0.7, "top_p": 0.8, "presence_penalty": 1.5})
+
+        assert kwargs["temperature"] == 0.7  # configured wins over our determinism default
+        assert kwargs["top_p"] == 0.8
+        assert "extra_body" not in kwargs
+
+    def test_everything_else_goes_through_extra_body(self) -> None:
+        """drop_params discards arguments the provider is not known to support, which is
+        exactly the set worth configuring. extra_body reaches the endpoint untouched."""
+        kwargs: dict[str, Any] = {"model": "m"}
+
+        apply_body(
+            kwargs,
+            {"top_k": 20, "min_p": 0.0, "chat_template_kwargs": {"enable_thinking": False}},
+        )
+
+        assert kwargs["extra_body"] == {
+            "top_k": 20,
+            "min_p": 0.0,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+
+    def test_a_mixed_body_is_split(self) -> None:
+        kwargs: dict[str, Any] = {"model": "m", "temperature": 0.0}
+
+        apply_body(kwargs, {"temperature": 0.7, "top_k": 20})
+
+        assert kwargs["temperature"] == 0.7
+        assert kwargs["extra_body"] == {"top_k": 20}
+
+    def test_nothing_configured_changes_nothing(self) -> None:
+        kwargs: dict[str, Any] = {"model": "m", "temperature": 0.0}
+
+        apply_body(kwargs, {})
+
+        assert kwargs == {"model": "m", "temperature": 0.0}
+
+    def test_the_adapter_sends_it(self) -> None:
+        """The whole point: a qwen model with thinking left on took 93 seconds a
+        document instead of 6."""
+        adapter = LiteLLMAdapter(
+            model_fast="openai/qwen3.6-35b",
+            model_reasoning="openai/qwen3.6-35b",
+            body={"chat_template_kwargs": {"enable_thinking": False}, "top_p": 0.8},
+        )
+
+        assert adapter._body["top_p"] == 0.8
+        kwargs: dict[str, Any] = {}
+        apply_body(kwargs, adapter._body)
+        assert kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}

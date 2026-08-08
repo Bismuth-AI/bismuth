@@ -9,7 +9,7 @@ from typing import Any
 
 from agentkit import AssistantMessage, Message, ToolCall, ToolSpec
 
-from bismuth.adapters.llm.litellm_adapter import _load_litellm, usage_of
+from bismuth.adapters.llm.litellm_adapter import _load_litellm, apply_body, usage_of
 from bismuth.ports.llm import Usage
 
 
@@ -25,11 +25,13 @@ class LiteLLMChatModel:
         timeout: float = 120.0,
         max_concurrency: int = 4,
         headers: dict[str, str] | None = None,
+        body: dict[str, Any] | None = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
         self._api_base = api_base
         self._headers = dict(headers or {})
+        self._body = dict(body or {})
         self._timeout = timeout
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._usage: list[Usage] = []
@@ -58,6 +60,7 @@ class LiteLLMChatModel:
             kwargs["api_base"] = self._api_base
         if self._headers:
             kwargs["extra_headers"] = self._headers
+        apply_body(kwargs, self._body)
 
         async with self._semaphore:
             response = await _load_litellm().acompletion(**kwargs)

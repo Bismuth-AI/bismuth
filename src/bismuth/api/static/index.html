@@ -283,6 +283,15 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
       잘 되던 요청의 Request Headers를 그대로 옮기면 됩니다. <code>Cookie: session=…</code> 통째로 붙여넣어도 나눠집니다.
     </div>
   </div>
+  <div class="field hidden" id="s-body-field">
+    <label>요청 본문 추가값 <span class="muted" style="font-weight:400">— 선택. 이 서버가 필요로 하는 값들</span></label>
+    <textarea id="s-body" spellcheck="false" rows="6" placeholder='{"temperature": 0.7, "top_p": 0.8, "top_k": 20}'></textarea>
+    <div class="muted" style="font-size:13px;margin-top:5px">
+      JSON. <code>messages</code>·<code>model</code>은 빼고 나머지만. 생각 모드가 있는 모델이면
+      <code>{"chat_template_kwargs": {"enable_thinking": false}}</code> 로 끄는 쪽이 훨씬 빠릅니다.
+    </div>
+    <div id="s-body-error" class="err hidden" style="margin-top:6px"></div>
+  </div>
   <button id="s-check" class="primary">다음</button>
   <div id="s-error" class="err hidden"></div>
   <div id="s-models" class="hidden">
@@ -1078,7 +1087,24 @@ function onProvider() {
   // Only the OpenAI-compatible option sits behind arbitrary gateways; the hosted two
   // authenticate the way they document.
   $("s-headers-field").classList.toggle("hidden", p.id !== "custom");
+  $("s-body-field").classList.toggle("hidden", p.id !== "custom");
   renderHeaders(setup.api_headers);
+  $("s-body").value = Object.keys(setup.api_body || {}).length
+    ? JSON.stringify(setup.api_body, null, 2)
+    : "";
+  $("s-body-error").classList.add("hidden");
+}
+
+/* The body box is JSON because the values are typed and nested -- 0.7 is a number,
+   chat_template_kwargs is an object, and a key/value grid cannot say either. */
+function collectBody() {
+  const text = $("s-body").value.trim();
+  if (!text) return {};
+  const parsed = JSON.parse(text);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("본문 추가값은 JSON 객체여야 합니다.");
+  }
+  return parsed;
 }
 
 /* ---- extra headers, one field per thing ----
@@ -1135,11 +1161,28 @@ function setupBody(p) {
     reuse_saved_key: !$("s-key").value && p.id === setup.provider_id,
     api_base: p.needs_api_base ? $("s-base").value : null,
     api_headers: p.id === "custom" ? collectHeaders() : {},
+    api_body: p.id === "custom" ? collectBody() : {},
   };
+}
+
+/* Malformed JSON is caught before the request rather than after: a 422 from FastAPI
+   names a field path, not the line the comma is missing from. */
+function bodyIsValid() {
+  const box = $("s-body-error");
+  try {
+    collectBody();
+    box.classList.add("hidden");
+    return true;
+  } catch (err) {
+    box.textContent = `본문 추가값을 읽을 수 없습니다 — ${err.message}`;
+    box.classList.remove("hidden");
+    return false;
+  }
 }
 function showErr(m) { const b = $("s-error"); b.textContent = m; b.classList.remove("hidden"); }
 $("s-check").addEventListener("click", async () => {
   const p = currentProvider(); if (!p) { showErr("먼저 하나 골라 주세요."); return; }
+  if (!bodyIsValid()) return;
   const btn = $("s-check"); btn.disabled = true; btn.textContent = "프로바이더에 물어보는 중…"; $("s-error").classList.add("hidden");
   try {
     const r = await api("/setup/check", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(setupBody(p)) });
@@ -1161,6 +1204,7 @@ $("s-check").addEventListener("click", async () => {
 $("s-save").addEventListener("click", async () => {
   const p = currentProvider(); const btn = $("s-save"); btn.disabled = true;
   try {
+    if (!bodyIsValid()) return;
     const fast = $("s-fast").value.trim(), reasoning = $("s-reasoning").value.trim();
     if (!fast || !reasoning) { showErr("두 모델 이름을 모두 적어 주세요."); return; }
     await api("/setup", { method: "POST", headers: { "content-type": "application/json" },

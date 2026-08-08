@@ -108,6 +108,15 @@ class Settings(BaseSettings):
             "to reach them at all."
         ),
     )
+    api_body: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Request-body values sent with every model call, applied over Bismuth's "
+            "own. Sampling knobs a server wants (top_p, top_k, min_p) and switches only "
+            "it knows about -- qwen's chat_template_kwargs.enable_thinking is the one "
+            "that made this necessary: left on, a document took 93 seconds instead of 6."
+        ),
+    )
     model_fast: str = Field(default="", description="High-volume work. Bare model name.")
     model_reasoning: str = Field(
         default="", description="Decisions worth paying for. Bare model name."
@@ -227,6 +236,7 @@ def save_user_config(settings: Settings) -> Path:
         "api_key": settings.api_key,
         "api_base": settings.api_base,
         "api_headers": settings.api_headers,
+        "api_body": settings.api_body,
         "model_fast": settings.model_fast,
         "model_reasoning": settings.model_reasoning,
     }
