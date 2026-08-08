@@ -63,6 +63,51 @@ def usage_of(response: Any, model: str) -> Usage:
     )
 
 
+_OPENAI_BODY_PARAMS = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "presence_penalty",
+        "frequency_penalty",
+        "max_tokens",
+        "max_completion_tokens",
+        "stop",
+        "seed",
+        "n",
+        "logit_bias",
+        "user",
+    }
+)
+"""Body values LiteLLM understands as its own arguments. Everything else has to be
+smuggled past it -- see :func:`apply_body`."""
+
+
+def apply_body(kwargs: dict[str, Any], body: dict[str, Any]) -> None:
+    """Merge configured request-body values into a completion call, in place.
+
+    Split because LiteLLM runs with ``drop_params``, which silently discards arguments
+    the provider is not known to support -- and that is exactly the set worth
+    configuring: ``top_k``, ``min_p``, and the ``chat_template_kwargs`` that turns a
+    qwen model's thinking off. Those go through ``extra_body``, which is passed to the
+    endpoint untouched. The standard ones stay top-level so LiteLLM can translate them
+    per provider.
+
+    Configured values win over Bismuth's own, including ``temperature``: structured
+    calls default to 0.0 for determinism, and a server that wants otherwise is the one
+    that has to be satisfied.
+    """
+    if not body:
+        return
+    extra: dict[str, Any] = dict(kwargs.get("extra_body") or {})
+    for name, value in body.items():
+        if name in _OPENAI_BODY_PARAMS:
+            kwargs[name] = value
+        else:
+            extra[name] = value
+    if extra:
+        kwargs["extra_body"] = extra
+
+
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
@@ -102,6 +147,7 @@ class LiteLLMAdapter:
         max_concurrency: int = 4,
         reasoning_effort: str = "",
         headers: dict[str, str] | None = None,
+        body: dict[str, Any] | None = None,
     ) -> None:
         self._models = {
             ModelProfile.FAST: model_fast,
@@ -110,6 +156,7 @@ class LiteLLMAdapter:
         self._api_key = api_key
         self._api_base = api_base
         self._headers = dict(headers or {})
+        self._body = dict(body or {})
         self._reasoning_effort = reasoning_effort
         self._timeout = timeout
         self._max_retries = max_schema_retries
@@ -271,6 +318,7 @@ class LiteLLMAdapter:
             # Some endpoints sit behind a gateway that authenticates with a cookie or
             # its own header; without these the call never reaches the model.
             kwargs["extra_headers"] = self._headers
+        apply_body(kwargs, self._body)
         if schema is not None:
             kwargs["response_format"] = schema
 
