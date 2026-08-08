@@ -148,6 +148,7 @@ class LiteLLMAdapter:
         reasoning_effort: str = "",
         headers: dict[str, str] | None = None,
         body: dict[str, Any] | None = None,
+        native_schema: bool | None = None,
     ) -> None:
         self._models = {
             ModelProfile.FAST: model_fast,
@@ -157,6 +158,7 @@ class LiteLLMAdapter:
         self._api_base = api_base
         self._headers = dict(headers or {})
         self._body = dict(body or {})
+        self._native_schema = native_schema
         self._reasoning_effort = reasoning_effort
         self._timeout = timeout
         self._max_retries = max_schema_retries
@@ -260,7 +262,14 @@ class LiteLLMAdapter:
         return drained
 
     def _supports_native_schema(self, model: str) -> bool:
-        """Ask LiteLLM whether the provider constrains decoding to a schema; cached, and unknown models are assumed incapable."""
+        """Whether decoding can be constrained to the schema.
+
+        Configured first: LiteLLM answers from a table of models it knows, so a
+        self-hosted endpoint is always "no" there even when it does support it, and the
+        difference is a repair turn on every reply the model gets slightly wrong.
+        """
+        if self._native_schema is not None:
+            return self._native_schema
         if model not in self._native_schema_support:
             try:
                 self._native_schema_support[model] = bool(

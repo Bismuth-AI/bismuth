@@ -85,6 +85,7 @@ def build(
         reasoning_effort=settings.reasoning_effort,
         headers=settings.api_headers,
         body=settings.api_body,
+        native_schema=settings.native_schema,
     )
     chat: ChatModel = chat_model or LiteLLMChatModel(
         model=settings.model_for(ModelProfile.REASONING),

@@ -217,3 +217,52 @@ class TestRequestBody:
         kwargs: dict[str, Any] = {}
         apply_body(kwargs, adapter._body)
         assert kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+class TestSchemaSupport:
+    """LiteLLM answers "does this model take a json_schema?" from a table of models it
+    knows, so a self-hosted endpoint is always no -- and every structured call then
+    falls back to describing the schema in the prompt and repairing the reply."""
+
+    def test_an_endpoint_that_takes_a_schema(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: dict[str, Any] = {}
+
+        def fake_post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
+            seen.update(url=url, headers=headers, payload=payload)
+            return {"choices": []}
+
+        monkeypatch.setattr(catalog, "_post", fake_post)
+
+        assert catalog.supports_response_schema(
+            api_base="https://gateway/v1",
+            model="qwen3.6-35b",
+            api_key="sk-x",
+            headers={"Cookie": "c"},
+        )
+        assert seen["url"] == "https://gateway/v1/chat/completions"
+        assert seen["payload"]["response_format"]["type"] == "json_schema"
+        # Both credentials: the gateway wants the cookie, the model server the bearer.
+        assert seen["headers"]["Authorization"] == "Bearer sk-x"
+        assert seen["headers"]["Cookie"] == "c"
+
+    def test_an_endpoint_that_refuses_is_a_no_not_a_crash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            catalog,
+            "_post",
+            lambda *_: (_ for _ in ()).throw(_http_error(400, b"unsupported response_format")),
+        )
+
+        assert not catalog.supports_response_schema(api_base="https://g/v1", model="m")
+
+    def test_the_adapter_obeys_the_setting_over_the_table(self) -> None:
+        forced = LiteLLMAdapter(
+            model_fast="openai/qwen3.6-35b", model_reasoning="openai/q", native_schema=True
+        )
+        refused = LiteLLMAdapter(
+            model_fast="openai/gpt-4o", model_reasoning="openai/gpt-4o", native_schema=False
+        )
+
+        assert forced._supports_native_schema("openai/qwen3.6-35b") is True
+        assert refused._supports_native_schema("openai/gpt-4o") is False
