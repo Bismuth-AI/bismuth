@@ -19,6 +19,15 @@ there is nothing for it to oscillate between.
 
 *Still right?* is what an already-divided folder is asked once the evidence has doubled,
 and it is the only question that may redraw a boundary.
+
+**The reasoning field comes before the verdict in every schema here, and that ordering
+is load-bearing.** Constrained decoding fills fields in schema order, so whichever comes
+first is answered with nothing behind it. Measured: 300 documents, 300 times asked, 300
+times `emerged: false` -- while the very same replies filled in the axis (`법령의 종류`),
+the class (`법률`) and a paragraph explaining that it covered half the archive. The model
+had the right answer and had already committed to the wrong one, because the verdict was
+the first token it was allowed to write. This is the same failure as asking whether and
+how in one call, arriving from the other direction.
 """
 
 from __future__ import annotations
@@ -155,8 +164,16 @@ class Emerging(BaseModel):
 
     One name, deliberately. A reply that could carry several would be a partition, and a
     partition of a heterogeneous pile always needs somewhere to put the remainder.
+
+    **``reason`` comes first, and the order is the point** -- see the module docstring.
     """
 
+    reason: str = Field(
+        description=(
+            "Work it out here, before answering. What classes are in this folder, which "
+            "is thickest, and roughly how many of these documents it takes."
+        )
+    )
     emerged: bool = Field(description="False when no single class has gathered yet.")
     axis: str = Field(
         default="",
@@ -171,22 +188,18 @@ class Emerging(BaseModel):
         default="",
         description="One line: what belongs here, and how it differs from the folders beside it.",
     )
-    reason: str = Field(
-        description=(
-            "If true: what the class is and roughly how many of these it takes. "
-            "If false: why a list still serves the reader better."
-        )
-    )
 
 
 class Members(BaseModel):
     """Which documents go under one named sign. The rest are not asked about."""
 
+    reason: str = Field(
+        description="One sentence a person can check against the listing. Written first."
+    )
     document_ids: list[str] = Field(
         default_factory=list,
         description="Only the documents that belong under this sign. The rest stay where they are.",
     )
-    reason: str = Field(description="One sentence a person can check against the listing.")
 
 
 class Group(BaseModel):
@@ -204,6 +217,9 @@ class Group(BaseModel):
 class Division(BaseModel):
     """The signs to put up, once it has been decided there should be some."""
 
+    reason: str = Field(
+        description="One sentence a person can check against the listing. Written first."
+    )
     divide: bool = Field(default=True, description="False if, on writing them out, none work.")
     basis: str = Field(
         default="",
@@ -220,14 +236,18 @@ class Division(BaseModel):
             "what it holds. Null to keep it."
         ),
     )
-    reason: str = Field(description="One sentence a person can check against the listing.")
 
 
 class Review(BaseModel):
     """Whether a division that was already made still holds."""
 
+    reason: str = Field(
+        description=(
+            "Work it out here, before answering: what the division was for, and whether "
+            "the documents that have arrived since still fall under it."
+        )
+    )
     holds: bool = Field(description="True when the existing division is still right.")
-    reason: str = Field(description="One sentence. If it no longer holds, what is wrong.")
     basis: str = Field(default="", description="The new distinction, when replacing the old one.")
     groups: list[Group] = Field(default_factory=list, max_length=12)
     rename_to: str | None = Field(default=None)

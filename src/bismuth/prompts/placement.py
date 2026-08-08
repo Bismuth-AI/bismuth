@@ -86,6 +86,13 @@ _EMPTY_TREE = "(none yet -- nothing has been sorted into folders. The root is wh
 class PlacementDecision(BaseModel):
     """Where the model says the document goes."""
 
+    reason: str = Field(
+        description=(
+            "Why this folder, citing what the document is about. Written FIRST, before "
+            "the folder: constrained decoding fills fields in order, and a choice made "
+            "in the first token is made with nothing behind it."
+        )
+    )
     folder: str | None = Field(
         description=(
             "One of the folder paths you were shown, copied exactly; '' for the root; "
@@ -97,9 +104,6 @@ class PlacementDecision(BaseModel):
         default=False, description="True if this exact path was in the folders shown to you."
     )
     confidence: float = Field(ge=0.0, le=1.0)
-    reason: str = Field(
-        description="One sentence: why this folder, citing what the document is about."
-    )
 
 
 def build(
