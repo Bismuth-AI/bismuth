@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -15,6 +16,7 @@ from bismuth.domain.errors import BismuthError
 from bismuth.domain.journal import Actor, JournalEntry, Operation, OperationKind
 from bismuth.domain.placement import Placement
 from bismuth.domain.progress import Progress, ProgressSink, Stage, report
+from bismuth.logging_setup import log_trace
 from bismuth.ports.catalog import Catalog
 from bismuth.ports.llm import CURRENT_DOCUMENT
 from bismuth.ports.parser import ParserRegistry
@@ -135,7 +137,9 @@ class IngestService:
             return Prepared(rel=rel, source=source, duplicate_of=existing)
 
         say(Stage.PARSING, note=self._parser_name(rel))
+        began = time.monotonic()
         extraction = await self._extract(rel)
+        parse_ms = round((time.monotonic() - began) * 1000)
         # The window count rides on the reading events instead of being computed here:
         # counting means slicing the whole text, and the first reading event is next anyway.
         say(Stage.PARSED, note=_extent(extraction))
@@ -147,6 +151,13 @@ class IngestService:
             on_progress=on_progress,
         )
         say(Stage.CARDED, note=f"{card.title} ({card.doc_type})", found=card.topics)
+        log_trace(
+            "document.read",
+            filename=source.filename,
+            parse_ms=parse_ms,
+            card_ms=round((time.monotonic() - began) * 1000) - parse_ms,
+            chars=len(extraction.text),
+        )
         return Prepared(rel=rel, source=source, card=card, extraction=extraction)
 
     async def file(
@@ -196,6 +207,10 @@ class IngestService:
         card, extraction = prepared.card, prepared.extraction
         assert card is not None and extraction is not None  # only a duplicate lacks them
 
+        # Where a document's time went, by stage. Without it a slow run is a wall of
+        # calls with no shape: the first one measured spent 23 seconds on the document
+        # and four minutes on one question put to the root afterwards.
+        clock = _Clock()
         folders = self._charters.folder_views()
         say(Stage.PLACING, steps=len(folders))
         placement = await self._placement.decide(
@@ -205,6 +220,7 @@ class IngestService:
             existing_paths=frozenset(str(f) for f in self._vault.iter_folders() if f.parts),
         )
 
+        clock.mark("place")
         destination = placement.target if placement.is_placed else INBOX
         assert destination is not None
         # The full rationale is a paragraph and lives on the placement; a progress line
@@ -229,9 +245,11 @@ class IngestService:
 
         self._catalog.save_card(source.document_id, card, source=source)
         self._catalog.save_placement(placement)
+        clock.mark("commit")
 
         say(Stage.NOTES)
         await self._reconcile_notes(placement)
+        clock.mark("notes")
 
         # The other half of filing: this document may be the one that makes a
         # distinction visible in the folder it landed in (SPEC.md 3.4).
@@ -247,6 +265,15 @@ class IngestService:
             # subdivision is the only thing left that changes the shape of the tree.
             if gained := [r.folder for r in divided if r.happened]:
                 await self._redraw_notes(gained, reason="a folder gained a sub-folder")
+        clock.mark("subdivide")
+
+        log_trace(
+            "document.filed",
+            filename=source.filename,
+            destination=str(destination) or "/",
+            total_ms=clock.total_ms,
+            **clock.stages,
+        )
 
         say(Stage.DONE, note=str(destination) or "/")
         return IngestResult(
@@ -367,6 +394,27 @@ class IngestService:
             JournalEntry(reason=reason, operations=tuple(op for op, _ in operations)),
             payloads={op.target: payload for op, payload in operations},
         )
+
+
+class _Clock:
+    """Wall time per stage of filing one document, for the trace.
+
+    Marks rather than timers: each stage ends where the next begins, so the parts add
+    up to the whole and a gap cannot hide between them.
+    """
+
+    def __init__(self) -> None:
+        self._began = self._last = time.monotonic()
+        self.stages: dict[str, int] = {}
+
+    def mark(self, stage: str) -> None:
+        now = time.monotonic()
+        self.stages[f"{stage}_ms"] = round((now - self._last) * 1000)
+        self._last = now
+
+    @property
+    def total_ms(self) -> int:
+        return round((time.monotonic() - self._began) * 1000)
 
 
 def _extent(extraction: Extraction) -> str:
