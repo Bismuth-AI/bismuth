@@ -236,6 +236,7 @@ class SubdivisionService:
         # out. Measured without it: 주제 (과학기술), 문서 종류 (시행규칙) and individual
         # statute names ended up side by side at the root of the same archive.
         axis = charter.split_basis if charter is not None else ""
+        spent = self._axes_above(folder)
 
         emerging = await self._llm.structured(
             prompts.build_emerging(
@@ -244,6 +245,7 @@ class SubdivisionService:
                 documents=contents.lines,
                 children=contents.children,
                 axis=axis,
+                spent=spent,
             ),
             schema=prompts.Emerging,
             profile=ModelProfile.REASONING,
@@ -260,6 +262,20 @@ class SubdivisionService:
             reason=emerging.reason,
         )
         if not emerging.emerged or not emerging.name.strip():
+            return None
+
+        proposed = emerging.axis.strip()
+        if not axis and proposed and _same_axis(proposed, spent):
+            # Everything in this folder shares the ancestors' answer to their axes -- that
+            # is what put these documents together -- so those axes cannot tell any of
+            # them apart. Reusing one builds 시행규칙/…/시행규칙, and worse, 시행규칙/…/시행령.
+            log_trace(
+                "subdivide.rejected",
+                folder=str(folder),
+                reason="axis already used above here",
+                proposed=[proposed],
+                spent=spent,
+            )
             return None
 
         members = await self._llm.structured(
@@ -320,17 +336,17 @@ class SubdivisionService:
             target = folder / name
             if target == folder or self._vault.exists(target):
                 continue
-            if folder.name and name.casefold() == folder.name.casefold():
-                # A sub-folder has to distinguish something inside its parent, and one
-                # carrying the parent's own name distinguishes nothing. Asked what has
-                # grown in 철학, the model answers 철학 -- true, and useless. It is only
-                # caught below when the class takes every document; taking three of five
-                # is how 철학/철학 and 과학·기술 연구/과학·기술 연구 were built.
-                logger.info("division of %s proposed its own name; not a distinction", folder)
+            if _same_name(name, folder.parts):
+                # A sub-folder has to distinguish something inside its ancestors, and one
+                # carrying an ancestor's name distinguishes nothing. Asked what has grown
+                # in 철학, the model answers 철학 -- true, and useless. Checked against
+                # every ancestor, not just the parent: 시행규칙/과학기술정보통신부 소관/시행규칙
+                # repeats the grandparent, and reads as though a 시행규칙 could contain one.
+                logger.info("division of %s proposed an ancestor's name; not a distinction", folder)
                 log_trace(
                     "subdivide.rejected",
                     folder=str(folder),
-                    reason="class carries the folder's own name",
+                    reason="class carries an ancestor's name",
                     proposed=[group.name],
                 )
                 continue
@@ -514,12 +530,43 @@ class SubdivisionService:
             return "", None
         return document_id, self._catalog.load_card(document_id)
 
+    def _axes_above(self, folder: PurePosixPath) -> list[str]:
+        """The axes every folder from here to the root was divided along.
+
+        They are spent: within this folder each of them has one constant value, so none
+        of them can separate anything here.
+        """
+        axes: list[str] = []
+        current = folder
+        while True:
+            current = current.parent
+            charter = self._charter(current)
+            if charter is not None and charter.split_basis:
+                axes.append(charter.split_basis)
+            if not current.parts:
+                return axes
+
     def _charter(self, folder: PurePosixPath) -> Charter | None:
         try:
             return self._charters.load(folder)
         except BismuthError as exc:
             logger.warning("unreadable folder note at %s: %s", folder or "/", exc)
             return None
+
+
+def _normalise(text: str) -> str:
+    return "".join(text.split()).casefold()
+
+
+def _same_name(name: str, ancestors: tuple[str, ...]) -> bool:
+    return any(_normalise(name) == _normalise(part) for part in ancestors)
+
+
+def _same_axis(proposed: str, spent: list[str]) -> bool:
+    """Whether an axis has already been used somewhere above. Compared loosely, because
+    `법령의 종류` and `법령 종류` are the same question asked twice."""
+    wanted = _normalise(proposed)
+    return any(wanted == _normalise(used) or wanted in _normalise(used) for used in spent)
 
 
 def _describe(card: DocumentCard) -> str:
