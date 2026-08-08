@@ -36,7 +36,6 @@ class Provider(BaseModel):
     needs_api_base: bool = False
     default_api_base: str | None = None
     litellm_prefix: str = Field(description="What LiteLLM wants in front of the model name.")
-    local: bool = False
     hint: str = ""
 
 
@@ -54,23 +53,16 @@ PROVIDERS: tuple[Provider, ...] = (
         hint="platform.openai.com → API keys 에서 발급",
     ),
     Provider(
-        id="ollama",
-        label="Ollama — 내 컴퓨터에서 실행, 키 불필요, 아무것도 밖으로 안 나감",
-        litellm_prefix="ollama",
-        needs_key=False,
-        needs_api_base=True,
-        default_api_base="http://localhost:11434",
-        local=True,
-        hint="ollama.com 에서 설치한 뒤: ollama pull qwen3:8b",
-    ),
-    Provider(
         id="custom",
-        label="OpenAI 호환 엔드포인트 (vLLM, LM Studio, 프록시…)",
+        label="OpenAI 호환 엔드포인트 (vLLM, Ollama, LM Studio, 사내 프록시…)",
         litellm_prefix="openai",
         needs_key=False,
         needs_api_base=True,
-        default_api_base="http://localhost:8000/v1",
-        hint="OpenAI 프로토콜을 쓰는 것이면 무엇이든 됩니다.",
+        default_api_base="http://localhost:11434/v1",
+        hint=(
+            "OpenAI 프로토콜(/chat/completions)을 쓰는 것이면 무엇이든 됩니다. "
+            "모델 목록을 못 받아오면 모델 이름을 직접 적으면 됩니다."
+        ),
     ),
 )
 
@@ -106,6 +98,15 @@ class Settings(BaseSettings):
     )
     api_base: str | None = Field(
         default=None, description="Endpoint override. Local backends need it."
+    )
+    api_headers: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Headers sent with every model call, on top of the credential. Some "
+            "endpoints sit behind a gateway that authenticates with a cookie or its "
+            "own header rather than a bearer token, and without this there is no way "
+            "to reach them at all."
+        ),
     )
     model_fast: str = Field(default="", description="High-volume work. Bare model name.")
     model_reasoning: str = Field(
@@ -189,10 +190,11 @@ class Settings(BaseSettings):
 
     @property
     def runs_locally(self) -> bool:
-        """Whether this configuration keeps every byte on the machine."""
-        chosen = self.provider
-        if chosen is not None and chosen.local:
-            return True
+        """Whether this configuration keeps every byte on the machine.
+
+        Read off the address, never assumed from the provider's name: the same server is
+        local on this machine and not local on someone else's.
+        """
         if self.api_base:
             return any(
                 host in self.api_base for host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
@@ -215,6 +217,7 @@ def save_user_config(settings: Settings) -> Path:
         "provider_id": settings.provider_id,
         "api_key": settings.api_key,
         "api_base": settings.api_base,
+        "api_headers": settings.api_headers,
         "model_fast": settings.model_fast,
         "model_reasoning": settings.model_reasoning,
     }

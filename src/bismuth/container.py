@@ -83,6 +83,7 @@ def build(
         max_schema_retries=settings.llm_max_schema_retries,
         max_concurrency=settings.llm_max_concurrency,
         reasoning_effort=settings.reasoning_effort,
+        headers=settings.api_headers,
     )
     chat: ChatModel = chat_model or LiteLLMChatModel(
         model=settings.model_for(ModelProfile.REASONING),
@@ -90,6 +91,7 @@ def build(
         api_base=settings.api_base,
         timeout=settings.llm_timeout_seconds,
         max_concurrency=settings.llm_max_concurrency,
+        headers=settings.api_headers,
     )
 
     transactor = Transactor(vault, journal)
