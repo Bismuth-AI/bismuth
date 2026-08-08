@@ -117,6 +117,15 @@ class Settings(BaseSettings):
             "that made this necessary: left on, a document took 93 seconds instead of 6."
         ),
     )
+    native_schema: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the endpoint constrains decoding to a JSON Schema. None asks "
+            "LiteLLM, which answers from a table of models it knows -- so anything "
+            "self-hosted is 'no', and every structured call falls back to describing "
+            "the schema in the prompt. Detected against the endpoint at setup instead."
+        ),
+    )
     model_fast: str = Field(default="", description="High-volume work. Bare model name.")
     model_reasoning: str = Field(
         default="", description="Decisions worth paying for. Bare model name."
@@ -237,6 +246,7 @@ def save_user_config(settings: Settings) -> Path:
         "api_base": settings.api_base,
         "api_headers": settings.api_headers,
         "api_body": settings.api_body,
+        "native_schema": settings.native_schema,
         "model_fast": settings.model_fast,
         "model_reasoning": settings.model_reasoning,
     }
