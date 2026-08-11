@@ -24,8 +24,8 @@ from bismuth.ports.vault import INBOX, Vault
 from bismuth.services.cards import CardService
 from bismuth.services.charters import ROOT_NOTE, CharterService
 from bismuth.services.placement import PlacementService
-from bismuth.services.sidecar import render_sidecar
-from bismuth.services.subdivision import SubdivisionService
+from bismuth.services.sidecar import read_sidecar_meta, render_sidecar
+from bismuth.services.subdivision import LibraryMaintenanceService
 from bismuth.services.transactor import Transactor
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ class IngestService:
         placement: PlacementService,
         charters: CharterService,
         transactor: Transactor,
-        subdivision: SubdivisionService | None = None,
+        subdivision: LibraryMaintenanceService | None = None,
         extraction_max_chars: int = 200_000,
     ) -> None:
         self._subdivision = subdivision
@@ -189,12 +189,14 @@ class IngestService:
         # both miss the catalog, and this is the half that runs alone.
         if existing := (prepared.duplicate_of or self._catalog.find_by_hash(source.sha256)):
             prior = self._catalog.load_placement(existing)
-            # Report where the existing copy lives, not where this duplicate landed.
-            where = (
+            # Placement records the decision at ingest time. Maintenance may have moved
+            # the original since then, so report the sidecar's current filesystem path.
+            fallback = (
                 prior.target
                 if prior and prior.is_placed and prior.target is not None
                 else PurePosixPath(rel).parent
             )
+            where = self._current_destination(existing, fallback=fallback)
             say(Stage.DUPLICATE, note=str(where) or "/")
             return IngestResult(
                 document_id=existing,
@@ -223,8 +225,8 @@ class IngestService:
         clock.mark("place")
         destination = placement.target if placement.is_placed else INBOX
         assert destination is not None
-        # The full rationale is a paragraph and lives on the placement; a progress line
-        # that long pushes every other step off the panel.
+        # Placement details live in the trace; the progress line stays compact so one
+        # completed document does not bury the rest of a batch.
         if not placement.is_placed:
             landed = "인박스 — 읽지 못했습니다"
         elif not destination.parts:
@@ -248,38 +250,74 @@ class IngestService:
         clock.mark("commit")
 
         say(Stage.NOTES)
-        await self._reconcile_notes(placement)
+        try:
+            await self._reconcile_notes(placement)
+        except Exception as exc:
+            # The document and sidecar are already committed. A missing routing sign is
+            # repairable metadata and must never turn a safely filed document into an API
+            # failure or invite the caller to upload a duplicate.
+            logger.exception("folder sign maintenance failed after filing %s", source.filename)
+            log_trace(
+                "charter.failed",
+                filename=source.filename,
+                document_id=source.document_id,
+                folder=str(placement.target or ""),
+                error=type(exc).__name__,
+            )
         clock.mark("notes")
 
         # The other half of filing: this document may be the one that makes a
         # distinction visible in the folder it landed in (SPEC.md 3.4).
+        structure_changed = False
         if self._subdivision is not None:
-            divided = await self._subdivision.consider_with_ancestors(
-                destination, filename=source.filename, on_progress=on_progress
-            )
-            for result in divided:
-                say(Stage.DIVIDED, note=f"{result.folder or '/'} → {len(result.created)}개")
-            # A folder that just gained a child describes something different now, and
-            # the note is what a searcher reads to rule it out (SPEC.md 3.6). Placement
-            # used to trigger this by creating the folder; it no longer creates any, so
-            # subdivision is the only thing left that changes the shape of the tree.
-            if gained := [r.folder for r in divided if r.happened]:
-                await self._redraw_notes(gained, reason="a folder gained a sub-folder")
+            try:
+                divided = await self._subdivision.consider_with_ancestors(
+                    destination, filename=source.filename, on_progress=on_progress
+                )
+                structure_changed = any(result.happened for result in divided)
+                for result in divided:
+                    say(Stage.DIVIDED, note=f"{result.folder or '/'} → {len(result.created)}개")
+            except Exception as exc:
+                # Filing is already committed and independently journalled. Maintenance
+                # is allowed to fail without turning a safely filed, searchable document
+                # into an apparent ingest failure. The failed maintenance transaction
+                # rolls itself back; a later arrival can make another attempt.
+                logger.exception("library maintenance failed after filing %s", source.filename)
+                log_trace(
+                    "maintenance.failed",
+                    filename=source.filename,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
         clock.mark("subdivide")
+
+        # Avoid an O(collection) sidecar scan on ordinary ingests. It is needed only
+        # when maintenance actually moved some part of the tree.
+        final_destination = (
+            self._current_destination(source.document_id, fallback=destination)
+            if structure_changed
+            else destination
+        )
+        if final_destination != destination:
+            log_trace(
+                "document.relocated",
+                filename=source.filename,
+                initial_destination=str(destination) or "/",
+                final_destination=str(final_destination) or "/",
+            )
 
         log_trace(
             "document.filed",
             filename=source.filename,
-            destination=str(destination) or "/",
+            destination=str(final_destination) or "/",
             total_ms=clock.total_ms,
             **clock.stages,
         )
 
-        say(Stage.DONE, note=str(destination) or "/")
+        say(Stage.DONE, note=str(final_destination) or "/")
         return IngestResult(
             document_id=source.document_id,
             filename=source.filename,
-            destination=destination,
+            destination=final_destination,
             placement=placement,
             card=card,
         )
@@ -288,7 +326,16 @@ class IngestService:
         """Files in the inbox with no card yet -- including any dropped in by hand."""
         pending: list[PurePosixPath] = []
         for rel in self._vault.iter_files(INBOX, recursive=True):
-            digest = SourceRef.hash_bytes(self._vault.read_bytes(rel))
+            try:
+                digest = SourceRef.hash_bytes(self._vault.read_bytes(rel))
+            except BismuthError:
+                # `/api/status` can enumerate the inbox at the exact moment the batch
+                # worker commits a move out of it. A vanished entry is successful
+                # progress, not a corrupt vault or a reason for the status endpoint to
+                # fail. Real read errors for files that still exist remain visible.
+                if not self._vault.exists(rel):
+                    continue
+                raise
             if self._catalog.find_by_hash(digest) is None:
                 pending.append(rel)
         return pending
@@ -394,6 +441,22 @@ class IngestService:
             JournalEntry(reason=reason, operations=tuple(op for op, _ in operations)),
             payloads={op.target: payload for op, payload in operations},
         )
+
+    def _current_destination(self, document_id: str, *, fallback: PurePosixPath) -> PurePosixPath:
+        """Find a document's current shelf from its colocated sidecar.
+
+        Catalog placements are historical decisions. Boundary maintenance is allowed
+        to move any document afterwards, so using the original placement as current
+        state produces stale API results and duplicate locations.
+        """
+        for document in self._vault.iter_files(PurePosixPath(), recursive=True):
+            sidecar = document.parent / sidecar_name(document.name)
+            if not self._vault.exists(sidecar):
+                continue
+            meta = read_sidecar_meta(self._vault.read_text(sidecar))
+            if meta is not None and meta.get("document_id") == document_id:
+                return document.parent
+        return fallback
 
 
 class _Clock:

@@ -7,18 +7,34 @@ from pathlib import PurePosixPath
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bismuth.domain.errors import CharterError
+from bismuth.domain.maintenance import is_axis_label
 
 #: Filename of a folder's note; sorts to the top of a listing.
 CHARTER_FILENAME = "_folder.md"
-CHARTER_SCHEMA_VERSION = 2
+CHARTER_SCHEMA_VERSION = 5
+MAX_PURPOSE_CHARS = 220
 
-_GENERATED_BODY_NOTICE = (
-    "<!-- 아래 본문은 이 파일의 frontmatter 에서 자동 생성됩니다. 고치려면 frontmatter 를 "
-    "고치거나 Bismuth 화면에서 수정하세요. 본문을 직접 고치면 덮어써집니다. -->"
-)
+_GENERATED_BODY_NOTICE = "<!-- generated from frontmatter -->"
+
+
+def routing_purpose(value: str, *, fallback: str) -> str:
+    """Return a bounded, one-line routing sign without trusting model obedience.
+
+    A folder purpose is a stable boundary contract, not an inventory paragraph.  Prompts
+    ask for a short sign, but provider output is untrusted: rejecting an overlong sign
+    caused schema-repair calls and could make an already-filed document look failed.
+    Existing callers therefore keep a known sign, while a newly-created boundary falls
+    back to its already validated class name.  The fallback is capped only as a final
+    filesystem-safe guard; model prose is never blindly truncated into a broken sentence.
+    """
+    normalised = " ".join(value.split()).strip()
+    if normalised and len(normalised) <= MAX_PURPOSE_CHARS:
+        return normalised
+    safe = " ".join(fallback.split()).strip()
+    return safe[:MAX_PURPOSE_CHARS] or "?"
 
 
 class Charter(BaseModel):
@@ -50,6 +66,13 @@ class Charter(BaseModel):
             "this', which has an answer every time and so never settles."
         ),
     )
+    split_question: str = Field(
+        default="",
+        description=(
+            "The question every child folder answers. Kept separately from the short "
+            "axis label so human prose can never become machine classification state."
+        ),
+    )
     split_at_documents: int = Field(
         default=0,
         ge=0,
@@ -62,7 +85,21 @@ class Charter(BaseModel):
             "again however much grew beneath it."
         ),
     )
+    boundary_review_required: bool = Field(
+        default=False,
+        description="True when an older boundary must pass the current complete-review contract.",
+    )
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("split_basis")
+    @classmethod
+    def _axis_is_a_label(cls, value: str) -> str:
+        if "\n" in value or "\r" in value:
+            raise ValueError("split_basis must be a single-line axis label")
+        value = " ".join(value.split()).strip()
+        if value and not is_axis_label(value):
+            raise ValueError("split_basis must be a short axis label, not an explanation")
+        return value
 
     @property
     def divided(self) -> bool:
@@ -82,6 +119,8 @@ class Charter(BaseModel):
         (SPEC.md 6.1). The ratio is to the folder's own history, so nothing here is
         tuned to a corpus.
         """
+        if self.divided and self.boundary_review_required:
+            return True
         if not self.divided or self.split_at_documents <= 0:
             return False
         return documents_now >= self.split_at_documents * 2
@@ -93,25 +132,18 @@ class Charter(BaseModel):
             "updated_at": self.updated_at.isoformat(),
             "title": self.title,
             "purpose": self.purpose,
-            "holds": list(self.holds),
-            "answers": list(self.answers),
         }
         if self.divided:
             meta["split_basis"] = self.split_basis
+            meta["split_question"] = self.split_question
             meta["split_at_documents"] = self.split_at_documents
+            if self.boundary_review_required:
+                meta["boundary_review_required"] = True
         front = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False, default_flow_style=False)
         return f"---\n{front}---\n\n{self._render_body()}\n"
 
     def _render_body(self) -> str:
         lines: list[str] = [_GENERATED_BODY_NOTICE, "", f"# {self.title}", "", self.purpose, ""]
-        if self.holds:
-            lines += ["## 여기에 들어오는 것", ""]
-            lines += [f"- {item}" for item in self.holds]
-            lines += [""]
-        if self.answers:
-            lines += ["## 여기서 답할 수 있는 질문", ""]
-            lines += [f"- {question}" for question in self.answers]
-            lines += [""]
         return "\n".join(lines).rstrip() + "\n"
 
     @classmethod
@@ -134,6 +166,11 @@ class Charter(BaseModel):
                 f"than this Bismuth understands. Upgrade Bismuth."
             )
 
+        # Older schemas did not guarantee that changing an axis also replaced the old
+        # child tree. Preserve the evidence, but force it through the complete review
+        # contract before treating the boundary as settled.
+        legacy_basis = str(meta.get("split_basis") or "")
+
         try:
             return cls(
                 path=path,
@@ -142,8 +179,13 @@ class Charter(BaseModel):
                 holds=tuple(str(x) for x in meta.get("holds") or ()),
                 answers=tuple(str(x) for x in meta.get("answers") or ()),
                 managed=bool(meta.get("managed", True)),
-                split_basis=str(meta.get("split_basis") or ""),
+                split_basis=legacy_basis,
+                split_question=str(meta.get("split_question") or ""),
                 split_at_documents=int(meta.get("split_at_documents") or 0),
+                boundary_review_required=bool(
+                    meta.get("boundary_review_required", False)
+                    or (version < CHARTER_SCHEMA_VERSION and legacy_basis)
+                ),
                 updated_at=_parse_datetime(meta.get("updated_at")),
             )
         except (KeyError, TypeError, ValueError) as exc:

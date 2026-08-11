@@ -54,20 +54,17 @@ folder names alone.
 navigable -- even a large one, if its contents are uniform. Only act where a person \
 would struggle: a pile of unlike documents at one level, near-duplicate folders for \
 one idea, or a folder whose NAME no longer describes what is inside.
-   Do NOT trust a folder's `_folder.md` note to decide it is fine -- the note is \
-regenerated to fit whatever the folder currently holds, so it always seems to \
-match. Judge from the documents' ACTUAL types (shown in `ls` as `[type]`) and the \
-folder's name. A folder named e.g. "사업추진현황 보고" that in fact holds financial \
-statements, audit reports, and board minutes has a name that no longer fits and \
-several distinct types piled together -- that wants splitting or renaming.
+   Treat a folder's `_folder.md` as evidence of its intended stable boundary, not \
+as proof that the current contents still satisfy it. Judge that sign together with \
+the documents' ACTUAL types (shown in `ls` as `[type]`) and the folder's name. When \
+the actual documents no longer satisfy the recorded boundary, \
+the folder may need splitting or renaming.
 3. When you act, choose the lighter fix:
    - If the grouping is fine but the folder's NAME no longer fits its contents, \
-`rename` the folder (e.g. a folder called "사업추진현황 보고" that holds many kinds of \
-project documents could become "라자스탄 태양광 문서" or similar). Do not split what \
-does not need splitting.
+`rename` the folder. Do not split what does not need splitting.
    - If genuinely different things are piled together, PROPOSE `move`s: group \
-documents into subfolders by a distinction a person would browse by -- document \
-type, period, sub-topic -- in the documents' own language. Reuse the right existing \
+documents into subfolders by one distinction supported by the documents and useful \
+for ruling alternatives out, in the documents' own language. Reuse the right existing \
 branch; do not invent a parallel one. Move the EXISTING documents, not just future \
 ones.
 Nothing is applied until the user approves your whole plan, so propose every move \

@@ -12,24 +12,22 @@ from __future__ import annotations
 import logging
 from pathlib import PurePosixPath
 
-from bismuth.domain.charter import CHARTER_FILENAME, Charter
+from bismuth.domain.charter import CHARTER_FILENAME, Charter, routing_purpose
 from bismuth.domain.document import DocumentCard, sidecar_name
 from bismuth.domain.errors import BismuthError, CharterError
 from bismuth.domain.journal import Operation, OperationKind
 from bismuth.ports.catalog import Catalog
-from bismuth.ports.llm import LLM, ModelProfile
+from bismuth.ports.llm import LLM
 from bismuth.ports.vault import INBOX, Vault
 from bismuth.prompts import charters as charter_prompts
 from bismuth.services.sidecar import read_sidecar_meta
 
 logger = logging.getLogger(__name__)
 
-_SAMPLE_SIZE = 12
-
 ROOT_NOTE = Charter(
     path=PurePosixPath(),
-    title="전체",
-    purpose="아직 나뉘지 않은 문서들. 구분이 보이면 폴더로 나뉩니다.",
+    title="/",
+    purpose="",
 )
 """The root's note, fixed rather than written.
 
@@ -69,7 +67,7 @@ class CharterService:
             purpose = ""
             try:
                 if charter := self.load(folder):
-                    purpose = charter.purpose
+                    purpose = routing_purpose(charter.purpose, fallback=folder.name)
             except CharterError as exc:
                 logger.warning("unreadable folder note at %s: %s", folder, exc)
             views.append((str(folder), purpose))
@@ -91,34 +89,46 @@ class CharterService:
         total_count: int | None = None,
         children: list[tuple[str, str]] | None = None,
     ) -> Charter:
-        """Write a folder's note from the documents (and subfolders) in it."""
-        draft = await self._llm.structured(
-            charter_prompts.build(
-                path=str(folder),
-                document_briefs=[_brief(card) for card in cards[:_SAMPLE_SIZE]],
-                total_count=total_count if total_count is not None else len(cards),
-                children=children,
-            ),
-            schema=charter_prompts.CharterDraft,
-            profile=ModelProfile.REASONING,
-        )
-        # A redraft rewrites what the folder holds, never how it came to hold it. The
-        # axis it was divided along and the size it was divided at are history: they are
-        # read back to ask whether the division still stands and to hold later classes to
-        # the same question, and they cannot be recovered from the documents. Without
-        # this, every document landing in a divided folder erased them on the way in --
-        # notes are redrawn before subdivision runs, so the record survived only until
-        # the next arrival.
+        """Create a routing sign for a folder that does not have one yet.
+
+        An existing sign is a learned boundary contract.  A document that passed that
+        contract changes the inventory, not the contract, so ordinary refreshes preserve
+        it byte-for-byte and spend no model call.  Boundary creation/replacement writes
+        its own audited signs in the same structural transaction.
+        """
         history = self._history(folder)
+        if history is not None:
+            return history
+        fallback = folder.name or "Vault root"
+        try:
+            draft = await self._llm.structured(
+                charter_prompts.build(
+                    path=str(folder),
+                    document_briefs=[_brief(card) for card in _stable_cards(cards)],
+                    total_count=total_count if total_count is not None else len(cards),
+                    children=children,
+                ),
+                schema=charter_prompts.CharterDraft,
+            )
+            purpose = routing_purpose(draft.purpose, fallback=fallback)
+        except Exception as exc:
+            # A routing sign is useful metadata, never part of file safety.  A missing
+            # note gets a deterministic sign and can be reviewed with the structure later.
+            logger.warning("could not draft folder sign at %s; using its name: %s", folder, exc)
+            purpose = routing_purpose("", fallback=fallback)
         return Charter(
             path=folder,
-            title=draft.title.strip() or (folder.name or "Vault root"),
-            purpose=draft.purpose.strip(),
-            holds=tuple(draft.holds),
-            answers=tuple(draft.answers),
+            title=fallback,
+            purpose=purpose,
+            # Kept readable for old notes, but no longer generated: neither field is
+            # used for routing and both became verbose, quickly stale metadata.
+            holds=(),
+            answers=(),
             managed=True,
-            split_basis=history.split_basis if history else "",
-            split_at_documents=history.split_at_documents if history else 0,
+            split_basis="",
+            split_question="",
+            split_at_documents=0,
+            boundary_review_required=False,
         )
 
     def _history(self, folder: PurePosixPath) -> Charter | None:
@@ -141,7 +151,7 @@ class CharterService:
     async def refresh_operations(
         self, folders: list[PurePosixPath]
     ) -> list[tuple[Operation, bytes]]:
-        """Redraft the notes for folders whose direct contents just changed."""
+        """Create missing managed signs; never rewrite a boundary from inventory churn."""
         built: list[tuple[Operation, bytes]] = []
         seen: set[str] = set()
         for folder in folders:
@@ -152,6 +162,8 @@ class CharterService:
             if not folder.parts or folder.parts[0] == INBOX.parts[0]:
                 continue
             if not self._vault.is_dir(folder) or not self.is_managed(folder):
+                continue
+            if self._history(folder) is not None:
                 continue
             cards = self._folder_cards(folder)
             children = self._child_views(folder)
@@ -188,11 +200,19 @@ class CharterService:
             purpose = ""
             try:
                 if charter := self.load(candidate):
-                    purpose = charter.purpose
+                    purpose = routing_purpose(charter.purpose, fallback=candidate.name)
             except CharterError as exc:
                 logger.warning("unreadable folder note at %s: %s", candidate, exc)
             children.append((candidate.name, purpose))
         return children
+
+
+def _stable_cards(cards: list[DocumentCard]) -> list[DocumentCard]:
+    """All cards in a stable order; no arrival-dependent semantic sampling."""
+    return sorted(
+        cards,
+        key=lambda card: (card.title.casefold(), card.doc_type.casefold(), card.summary.casefold()),
+    )
 
 
 def _brief(card: DocumentCard) -> str:

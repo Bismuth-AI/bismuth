@@ -16,7 +16,7 @@ class Verdict(StrEnum):
 
 
 class Placement(BaseModel):
-    """Where a document goes, and the reasoning a human can audit."""
+    """The validated outcome of walking the existing folder tree."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -42,7 +42,10 @@ class Placement(BaseModel):
     )
     rationale: str = Field(
         default="",
-        description="Why this folder, in a sentence a person can check against the document.",
+        description=(
+            "Short operational result kept for API and journal compatibility. The model "
+            "does not generate placement prose."
+        ),
     )
 
     @property

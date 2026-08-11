@@ -19,7 +19,7 @@ from bismuth.domain.document import Coverage, DocumentCard, Entity, Extraction, 
 from bismuth.domain.errors import StructuredOutputError
 from bismuth.domain.progress import Progress, ProgressSink, Stage, report
 from bismuth.logging_setup import log_trace
-from bismuth.ports.llm import LLM, ModelProfile
+from bismuth.ports.llm import LLM
 from bismuth.prompts import cards as card_prompts
 
 logger = logging.getLogger(__name__)
@@ -265,7 +265,6 @@ class CardService:
         draft = await self._llm.structured(
             card_prompts.build(filename=filename, window=window, truncated=truncated),
             schema=card_prompts.CardDraft,
-            profile=ModelProfile.FAST,
         )
         facts = _sift(
             topics=draft.topics,
@@ -315,7 +314,6 @@ class CardService:
             update = await self._llm.structured(
                 card_prompts.build_update(filename=filename, window=window, card=card, read=read),
                 schema=card_prompts.CardUpdate,
-                profile=ModelProfile.FAST,
             )
         except StructuredOutputError as exc:
             # One unreadable window must not cost us the windows already read.
@@ -373,8 +371,6 @@ class CardService:
             pass_kind="update",
             elapsed_ms=_ms(started),
             contributed=added,
-            model_said_contributed=update.contributed,
-            note=update.note,
             retitled=revised.title if update.title else None,
             summary=revised.summary,
             added={
@@ -399,7 +395,6 @@ class CardService:
             dense = await self._llm.structured(
                 card_prompts.build_densify(card=card),
                 schema=card_prompts.DensifiedSummary,
-                profile=ModelProfile.FAST,
             )
         except StructuredOutputError as exc:
             log_trace(
@@ -422,7 +417,6 @@ class CardService:
             document_id=document_id,
             filename=filename,
             elapsed_ms=_ms(started),
-            absorbed=dense.absorbed,
             before=card.summary,
             after=summary,
             length_delta=len(summary) - len(card.summary),
