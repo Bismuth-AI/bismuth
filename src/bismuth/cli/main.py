@@ -19,7 +19,7 @@ from rich.table import Table
 from rich.tree import Tree
 
 from bismuth import __version__
-from bismuth.adapters.llm import list_models
+from bismuth.adapters.llm import list_models, litellm_adapter
 from bismuth.adapters.parsers import build_registry
 from bismuth.config import CONFIG_FILE, Settings, load_env_file
 from bismuth.container import Bismuth, build
@@ -170,12 +170,15 @@ def add(
 
 
 async def _add(engine: Bismuth, files: list[Path]) -> None:
-    for path in files:
-        if not path.is_file():
-            error_console.print(f"{path} 건너뜀: 파일이 아닙니다")
-            continue
-        rel = engine.ingest.stage(path.read_bytes(), path.name)
-        await _process_one(engine, rel)
+    try:
+        for path in files:
+            if not path.is_file():
+                error_console.print(f"{path} 건너뜀: 파일이 아닙니다")
+                continue
+            rel = engine.ingest.stage(path.read_bytes(), path.name)
+            await _process_one(engine, rel)
+    finally:
+        await litellm_adapter.close_clients()
 
 
 @app.command()
@@ -191,8 +194,11 @@ def scan(vault: VaultOption = None) -> None:
 
 
 async def _scan(engine: Bismuth, pending: list[PurePosixPath]) -> None:
-    for rel in pending:
-        await _process_one(engine, rel)
+    try:
+        for rel in pending:
+            await _process_one(engine, rel)
+    finally:
+        await litellm_adapter.close_clients()
 
 
 async def _process_one(engine: Bismuth, rel: PurePosixPath) -> None:

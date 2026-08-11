@@ -82,6 +82,42 @@ These caps are starting operational limits, not schema semantics. Revisit them w
 real distribution data when prompts or models change. A `finish_reason=length`
 must be logged distinctly so an undersized cap is visible.
 
+### Follow-up: output-cardinality failures
+
+The first guarded 300-document run exposed a separate failure on the same day. It
+was not a generation loop: 21 post-filing maintenance calls ended normally with
+`finish_reason=length`, but their JSON objects were incomplete.
+
+| Schema | Failed calls | Old cap | Why it grew |
+|---|---:|---:|---|
+| `ExistingAssignments` | 16 | 256 | The reply echoed many 16-character catalog hashes |
+| `ReplacementSketch` | 3 | 512 | The model wrote several signs and inventory-like notes |
+| `Replacement` | 2 | 768 | A complete plan echoed every document membership |
+
+All three repair attempts used the same cap and therefore ended at almost the same
+character every time. More schema retries could not help. The error text suggesting
+a larger retry count or model was misleading.
+
+The correction treats input context and output cardinality as different budgets:
+
+- catalog hashes remain internal; every maintenance view exposes only deterministic,
+  request-local `D####` handles;
+- schemas that return document handles receive at most 12 documents per call and the
+  application merges packets;
+- replacement always uses membership-free sketches followed by bounded assignment
+  packets, even when the whole input would fit in one context;
+- replacement signs have structural count and string-length limits, so a note cannot
+  become an inventory;
+- `finish_reason=length` triggers a clean retry with a larger schema ceiling, not a
+  malformed-JSON repair using the truncated reply;
+- if an API body explicitly sets a lower maximum, the application reports the cutoff
+  immediately because retrying cannot override that user limit.
+
+The same run also produced a native-schema `Emerging` reply that began valid JSON and
+then streamed whitespace. The client now aborts 512 consecutive whitespace characters,
+recognises LiteLLM's wrapped `repeating the same chunk` exception, and retries the
+original task without partial output or native constrained decoding.
+
 ## Diagnosis checklist
 
 1. Find the failing call in `./logs/llm.jsonl` by document ID and call number.
@@ -110,3 +146,24 @@ retries remain disabled so an abandoned generation is not multiplied on the serv
 If both Placement attempts fail, the upload remains in `_inbox`. Staging puts the
 original there before model work and a successful validated placement is the only
 operation allowed to move it out.
+
+### Follow-up: limits fixed transport but regressed classification
+
+A later guarded run proved that applying the same idea to maintenance membership was
+the wrong abstraction. The root created one child containing four documents while 44
+remained loose. That provisional one-child tree was reviewed as a complete boundary;
+replacement repeatedly failed validation, and each failure returned before existing
+routing or another class could emerge. Calls per document rose without structural
+change. The child note also contained `D####` handles and exclusion reasoning.
+
+The correction is architectural (ADR-0014), not a larger output cap:
+
+- managed child notes are deterministically derived from axis and class name;
+- membership uses one closed plain choice per document, never JSON ID arrays;
+- one-child boundaries are provisional and cannot trigger complete review;
+- failed repair attempts are persisted and normal additive filing continues;
+- the same unchanged repair is not retried until evidence materially grows.
+
+Generation limits remain enabled only as circuit breakers for malformed or runaway
+provider output. Passing under a character or token limit is never classification
+evidence.

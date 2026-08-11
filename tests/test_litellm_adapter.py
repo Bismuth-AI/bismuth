@@ -73,10 +73,14 @@ class FakeChunk:
 
 
 class FakeStream:
-    def __init__(self, reply: str) -> None:
+    def __init__(self, reply: str, *, finish_reason: str = "stop") -> None:
         middle = max(1, len(reply) // 2)
         self._chunks = iter(
-            [FakeChunk(reply[:middle]), FakeChunk(reply[middle:]), FakeChunk(finish_reason="stop")]
+            [
+                FakeChunk(reply[:middle]),
+                FakeChunk(reply[middle:]),
+                FakeChunk(finish_reason=finish_reason),
+            ]
         )
 
     def __aiter__(self) -> FakeStream:
@@ -101,6 +105,34 @@ class FailingStream:
             self._sent = True
             return FakeChunk('{"name": "partial')
         raise TimeoutError("no next chunk")
+
+
+class ProviderRepetitionStream:
+    def __init__(self) -> None:
+        self._sent = False
+
+    def __aiter__(self) -> ProviderRepetitionStream:
+        return self
+
+    async def __anext__(self) -> FakeChunk:
+        if not self._sent:
+            self._sent = True
+            return FakeChunk('{"name": "partial')
+        raise RuntimeError("The model is repeating the same chunk = '   '")
+
+
+class WhitespaceLoopStream:
+    def __init__(self) -> None:
+        self._chunks = 0
+
+    def __aiter__(self) -> WhitespaceLoopStream:
+        return self
+
+    async def __anext__(self) -> FakeChunk:
+        self._chunks += 1
+        if self._chunks == 1:
+            return FakeChunk('{"name": "partial')
+        return FakeChunk(" " * 64)
 
 
 class StubLiteLLM:
@@ -249,6 +281,25 @@ class TestExplicitKey:
         assert fake.calls[0]["api_base"] == "http://localhost:11434"
 
 
+class TestClientCleanup:
+    async def test_owned_shared_sessions_are_closed(self, stub: Any) -> None:
+        stub(['{"name": "a", "year": 1}'])
+
+        class Session:
+            closed = False
+
+            async def close(self) -> None:
+                self.closed = True
+
+        session = Session()
+        litellm_adapter._owned_aiohttp_sessions[1] = session
+
+        await litellm_adapter.close_clients()
+
+        assert session.closed
+        assert litellm_adapter._owned_aiohttp_sessions == {}
+
+
 class TestStructuredOutputTiers:
     async def test_a_capable_provider_gets_the_schema_as_a_parameter(self, stub: Any) -> None:
         fake = stub(['{"name": "a", "year": 1}'], native=True)
@@ -305,10 +356,89 @@ class TestRepair:
 
     async def test_giving_up_says_what_to_do(self, stub: Any) -> None:
         stub(["not json at all"])
-        with pytest.raises(StructuredOutputError, match="choose a more capable model"):
+        with pytest.raises(StructuredOutputError, match="Inspect finish_reason"):
             await adapter(max_schema_retries=0).structured(
                 Prompt(system="s", user="u"), schema=Answer
             )
+
+    async def test_length_finish_retries_cleanly_with_a_larger_budget(self, stub: Any) -> None:
+        fake = stub(['{"name": "Apollo", "year": 2023}'])
+
+        async def first_is_cut_short(**kwargs: Any) -> FakeStream:
+            fake.calls.append(kwargs)
+            if len(fake.calls) == 1:
+                return FakeStream('{"name": "Apollo"', finish_reason="length")
+            return FakeStream('{"name": "Apollo", "year": 2023}')
+
+        fake.acompletion = first_is_cut_short  # type: ignore[method-assign]
+        result = await adapter(max_schema_retries=1).structured(
+            Prompt(system="s", user="u"), schema=Answer
+        )
+
+        assert result.year == 2023
+        assert [call["max_tokens"] for call in fake.calls] == [2048, 4096]
+        assert len(fake.calls[1]["messages"]) == 2
+
+    async def test_a_configured_lower_limit_is_not_retried_unchanged(self, stub: Any) -> None:
+        fake = stub(['{"name": "Apollo"'])
+
+        async def always_cut(**kwargs: Any) -> FakeStream:
+            fake.calls.append(kwargs)
+            return FakeStream('{"name": "Apollo"', finish_reason="length")
+
+        fake.acompletion = always_cut  # type: ignore[method-assign]
+        with pytest.raises(StructuredOutputError, match="generation limit"):
+            await adapter(body={"max_tokens": 64}, max_schema_retries=2).structured(
+                Prompt(system="s", user="u"), schema=Answer
+            )
+
+        assert len(fake.calls) == 1
+
+    async def test_litellm_wrapped_repetition_gets_a_clean_non_native_retry(
+        self, stub: Any
+    ) -> None:
+        fake = stub(['{"name": "Apollo", "year": 2023}'])
+
+        async def repeat_then_answer(**kwargs: Any):  # type: ignore[no-untyped-def]
+            fake.calls.append(kwargs)
+            if len(fake.calls) == 1:
+                return ProviderRepetitionStream()
+            return FakeStream('{"name": "Apollo", "year": 2023}')
+
+        fake.acompletion = repeat_then_answer  # type: ignore[method-assign]
+        result = await adapter(max_schema_retries=1).structured(
+            Prompt(system="original", user="evidence"), schema=Answer
+        )
+
+        assert result.year == 2023
+        assert "response_format" in fake.calls[0]
+        assert "response_format" not in fake.calls[1]
+        assert len(fake.calls[1]["messages"]) == 2
+        assert "partial" not in str(fake.calls[1]["messages"])
+
+    async def test_whitespace_only_progress_is_stopped_before_the_provider_limit(
+        self, stub: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = stub(['{"name": "Apollo", "year": 2023}'])
+
+        async def loop_then_answer(**kwargs: Any):  # type: ignore[no-untyped-def]
+            fake.calls.append(kwargs)
+            if len(fake.calls) == 1:
+                return WhitespaceLoopStream()
+            return FakeStream('{"name": "Apollo", "year": 2023}')
+
+        fake.acompletion = loop_then_answer  # type: ignore[method-assign]
+        records: list[dict[str, Any]] = []
+        monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
+
+        result = await adapter(max_schema_retries=1).structured(
+            Prompt(system="s", user="u"), schema=Answer
+        )
+
+        assert result.year == 2023
+        abort = records[-1]["attempts"][0]["stream"]["abort"]
+        assert abort["pattern"] == "<whitespace>"
+        assert abort["after_chars"] < 1000
 
 
 class TestJsonSalvage:

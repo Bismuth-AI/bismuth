@@ -74,6 +74,10 @@ def _attach_jsonl(logger_name: str, path: Path) -> None:
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(_JsonlFormatter())
     logger = logging.getLogger(logger_name)
+    # Uvicorn's dictConfig can disable named loggers that are not in its own table.
+    # Re-enabling only our explicitly configured sinks keeps raw call/trace logs alive
+    # when Bismuth is launched through the web server.
+    logger.disabled = False
     logger.addHandler(handler)
     logger.setLevel(logging.DEBUG)
     logger.propagate = False

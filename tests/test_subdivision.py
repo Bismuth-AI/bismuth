@@ -41,6 +41,42 @@ def _emerges(
     )
 
 
+def _replacement(
+    script: ScriptedModel,
+    *,
+    basis: str,
+    question: str,
+    groups: list[subdivision_prompts.Group],
+) -> None:
+    """Script the production sketch-then-bounded-assignment replacement contract."""
+    script.set(
+        subdivision_prompts.ReplacementSketch,
+        subdivision_prompts.ReplacementSketch(
+            basis=basis,
+            basis_question=question,
+            signs=[
+                subdivision_prompts.ReplacementSign(name=group.name, note=group.note)
+                for group in groups
+            ],
+        ),
+    )
+
+    def assign(prompt, schema):  # type: ignore[no-untyped-def]
+        shown = set(re.findall(r"\[(D\d{4})\]", prompt.user))
+        return subdivision_prompts.ReplacementAssignments(
+            groups=[
+                subdivision_prompts.ReplacementAssignment(
+                    folder_id=f"G{index:03d}",
+                    document_ids=[item for item in group.document_ids if item in shown],
+                )
+                for index, group in enumerate(groups, start=1)
+                if shown.intersection(group.document_ids)
+            ]
+        )
+
+    script.set(subdivision_prompts.ReplacementAssignments, assign)
+
+
 def _by_name(engine: Bismuth) -> dict[str, str]:
     return {
         source.filename: document_id
@@ -57,14 +93,49 @@ def _ids(engine: Bismuth) -> list[str]:
 
 
 async def _fill(engine: Bismuth, script: ScriptedModel, count: int) -> list[str]:
-    """Put `count` documents in the root. Distinct bodies: identity is the bytes."""
+    """Put documents in root and return the short handles shown in one maintenance view."""
     script.set(placement_prompts.PlacementDecision, place_at(""))
     for index in range(count):
         await add(engine, f"doc{index}.txt", f"문서 {index} 내용")
-    return _ids(engine)
+    return [f"D{index:04d}" for index in range(1, count + 1)]
 
 
 class TestDivideDecision:
+    async def test_model_prompts_use_request_local_handles_not_catalog_hashes(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:
+        await _fill(engine, script, 4)
+
+        prompts = llm.prompts_for(subdivision_prompts.Emerging)
+        assert prompts
+        assert all(not re.search(r"\[[0-9a-f]{16}(?:~\d+)?\]", item.user) for item in prompts)
+        assert "[D0001]" in prompts[-1].user
+
+    async def test_id_returning_calls_are_packeted_by_output_cardinality(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:
+        documents = [(f"D{index:04d}", f"문서 {index}") for index in range(1, 31)]
+        script.set(
+            subdivision_prompts.Members,
+            lambda prompt, schema: subdivision_prompts.Members(
+                document_ids=re.findall(r"\[(D\d{4})\]", prompt.user)
+            ),
+        )
+
+        result = await engine.maintenance._find_members(  # type: ignore[attr-defined]
+            folder=PurePosixPath(),
+            purpose="자료",
+            documents=documents,
+            children=[],
+            name="자료",
+            note="자료 문서",
+        )
+
+        calls = llm.prompts_for(subdivision_prompts.Members)
+        assert len(calls) == 3
+        assert all(len(re.findall(r"\[(D\d{4})\]", call.user)) <= 12 for call in calls)
+        assert result.document_ids == [item[0] for item in documents]
+
     async def test_nothing_happens_when_nothing_has_gathered(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
@@ -223,10 +294,15 @@ class TestDrawingOutAClass:
         await engine.subdivision.consider(PurePosixPath())
         script.set(
             subdivision_prompts.ExistingAssignments,
-            subdivision_prompts.ExistingAssignments(
+            lambda prompt, schema: subdivision_prompts.ExistingAssignments(
                 groups=[
-                    subdivision_prompts.ExistingAssignment(folder_id="F001", document_ids=[ids[2]])
-                ],
+                    subdivision_prompts.ExistingAssignment(
+                        folder_id="F001",
+                        # The first two files have moved, so doc2 is D0001 in this
+                        # new request-local view rather than its earlier D0003.
+                        document_ids=["D0001"],
+                    )
+                ]
             ),
         )
 
@@ -513,8 +589,12 @@ class TestReview:
         )
 
         # doc0/doc1 went into 문학; these two are still loose at the root.
-        by_name = _by_name(engine)
-        _emerges(script, "과학", "과학 자료", [by_name["more0.txt"], by_name["more1.txt"]])
+        _emerges(script, "과학", "과학 자료", [])
+        script.set(
+            subdivision_prompts.Members,
+            # doc2 remains loose as D0001; the two new members follow it.
+            subdivision_prompts.Members(document_ids=["D0002", "D0003"]),
+        )
         llm.calls.clear()
 
         await engine.subdivision.consider(PurePosixPath())
@@ -573,16 +653,14 @@ class TestReview:
             subdivision_prompts.BoundaryAudit,
             lambda prompt, schema: next(audits),
         )
-        script.set(
-            subdivision_prompts.Replacement,
-            subdivision_prompts.Replacement(
-                basis="자료 속성",
-                basis_question="어느 자료 속성값에 해당하는가?",
-                groups=[
-                    _group("첫째 값", "첫째 값의 문서", ["D0001", "D0002"]),
-                    _group("둘째 값", "둘째 값의 문서", ["D0003", "D0004"]),
-                ],
-            ),
+        _replacement(
+            script,
+            basis="자료 속성",
+            question="어느 자료 속성값에 해당하는가?",
+            groups=[
+                _group("첫째 값", "첫째 값의 문서", ["D0001", "D0002"]),
+                _group("둘째 값", "둘째 값의 문서", ["D0003", "D0004"]),
+            ],
         )
 
         divided = await engine.subdivision.consider(PurePosixPath())
@@ -611,20 +689,18 @@ class TestReview:
                 useful_navigation=False,
             ),
         )
-        script.set(
-            subdivision_prompts.Replacement,
-            subdivision_prompts.Replacement(
-                basis="주제 분야",
-                basis_question="어느 주제 분야에 속하는가?",
-                groups=[
-                    subdivision_prompts.Group(
-                        name="과학", note="과학", document_ids=["D0003", "D0004"]
-                    ),
-                    subdivision_prompts.Group(
-                        name="기술", note="기술", document_ids=["D0003", "D0005"]
-                    ),
-                ],
-            ),
+        _replacement(
+            script,
+            basis="주제 분야",
+            question="어느 주제 분야에 속하는가?",
+            groups=[
+                subdivision_prompts.Group(
+                    name="과학", note="과학", document_ids=["D0003", "D0004"]
+                ),
+                subdivision_prompts.Group(
+                    name="기술", note="기술", document_ids=["D0003", "D0005"]
+                ),
+            ],
         )
 
         divided = await engine.subdivision.consider(PurePosixPath())
@@ -657,16 +733,14 @@ class TestReview:
                 useful_navigation=False,
             ),
         )
-        script.set(
-            subdivision_prompts.Replacement,
-            subdivision_prompts.Replacement(
-                basis="자료 속성",
-                basis_question="어느 자료 속성값에 해당하는가?",
-                groups=[
-                    _group("문학", "첫 번째 값", ["D0001", "D0002", "D0003"]),
-                    _group("다른 값", "두 번째 값", ["D0004", "D0005", "D0006"]),
-                ],
-            ),
+        _replacement(
+            script,
+            basis="자료 속성",
+            question="어느 자료 속성값에 해당하는가?",
+            groups=[
+                _group("문학", "첫 번째 값", ["D0001", "D0002", "D0003"]),
+                _group("다른 값", "두 번째 값", ["D0004", "D0005", "D0006"]),
+            ],
         )
 
         divided = await engine.subdivision.consider(PurePosixPath())
@@ -701,16 +775,14 @@ class TestReview:
                 one_axis=False, coherent_membership=False, useful_navigation=False
             ),
         )
-        script.set(
-            subdivision_prompts.Replacement,
-            subdivision_prompts.Replacement(
-                basis="다른 속성",
-                basis_question="어느 값인가?",
-                groups=[
-                    _group("첫 값", "첫 값 문서", ["D0001", "D0002", "D0003"]),
-                    _group("둘째 값", "둘째 값 문서", ["D0004", "D0005", "D0006"]),
-                ],
-            ),
+        _replacement(
+            script,
+            basis="다른 속성",
+            question="어느 값인가?",
+            groups=[
+                _group("첫 값", "첫 값 문서", ["D0001", "D0002", "D0003"]),
+                _group("둘째 값", "둘째 값 문서", ["D0004", "D0005", "D0006"]),
+            ],
         )
         script.set(
             subdivision_prompts.ReplacementAudit,
