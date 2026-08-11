@@ -14,7 +14,7 @@ from bismuth.domain.maintenance import is_axis_label
 
 #: Filename of a folder's note; sorts to the top of a listing.
 CHARTER_FILENAME = "_folder.md"
-CHARTER_SCHEMA_VERSION = 5
+CHARTER_SCHEMA_VERSION = 6
 MAX_PURPOSE_CHARS = 220
 
 _GENERATED_BODY_NOTICE = "<!-- generated from frontmatter -->"
@@ -35,6 +35,22 @@ def routing_purpose(value: str, *, fallback: str) -> str:
         return normalised
     safe = " ".join(fallback.split()).strip()
     return safe[:MAX_PURPOSE_CHARS] or "?"
+
+
+def boundary_purpose(axis: str, class_name: str) -> str:
+    """Derive a durable child sign from machine-owned boundary state.
+
+    The model chooses the axis and the class name.  It does not also get to write an
+    unconstrained explanation of that choice: such explanations became inventories,
+    exclusions, and even leaked request-local document handles.  Keeping the stored
+    sign as a deterministic projection makes it stable for the lifetime of the
+    boundary and means output length is never a semantic acceptance criterion.
+    """
+    clean_axis = " ".join(axis.split()).strip()
+    clean_name = " ".join(class_name.split()).strip()
+    if clean_axis and clean_name:
+        return f"{clean_axis}: {clean_name}"
+    return clean_name or clean_axis or "?"
 
 
 class Charter(BaseModel):
@@ -89,6 +105,21 @@ class Charter(BaseModel):
         default=False,
         description="True when an older boundary must pass the current complete-review contract.",
     )
+    last_review_at_documents: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Subtree size at the last completed review attempt, including a rejected "
+            "repair. Prevents the same failed redesign from running on every arrival."
+        ),
+    )
+    repair_pending: bool = Field(
+        default=False,
+        description=(
+            "The current boundary failed review but no validated replacement was safe "
+            "to apply. Filing may continue while repair waits for materially new evidence."
+        ),
+    )
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("split_basis")
@@ -119,11 +150,14 @@ class Charter(BaseModel):
         (SPEC.md 6.1). The ratio is to the folder's own history, so nothing here is
         tuned to a corpus.
         """
-        if self.divided and self.boundary_review_required:
-            return True
-        if not self.divided or self.split_at_documents <= 0:
+        if not self.divided:
             return False
-        return documents_now >= self.split_at_documents * 2
+        if self.boundary_review_required and self.last_review_at_documents <= 0:
+            return True
+        baseline = max(self.split_at_documents, self.last_review_at_documents)
+        if baseline <= 0:
+            return False
+        return documents_now >= baseline * 2
 
     def to_markdown(self) -> str:
         meta: dict[str, Any] = {
@@ -139,6 +173,10 @@ class Charter(BaseModel):
             meta["split_at_documents"] = self.split_at_documents
             if self.boundary_review_required:
                 meta["boundary_review_required"] = True
+            if self.last_review_at_documents:
+                meta["last_review_at_documents"] = self.last_review_at_documents
+            if self.repair_pending:
+                meta["repair_pending"] = True
         front = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False, default_flow_style=False)
         return f"---\n{front}---\n\n{self._render_body()}\n"
 
@@ -186,6 +224,8 @@ class Charter(BaseModel):
                     meta.get("boundary_review_required", False)
                     or (version < CHARTER_SCHEMA_VERSION and legacy_basis)
                 ),
+                last_review_at_documents=int(meta.get("last_review_at_documents") or 0),
+                repair_pending=bool(meta.get("repair_pending", False)),
                 updated_at=_parse_datetime(meta.get("updated_at")),
             )
         except (KeyError, TypeError, ValueError) as exc:

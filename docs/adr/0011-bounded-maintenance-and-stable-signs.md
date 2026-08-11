@@ -2,6 +2,9 @@
 
 **Status:** accepted
 **Amends:** [0010](0010-corpus-neutral-complete-boundaries.md)
+**Further amended by:** [0014](0014-boundary-state-and-closed-membership.md) — managed
+child signs are now derived, and membership uses closed per-document choices rather
+than JSON ID packets.
 
 ## Context
 

@@ -26,3 +26,4 @@ decision should be revisited. Superseded records stay; they are not deleted.
 | [0011](0011-bounded-maintenance-and-stable-signs.md) | Keep routing signs stable; review complete boundaries in bounded contexts |
 | [0012](0012-one-model.md) | Use one configured model for every task |
 | [0013](0013-bounded-llm-output-and-plain-placement.md) | Use a plain choice for placement; bound every LLM generation |
+| [0014](0014-boundary-state-and-closed-membership.md) | Derive managed signs; model membership as closed per-document choices |

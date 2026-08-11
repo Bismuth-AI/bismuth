@@ -12,16 +12,17 @@ books already behind its signs cannot be correct.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import unicodedata
 import uuid
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import TypeVar
 
-from bismuth.domain.charter import CHARTER_FILENAME, Charter, routing_purpose
+from bismuth.domain.charter import CHARTER_FILENAME, Charter, boundary_purpose, routing_purpose
 from bismuth.domain.document import DocumentCard, sidecar_name
 from bismuth.domain.errors import BismuthError
 from bismuth.domain.journal import Actor, JournalEntry, Operation, OperationKind
@@ -215,7 +216,20 @@ class LibraryMaintenanceService:
         # Two different jobs, and only the second may move a document that is already
         # filed. Drawing a new class out of the loose pile is additive and safe to ask
         # often; redrawing a boundary is not, and waits for the evidence to double.
-        if charter is not None and charter.divided and charter.due_for_review(total):
+        # One child is a provisional shelf, not an established partition. Reviewing it
+        # as a complete boundary made the inevitable "not useful navigation" verdict
+        # trigger expensive redesigns before a second class had even emerged.
+        established_boundary = len(contents.children) >= 2
+        if (
+            charter is not None
+            and charter.divided
+            and established_boundary
+            and charter.due_for_review(total)
+            # Review safety problems postpone only the destructive review. They must
+            # never prevent additive filing into the still-usable current structure.
+            and len(self._read(folder, recursive=True).documents) == total
+            and not self._has_protected_descendant(folder)
+        ):
             review_contents = self._read(folder, recursive=True)
             if len(review_contents.documents) != total:
                 log_trace(
@@ -292,90 +306,34 @@ class LibraryMaintenanceService:
                 )
 
             if not current_boundary_holds:
-                replacement = await self._propose_replacement(
+                replacement_plan = await self._attempt_boundary_replacement(
                     folder=folder,
                     purpose=purpose,
                     charter=charter,
                     total=total,
                     documents=review_contents.lines,
-                    children=direct_signs,
-                )
-                if replacement is None:
-                    return None
-                preview = validate_plan(
-                    axis=replacement.basis,
-                    axis_question=replacement.basis_question,
-                    groups=tuple(
-                        ProposedClass(name=group.name, document_ids=tuple(group.document_ids))
-                        for group in replacement.groups
-                    ),
-                    available_document_ids=frozenset(
-                        document_id for document_id, _, _ in review_contents.documents
-                    ),
-                    ancestor_names=folder.parts,
-                    spent_axes=tuple(self._axes_above(folder)),
-                    require_complete=True,
-                )
-                if not preview.accepted:
-                    log_trace(
-                        "subdivide.rejected",
-                        folder=str(folder),
-                        reason="; ".join(problem.value for problem in preview.problems),
-                        replacement=True,
-                    )
-                    return None
-                audit = await self._audit_boundary(
-                    folder=folder,
-                    documents=review_contents.lines,
-                    axis=replacement.basis,
-                    axis_question=replacement.basis_question,
-                    groups=replacement.groups,
-                    complete=True,
-                )
-                if not audit.accepted:
-                    log_trace(
-                        "subdivide.rejected",
-                        folder=str(folder),
-                        reason="semantic boundary audit failed",
-                        failed_checks=_failed_boundary_checks(audit),
-                        replacement=True,
-                    )
-                    return None
-                change_audit = await self._audit_replacement_change(
-                    folder=folder,
-                    documents=review_contents.lines,
-                    charter=charter,
                     current_groups=current_groups,
                     observed_failures=observed_failures,
-                    replacement=replacement,
+                    children=direct_signs,
                 )
-                if not change_audit.accepted:
-                    log_trace(
-                        "subdivide.rejected",
-                        folder=str(folder),
-                        reason="replacement is not materially better than current boundary",
-                        fixes_observed_failure=change_audit.fixes_observed_failure,
-                        better_navigation=change_audit.better_navigation,
-                        replacement=True,
-                    )
-                    return None
-                return prompts.Division(
-                    basis=replacement.basis,
-                    basis_question=replacement.basis_question,
-                    groups=replacement.groups,
-                    replace_existing=True,
-                )
+                if replacement_plan is not None:
+                    return replacement_plan
+                # A failed repair is state, not a reason to starve ordinary filing.
+                # Persist the attempt so the same unchanged subtree is not redesigned
+                # on every arrival, then continue into existing routing/emergence below.
+                self._record_review_attempt(folder, charter, documents=total, repair_pending=True)
             # A holding review is still a judgement made at this size, and it has to be
             # recorded as one. Left unwritten, the folder stays past its doubling for
             # ever: it was asked on every ingest from then on -- fourteen times in a row
             # on one run, all of them holding -- and, worse, the answer returned here so
             # the folder was never asked what else had grown in it.
-            self._rearm(
-                folder,
-                charter,
-                documents=total,
-                axis_question=charter.split_question,
-            )
+            else:
+                self._rearm(
+                    folder,
+                    charter,
+                    documents=total,
+                    axis_question=charter.split_question,
+                )
 
         if not allow_emerging:
             log_trace(
@@ -552,9 +510,7 @@ class LibraryMaintenanceService:
             folder=folder,
             purpose=purpose,
             documents=contents.lines,
-            children=contents.children,
             name=emerging.name,
-            note=emerging.note,
         )
         log_trace(
             "subdivide.members",
@@ -569,7 +525,7 @@ class LibraryMaintenanceService:
         proposed_groups = [
             prompts.Group(
                 name=emerging.name,
-                note=routing_purpose(emerging.note, fallback=emerging.name),
+                note=boundary_purpose(axis or emerging.axis.strip(), emerging.name),
                 document_ids=members.document_ids,
             )
         ]
@@ -685,35 +641,26 @@ class LibraryMaintenanceService:
         contents: _Contents,
         charter: Charter,
     ) -> prompts.ExistingAssignments:
-        def build(packet: list[tuple[str, str]]):  # type: ignore[no-untyped-def]
-            return prompts.build_existing_assignments(
-                path=str(folder),
-                documents=packet,
-                axis=charter.split_basis,
-                axis_question=charter.split_question,
-                children=contents.children,
-            )
-
-        if _prompt_chars(build([])) > MAX_MAINTENANCE_PROMPT_CHARS:
-            log_trace(
-                "subdivide.skipped",
-                folder=str(folder),
-                reason="direct signs require boundary review before incremental routing",
-            )
-            return prompts.ExistingAssignments(groups=[])
-
         merged: dict[str, list[str]] = {}
-        for packet in _document_packets(contents.lines, build):
-            result = await self._llm.structured(
-                build(packet),
-                schema=prompts.ExistingAssignments,
+        handles = [f"F{index:03d}" for index in range(1, len(contents.children) + 1)]
+
+        async def decide(document: tuple[str, str]) -> tuple[str, str]:
+            choice = await self._llm.choose(
+                prompts.build_existing_choice(
+                    path=str(folder),
+                    document=document,
+                    axis=charter.split_basis,
+                    axis_question=charter.split_question,
+                    children=contents.children,
+                ),
+                choices=(*handles, "STAY"),
+                max_tokens=8,
             )
-            available = {document_id for document_id, _ in packet}
-            for group in result.groups:
-                valid_ids = [
-                    document_id for document_id in group.document_ids if document_id in available
-                ]
-                merged.setdefault(group.folder_id, []).extend(valid_ids)
+            return document[0], choice
+
+        for document_id, choice in await _bounded_gather(contents.lines, decide):
+            if choice in handles:
+                merged.setdefault(choice, []).append(document_id)
         return prompts.ExistingAssignments(
             groups=[
                 prompts.ExistingAssignment(folder_id=folder_id, document_ids=document_ids)
@@ -835,28 +782,22 @@ class LibraryMaintenanceService:
         folder: PurePosixPath,
         purpose: str,
         documents: list[tuple[str, str]],
-        children: list[tuple[str, str]],
         name: str,
-        note: str,
     ) -> prompts.Members:
-        def build(packet: list[tuple[str, str]]):  # type: ignore[no-untyped-def]
-            return prompts.build_members(
-                path=str(folder),
-                purpose=purpose,
-                documents=packet,
-                children=children,
-                name=name,
-                note=note,
+        async def decide(document: tuple[str, str]) -> tuple[str, str]:
+            choice = await self._llm.choose(
+                prompts.build_member_choice(
+                    path=str(folder), purpose=purpose, document=document, name=name
+                ),
+                choices=("SHELF", "STAY"),
+                max_tokens=8,
             )
+            return document[0], choice
 
-        members: list[str] = []
-        for packet in _document_packets(documents, build):
-            result = await self._llm.structured(build(packet), schema=prompts.Members)
-            available = {document_id for document_id, _ in packet}
-            members.extend(
-                document_id for document_id in result.document_ids if document_id in available
-            )
-        return prompts.Members(document_ids=list(dict.fromkeys(members)))
+        decisions = await _bounded_gather(documents, decide)
+        return prompts.Members(
+            document_ids=[document_id for document_id, choice in decisions if choice == "SHELF"]
+        )
 
     async def _review_boundary(
         self,
@@ -911,6 +852,91 @@ class LibraryMaintenanceService:
             useful_navigation=all(check.useful_navigation for check in checks),
         )
 
+    async def _attempt_boundary_replacement(
+        self,
+        *,
+        folder: PurePosixPath,
+        purpose: str,
+        charter: Charter,
+        total: int,
+        documents: list[tuple[str, str]],
+        current_groups: list[prompts.Group],
+        observed_failures: list[str],
+        children: list[tuple[str, str]],
+    ) -> prompts.Division | None:
+        """Return a fully validated replacement, without controlling later filing."""
+        replacement = await self._propose_replacement(
+            folder=folder,
+            purpose=purpose,
+            charter=charter,
+            total=total,
+            documents=documents,
+            children=children,
+        )
+        if replacement is None:
+            return None
+        preview = validate_plan(
+            axis=replacement.basis,
+            axis_question=replacement.basis_question,
+            groups=tuple(
+                ProposedClass(name=group.name, document_ids=tuple(group.document_ids))
+                for group in replacement.groups
+            ),
+            available_document_ids=frozenset(document_id for document_id, _ in documents),
+            ancestor_names=folder.parts,
+            spent_axes=tuple(self._axes_above(folder)),
+            require_complete=True,
+        )
+        if not preview.accepted:
+            log_trace(
+                "subdivide.rejected",
+                folder=str(folder),
+                reason="; ".join(problem.value for problem in preview.problems),
+                replacement=True,
+            )
+            return None
+        audit = await self._audit_boundary(
+            folder=folder,
+            documents=documents,
+            axis=replacement.basis,
+            axis_question=replacement.basis_question,
+            groups=replacement.groups,
+            complete=True,
+        )
+        if not audit.accepted:
+            log_trace(
+                "subdivide.rejected",
+                folder=str(folder),
+                reason="semantic boundary audit failed",
+                failed_checks=_failed_boundary_checks(audit),
+                replacement=True,
+            )
+            return None
+        change_audit = await self._audit_replacement_change(
+            folder=folder,
+            documents=documents,
+            charter=charter,
+            current_groups=current_groups,
+            observed_failures=observed_failures,
+            replacement=replacement,
+        )
+        if not change_audit.accepted:
+            log_trace(
+                "subdivide.rejected",
+                folder=str(folder),
+                reason="replacement is not materially better than current boundary",
+                fixes_observed_failure=change_audit.fixes_observed_failure,
+                better_navigation=change_audit.better_navigation,
+                replacement=True,
+            )
+            return None
+        return prompts.Division(
+            basis=replacement.basis,
+            basis_question=replacement.basis_question,
+            groups=replacement.groups,
+            replace_existing=True,
+        )
+
     async def _propose_replacement(
         self,
         *,
@@ -921,26 +947,14 @@ class LibraryMaintenanceService:
         documents: list[tuple[str, str]],
         children: list[tuple[str, str]],
     ) -> prompts.Replacement | None:
-        """Build a complete replacement without ever placing the subtree in one context.
+        """Build a complete replacement from bounded, independently validated stages.
 
-        Small boundaries retain the original single-call contract. Large ones first make
-        membership-free sketches in isolated contexts, reduce those sketches, then assign
-        every request-local document handle in bounded packets. Completeness remains a
-        deterministic invariant before any filesystem transaction is constructed.
+        A complete ``Replacement`` reply grows with every document because it has to
+        echo every handle.  Even a small input can therefore hit an output-token limit.
+        Always design membership-free signs first, then assign short request-local
+        handles in bounded packets and merge them here.  The same contract now covers
+        small and large subtrees, so crossing a size threshold cannot change safety.
         """
-        full = prompts.build_replacement(
-            path=str(folder),
-            purpose=purpose,
-            basis=charter.split_basis,
-            basis_question=charter.split_question,
-            before=charter.split_at_documents,
-            count=total,
-            documents=documents,
-            children=children,
-        )
-        if _prompt_chars(full) <= MAX_MAINTENANCE_PROMPT_CHARS:
-            replacement = await self._llm.structured(full, schema=prompts.Replacement)
-            return _normalise_replacement(replacement)
 
         def build_sketch(
             packet: list[tuple[str, str]], signs: list[tuple[str, str]] = children
@@ -1009,44 +1023,31 @@ class LibraryMaintenanceService:
 
         sketch = sketches[0]
 
-        def build_assignments(packet: list[tuple[str, str]]):  # type: ignore[no-untyped-def]
-            return prompts.build_replacement_assignments(
-                path=str(folder), documents=packet, sketch=sketch
-            )
-
         assignments_by_sign: list[list[str]] = [[] for _ in sketch.signs]
-        for index, packet in enumerate(_document_packets(documents, build_assignments), start=1):
-            assigned = await self._llm.structured(
-                build_assignments(packet),
-                schema=prompts.ReplacementAssignments,
+        handles = [f"G{index:03d}" for index in range(1, len(sketch.signs) + 1)]
+
+        async def decide(document: tuple[str, str]) -> tuple[str, str]:
+            choice = await self._llm.choose(
+                prompts.build_replacement_choice(
+                    path=str(folder), document=document, sketch=sketch
+                ),
+                choices=handles,
+                max_tokens=8,
             )
-            expected = {document_id for document_id, _ in packet}
-            seen: set[str] = set()
-            invalid = bool(assigned.unassigned_document_ids)
-            for group in assigned.groups:
-                handle = group.folder_id
-                if not handle.startswith("G") or not handle[1:].isdigit():
-                    invalid = True
-                    continue
-                sign_index = int(handle[1:]) - 1
-                if sign_index < 0 or sign_index >= len(sketch.signs):
-                    invalid = True
-                    continue
-                for document_id in group.document_ids:
-                    if document_id not in expected or document_id in seen:
-                        invalid = True
-                    else:
-                        seen.add(document_id)
-                        assignments_by_sign[sign_index].append(document_id)
-            if invalid or seen != expected:
+            return document[0], choice
+
+        decisions = await _bounded_gather(documents, decide)
+        for document_id, handle in decisions:
+            if handle not in handles:
                 log_trace(
                     "subdivide.rejected",
                     folder=str(folder),
-                    reason="bounded replacement assignment is incomplete or invalid",
-                    packet=index,
+                    reason="replacement assignment returned an unknown sign",
+                    document=document_id,
                     replacement=True,
                 )
                 return None
+            assignments_by_sign[int(handle[1:]) - 1].append(document_id)
 
         return prompts.Replacement(
             basis=sketch.basis,
@@ -1054,7 +1055,7 @@ class LibraryMaintenanceService:
             groups=[
                 prompts.Group(
                     name=sign.name,
-                    note=routing_purpose(sign.note, fallback=sign.name),
+                    note=boundary_purpose(sketch.basis, sign.name),
                     document_ids=assignments_by_sign[index],
                 )
                 for index, sign in enumerate(sketch.signs)
@@ -1121,7 +1122,6 @@ class LibraryMaintenanceService:
             names_answer_question=all(check.names_answer_question for check in checks),
             mutually_exclusive=all(check.mutually_exclusive for check in checks),
             useful_for_navigation=all(check.useful_for_navigation for check in checks),
-            notes_are_routing_signs=all(check.notes_are_routing_signs for check in checks),
         )
 
     async def _audit_replacement_change(
@@ -1206,7 +1206,15 @@ class LibraryMaintenanceService:
                 continue
             charter = self._charter(child)
             direct_children[child.name] = (
-                routing_purpose(charter.purpose, fallback=child.name) if charter is not None else ""
+                boundary_purpose(parent.split_basis, child.name)
+                if (parent := self._charter(folder)) is not None
+                and parent.divided
+                and (charter is None or charter.managed)
+                else (
+                    routing_purpose(charter.purpose, fallback=child.name)
+                    if charter is not None
+                    else ""
+                )
             )
 
         members: dict[str, list[str]] = {name: [] for name in direct_children}
@@ -1303,12 +1311,17 @@ class LibraryMaintenanceService:
 
         if not operations:
             return Divided(folder=folder)
+        note_operations, payloads = self._stable_child_note_operations(
+            folder, axis=charter.split_basis
+        )
+        operations.extend(note_operations)
         self._transactor.execute(
             JournalEntry(
                 actor=Actor.BISMUTH,
                 reason=f"route {moved} documents through existing signs at {folder or '/'}",
                 operations=tuple(operations),
-            )
+            ),
+            payloads=payloads,
         )
         unique_affected = tuple(dict.fromkeys(affected))
         log_trace(
@@ -1433,7 +1446,7 @@ class LibraryMaintenanceService:
             child_charter = Charter(
                 path=target,
                 title=name,
-                purpose=routing_purpose(group.note, fallback=name),
+                purpose=boundary_purpose(plan.basis, name),
                 holds=(),
                 answers=(),
             )
@@ -1466,6 +1479,11 @@ class LibraryMaintenanceService:
         # The parent records what it was divided along, so the next look can ask whether
         # that still holds rather than starting from nothing.
         remaining = len(contents.documents) - moved
+        note_operations, stable_payloads = self._stable_child_note_operations(
+            folder, axis=plan.basis
+        )
+        operations.extend(note_operations)
+        payloads.update(stable_payloads)
         parent = self._parent_note(
             folder, charter, plan, documents=self._count_documents(folder, recursive=True)
         )
@@ -1665,7 +1683,7 @@ class LibraryMaintenanceService:
             child_charter = Charter(
                 path=target,
                 title=target.name,
-                purpose=routing_purpose(group.note, fallback=target.name),
+                purpose=boundary_purpose(plan.basis, target.name),
                 holds=(),
                 answers=(),
             )
@@ -1727,6 +1745,8 @@ class LibraryMaintenanceService:
                 "split_at_documents": documents,
                 "split_question": axis_question,
                 "boundary_review_required": not bool(axis_question.strip()),
+                "last_review_at_documents": documents,
+                "repair_pending": False,
             }
         )
         self._transactor.execute(
@@ -1742,6 +1762,36 @@ class LibraryMaintenanceService:
                 ),
             ),
             payloads={folder / CHARTER_FILENAME: held.to_markdown().encode("utf-8")},
+        )
+
+    def _record_review_attempt(
+        self,
+        folder: PurePosixPath,
+        charter: Charter,
+        *,
+        documents: int,
+        repair_pending: bool,
+    ) -> None:
+        """Persist a review outcome even when no safe structural mutation exists."""
+        reviewed = charter.model_copy(
+            update={
+                "last_review_at_documents": documents,
+                "repair_pending": repair_pending,
+            }
+        )
+        self._transactor.execute(
+            JournalEntry(
+                actor=Actor.BISMUTH,
+                reason=f"record boundary review of {folder or '/'} at {documents}",
+                operations=(
+                    Operation(
+                        kind=OperationKind.WRITE,
+                        target=folder / CHARTER_FILENAME,
+                        note="folder review state",
+                    ),
+                ),
+            ),
+            payloads={folder / CHARTER_FILENAME: reviewed.to_markdown().encode("utf-8")},
         )
 
     def _parent_note(
@@ -1762,7 +1812,35 @@ class LibraryMaintenanceService:
             split_basis=plan.basis,
             split_question=plan.basis_question,
             split_at_documents=documents,
+            last_review_at_documents=0,
+            repair_pending=False,
         )
+
+    def _stable_child_note_operations(
+        self, folder: PurePosixPath, *, axis: str
+    ) -> tuple[list[Operation], dict[PurePosixPath, bytes]]:
+        """Migrate managed direct-child prose to deterministic structural signs."""
+        operations: list[Operation] = []
+        payloads: dict[PurePosixPath, bytes] = {}
+        for child in self._vault.iter_folders():
+            if child.parent != folder or _in_inbox(child):
+                continue
+            try:
+                charter = self._charters.load(child)
+            except BismuthError:
+                continue
+            if charter is None or not charter.managed:
+                continue
+            purpose = boundary_purpose(axis, child.name)
+            if charter.purpose == purpose:
+                continue
+            stable = charter.model_copy(update={"title": child.name, "purpose": purpose})
+            note = child / CHARTER_FILENAME
+            operations.append(
+                Operation(kind=OperationKind.WRITE, target=note, note="stabilise folder sign")
+            )
+            payloads[note] = stable.to_markdown().encode("utf-8")
+        return operations, payloads
 
     def _move_document(self, path: PurePosixPath, target: PurePosixPath) -> list[Operation]:
         """Move a document and the sidecar that travels with it."""
@@ -1786,22 +1864,17 @@ class LibraryMaintenanceService:
     def _read(self, folder: PurePosixPath, *, recursive: bool = False) -> _Contents:
         """The folder as the model sees it, with a unique handle for every file."""
         contents = _Contents()
-        seen_ids: dict[str, int] = {}
         for path in self._vault.iter_files(folder, recursive=recursive):
             if _in_inbox(path):
                 continue
-            raw_id, card = self._card_of(path)
+            card = self._card_of(path)
             if card is None:
                 continue
-            if recursive:
-                # Complete reviews need handles only for this one proposal. Compact,
-                # deterministic handles cost fewer tokens and are much harder for a model
-                # to mistype than opaque content hashes.
-                document_id = f"D{len(contents.documents) + 1:04d}"
-            else:
-                occurrence = seen_ids.get(raw_id, 0) + 1
-                seen_ids[raw_id] = occurrence
-                document_id = raw_id if occurrence == 1 else f"{raw_id}~{occurrence}"
+            # Handles live only for this in-memory view.  The catalog's SHA-derived ID
+            # remains the durable internal identity, but exposing it to a model wastes
+            # tokens and makes exact copying fragile.  Paths carry the mapping needed to
+            # execute the plan, so every maintenance prompt can use compact D#### names.
+            document_id = f"D{len(contents.documents) + 1:04d}"
             description = _describe(card)
             if recursive:
                 relative = path.relative_to(folder) if folder.parts else path
@@ -1826,7 +1899,14 @@ class LibraryMaintenanceService:
             note = ""
             try:
                 if loaded := self._charters.load(child):
-                    note = routing_purpose(loaded.purpose, fallback=child.name)
+                    if (
+                        loaded.managed
+                        and (parent := self._charter(child.parent))
+                        and parent.divided
+                    ):
+                        note = boundary_purpose(parent.split_basis, child.name)
+                    else:
+                        note = routing_purpose(loaded.purpose, fallback=child.name)
             except BismuthError:
                 pass
             contents.children.append((shown, note))
@@ -1852,17 +1932,17 @@ class LibraryMaintenanceService:
             1 for path in self._vault.iter_files(folder, recursive=recursive) if not _in_inbox(path)
         )
 
-    def _card_of(self, path: PurePosixPath) -> tuple[str, DocumentCard | None]:
+    def _card_of(self, path: PurePosixPath) -> DocumentCard | None:
         sidecar = path.parent / sidecar_name(path.name)
         if not self._vault.exists(sidecar):
-            return "", None
+            return None
         meta = read_sidecar_meta(self._vault.read_text(sidecar))
         if not meta:
-            return "", None
+            return None
         document_id = str(meta.get("document_id", ""))
         if not document_id:
-            return "", None
-        return document_id, self._catalog.load_card(document_id)
+            return None
+        return self._catalog.load_card(document_id)
 
     def _axes_above(self, folder: PurePosixPath) -> list[str]:
         """The axes every folder from here to the root was divided along.
@@ -1951,11 +2031,6 @@ def _boundary_wording_problem(contents: _Contents, plan: prompts.Division) -> st
     invariants: a folder note is a short routing hint, and a proposal must not silently
     translate a corpus whose own writing system is unambiguous.
     """
-    for group in plan.groups:
-        note = routing_purpose(group.note, fallback=group.name)
-        if "\n" in note or "\r" in note:
-            return "folder note must be a short, single-line routing hint"
-
     if len(contents.scripts) < 2:
         return None
     source_counts = Counter(contents.scripts)
@@ -1963,10 +2038,7 @@ def _boundary_wording_problem(contents: _Contents, plan: prompts.Division) -> st
     if source_count / len(contents.scripts) < 0.75:
         return None
 
-    wording = " ".join(
-        [plan.basis, plan.basis_question]
-        + [part for group in plan.groups for part in (group.name, group.note)]
-    )
+    wording = " ".join([plan.basis, plan.basis_question] + [group.name for group in plan.groups])
     proposed_script = _writing_system(wording)
     if proposed_script is not None and proposed_script != source_script:
         return "boundary wording uses a different writing system from its documents"
@@ -1996,8 +2068,12 @@ def _prompt_chars(prompt: Prompt) -> int:
 def _document_packets(
     documents: list[tuple[str, str]],
     build: Callable[[list[tuple[str, str]]], Prompt],
+    *,
+    max_documents: int | None = None,
 ) -> list[list[tuple[str, str]]]:
-    """Partition evidence by the prompt actually sent, never by guessed token counts."""
+    """Partition evidence by input context and, when needed, output cardinality."""
+    if max_documents is not None and max_documents < 1:
+        raise ValueError("max_documents must be positive")
     if not documents:
         if _prompt_chars(build([])) > MAX_MAINTENANCE_PROMPT_CHARS:
             raise BismuthError("maintenance metadata exceeds context budget")
@@ -2006,7 +2082,12 @@ def _document_packets(
     current: list[tuple[str, str]] = []
     for document in documents:
         candidate = [*current, document]
-        if current and _prompt_chars(build(candidate)) > MAX_MAINTENANCE_PROMPT_CHARS:
+        output_would_overflow = bool(
+            current and max_documents is not None and len(candidate) > max_documents
+        )
+        if current and (
+            output_would_overflow or _prompt_chars(build(candidate)) > MAX_MAINTENANCE_PROMPT_CHARS
+        ):
             packets.append(current)
             current = [document]
         else:
@@ -2125,25 +2206,21 @@ def _emerging_packets(
 
 
 def _normalise_sketch(sketch: prompts.ReplacementSketch) -> prompts.ReplacementSketch:
-    return sketch.model_copy(
-        update={
-            "signs": [
-                sign.model_copy(update={"note": routing_purpose(sign.note, fallback=sign.name)})
-                for sign in sketch.signs
-            ]
-        }
-    )
+    return sketch
 
 
-def _normalise_replacement(replacement: prompts.Replacement) -> prompts.Replacement:
-    return replacement.model_copy(
-        update={
-            "groups": [
-                group.model_copy(update={"note": routing_purpose(group.note, fallback=group.name)})
-                for group in replacement.groups
-            ]
-        }
-    )
+async def _bounded_gather(
+    documents: list[tuple[str, str]],
+    worker: Callable[[tuple[str, str]], Awaitable[tuple[str, str]]],
+) -> list[tuple[str, str]]:
+    """Run small independent choices with bounded pressure on a local model server."""
+    semaphore = asyncio.Semaphore(4)
+
+    async def run(document: tuple[str, str]) -> tuple[str, str]:
+        async with semaphore:
+            return await worker(document)
+
+    return list(await asyncio.gather(*(run(document) for document in documents)))
 
 
 def _free_filename(filename: str, taken: set[str]) -> str:
@@ -2172,7 +2249,6 @@ def _failed_boundary_checks(audit: prompts.BoundaryAudit) -> list[str]:
             "names_answer_question",
             "mutually_exclusive",
             "useful_for_navigation",
-            "notes_are_routing_signs",
         )
         if not getattr(audit, name)
     ]
