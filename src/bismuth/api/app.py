@@ -25,6 +25,10 @@ from bismuth.adapters.llm import (
     suggest_model,
     supports_response_schema,
 )
+from bismuth.api.maintenance import MaintenanceState
+from bismuth.api.maintenance import load as load_maintenance
+from bismuth.api.maintenance import recover_interrupted as recover_interrupted_maintenance
+from bismuth.api.maintenance import save as save_maintenance
 from bismuth.api.progress import ProgressBus, stream
 from bismuth.config import PROVIDERS, Settings, load_env_file, provider, save_user_config
 from bismuth.container import Bismuth, build
@@ -88,6 +92,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         _preload(engine)
         if recovered := engine.recover():
             logger.warning("rolled back %d interrupted change(s) from a previous run", recovered)
+        recover_interrupted_maintenance(engine.vault.root)
         try:
             yield
         finally:
@@ -96,6 +101,12 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            maintenance_task: asyncio.Task[None] | None = getattr(
+                app.state, "maintenance_task", None
+            )
+            if maintenance_task is not None and not maintenance_task.done():
+                maintenance_task.cancel()
+                await asyncio.gather(maintenance_task, return_exceptions=True)
             await litellm_adapter.close_clients()
 
     app = FastAPI(title="Bismuth", version=__version__, lifespan=lifespan)
@@ -105,6 +116,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
     app.state.ingest_lock = asyncio.Lock()
     app.state.batches = {}
     app.state.batch_tasks = set()
+    app.state.maintenance_task = None
 
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception) -> JSONResponse:
@@ -198,6 +210,49 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         logger.info("configuration updated: %s", updated.redacted())
         return setup_state()
 
+    @app.get("/api/maintenance", response_model=MaintenanceState)
+    def maintenance_state(engine: Engine) -> MaintenanceState:
+        """Return the durable checkpoint for the current vault's structure pass."""
+        return load_maintenance(engine.vault.root)
+
+    @app.post("/api/maintenance/retry", response_model=MaintenanceState, status_code=202)
+    async def maintenance_retry() -> MaintenanceState:
+        """Retry structure planning with the current model, without re-ingesting documents."""
+        engine: Bismuth = app.state.engine
+        current = load_maintenance(engine.vault.root)
+        task: asyncio.Task[None] | None = app.state.maintenance_task
+        if (task is not None and not task.done()) or current.status in {"pending", "running"}:
+            raise HTTPException(409, "Library maintenance is already running.")
+
+        pending = current.model_copy(
+            update={
+                "status": "pending",
+                "source": "manual-retry",
+                "error": "",
+                "summary": "",
+                "moved": 0,
+                "applied": False,
+                "finished_at": None,
+            }
+        )
+        save_maintenance(engine.vault.root, pending)
+
+        async def resume() -> None:
+            async with app.state.ingest_lock:
+                # Resolve the engine only after obtaining the lock. If setup replaced the
+                # model while this request was queued, the retry uses that replacement.
+                await _maintain(app.state.engine, source="manual-retry")
+
+        task = asyncio.create_task(resume(), name="bismuth-maintenance-retry")
+        app.state.maintenance_task = task
+
+        def clear(completed: asyncio.Task[None]) -> None:
+            if app.state.maintenance_task is completed:
+                app.state.maintenance_task = None
+
+        task.add_done_callback(clear)
+        return pending
+
     @app.get("/api/status", response_model=StatusOut)
     def status(engine: Engine) -> StatusOut:
         # Disk, not the card cache -- the two can diverge (e.g. after an undone delete).
@@ -287,7 +342,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                 name = Path(upload_file.filename or "untitled").name
                 rel = engine.ingest.stage(data, name)
                 results.append(await _process(engine, rel))
-            await _maintain(engine)
+            await _maintain(engine, source="upload")
         return results
 
     async def run_batch(batch_id: str, staged: list[PurePosixPath], engine: Bismuth) -> None:
@@ -325,7 +380,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                 batch.current = ""
                 batch.current_stage = "maintenance"
                 batch.current_label = "Reviewing the completed library structure"
-                await _maintain(engine)
+                await _maintain(engine, source=f"batch:{batch_id}")
             batch.status = "done"
         except asyncio.CancelledError:
             batch.status = "interrupted"
@@ -392,7 +447,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         """Read whatever is sitting unprocessed in the inbox, including hand-dropped files."""
         async with app.state.ingest_lock:
             results = [await _process(engine, rel) for rel in engine.ingest.pending_inbox()]
-            await _maintain(engine)
+            await _maintain(engine, source="scan")
             return results
 
     @app.get("/api/progress")
@@ -420,17 +475,56 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             return IngestOut(filename=rel.name, ok=False, reason=str(exc), spend=_drain(engine))
         return _result_of(result, spend=_drain(engine))
 
-    async def _maintain(engine: Bismuth) -> None:
+    async def _maintain(engine: Bismuth, *, source: str) -> MaintenanceState:
         """Run autonomous maintenance once per completed arrival set.
 
         Filing is already durable.  Planning or validation failure therefore leaves the
         safely ingested documents where they are and must not convert them into upload
         failures.
         """
+        previous = load_maintenance(engine.vault.root)
+        running = MaintenanceState(
+            status="running",
+            source=source,
+            attempts=previous.attempts + 1,
+            started_at=time.time(),
+        )
+        save_maintenance(engine.vault.root, running)
         try:
-            await engine.agent.reorganize()
-        except Exception:
+            result = await engine.agent.reorganize()
+        except asyncio.CancelledError:
+            failed = running.model_copy(
+                update={
+                    "status": "failed",
+                    "error": "The server stopped while organizing. The saved documents can be retried.",
+                    "finished_at": time.time(),
+                }
+            )
+            save_maintenance(engine.vault.root, failed)
+            raise
+        except Exception as exc:
             logger.exception("autonomous library maintenance failed; preserving current tree")
+            failed = running.model_copy(
+                update={
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "finished_at": time.time(),
+                }
+            )
+            save_maintenance(engine.vault.root, failed)
+            return failed
+        else:
+            done = running.model_copy(
+                update={
+                    "status": "done",
+                    "summary": result.proposal.summary,
+                    "moved": result.moved,
+                    "applied": result.applied,
+                    "finished_at": time.time(),
+                }
+            )
+            save_maintenance(engine.vault.root, done)
+            return done
         finally:
             _drain(engine)
 

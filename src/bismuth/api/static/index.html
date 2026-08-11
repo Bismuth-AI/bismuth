@@ -73,6 +73,16 @@ h1 span { color: var(--accent); }
 .spacer { margin-left: auto; }
 .hstat { font-size: 13px; color: var(--dim); }
 .hstat b { color: var(--ink); font-weight: 650; }
+.maintenance-banner {
+  flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 10px 20px;
+  border-bottom: 1px solid var(--line); background: var(--accent-soft); font-size: 13px;
+}
+.maintenance-banner.failed { color: var(--danger); }
+.maintenance-banner .maintenance-copy { flex: 1; min-width: 0; }
+.maintenance-banner .maintenance-detail {
+  color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.maintenance-banner .maintenance-title { font-weight: 650; }
 
 /* explorer layout */
 #explorer { flex: 1; display: flex; min-height: 0; }
@@ -233,6 +243,14 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
   <button class="ghost" id="btn-settings">설정</button>
 </header>
 
+<div id="maintenance-banner" class="maintenance-banner hidden">
+  <div class="maintenance-copy">
+    <div class="maintenance-title" id="maintenance-title"></div>
+    <div class="maintenance-detail" id="maintenance-detail"></div>
+  </div>
+  <button class="primary" id="maintenance-retry">구조 정리 계속</button>
+</div>
+
 <div id="explorer">
   <aside id="sidebar">
     <div id="drop">
@@ -314,13 +332,6 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
   </div>
 </div></div>
 
-<!-- organize -->
-<div id="organize" class="overlay hidden"><div class="card">
-  <div style="display:flex;align-items:center"><h2 style="flex:1">구조 정리 제안</h2><button class="ghost" id="o-close">닫기</button></div>
-  <p class="muted" style="margin-top:2px">에이전트가 볼트를 직접 살펴보고 제안합니다. 승인해야만 실제로 옮겨지고, 기록에서 되돌릴 수 있습니다.</p>
-  <div id="o-body"></div>
-</div></div>
-
 <!-- history -->
 <div id="history" class="overlay hidden"><div class="card">
   <div style="display:flex;align-items:center"><h2 style="flex:1">기록</h2><button class="ghost" id="h-close">닫기</button></div>
@@ -341,7 +352,7 @@ async function api(path, opts = {}) {
 // The vault root, as /api/tree names it. Documents live here until enough of them
 // arrive to show a distinction, which early on is most of them.
 const ROOT = ".";
-const UI_VERSION = "2026.08.10-resumable-batch-5";
+const UI_VERSION = "2026.08.12-maintenance-resume-1";
 document.documentElement.dataset.uiVersion = UI_VERSION;
 let state = {}, tree = [], selected = ROOT, expanded = new Set();
 let rootInfo = null;   // the root's own entry: its loose documents are the common early case
@@ -350,6 +361,60 @@ let sel = new Set(), selAnchor = null, viewDocs = [], moveTargets = [];
 // action bar offers 이동 for documents only, and a mixed selection would have to grey
 // half of itself out. Picking one kind clears the other.
 let fsel = new Set(), fselAnchor = null;
+let maintenancePollTimer = null;
+let maintenanceSyncing = false;
+let previousMaintenanceStatus = "";
+
+async function syncMaintenance() {
+  if (maintenanceSyncing || !state.configured) return;
+  maintenanceSyncing = true;
+  try {
+    const checkpoint = await api("/maintenance");
+    const banner = $("maintenance-banner");
+    const active = checkpoint.status === "pending" || checkpoint.status === "running";
+    $("btn-organize").disabled = active;
+    if (checkpoint.status === "failed") {
+      banner.className = "maintenance-banner failed";
+      $("maintenance-title").textContent = "문서 처리는 끝났지만 구조 정리가 중단됐습니다.";
+      $("maintenance-detail").textContent = checkpoint.error || "모델 설정을 확인한 뒤 계속할 수 있습니다.";
+      $("maintenance-retry").classList.remove("hidden");
+      $("maintenance-retry").disabled = false;
+    } else if (active) {
+      banner.className = "maintenance-banner";
+      $("maintenance-title").textContent = "저장된 문서 카드로 구조 정리를 계속하는 중입니다…";
+      $("maintenance-detail").textContent = "PDF를 다시 읽거나 다시 업로드하지 않습니다.";
+      $("maintenance-retry").classList.add("hidden");
+    } else {
+      banner.className = "maintenance-banner hidden";
+      if (checkpoint.status === "done" && previousMaintenanceStatus && previousMaintenanceStatus !== "done") {
+        await refresh();
+      }
+    }
+    previousMaintenanceStatus = checkpoint.status;
+    if (active && maintenancePollTimer === null) {
+      maintenancePollTimer = setInterval(syncMaintenance, 1200);
+    } else if (!active && maintenancePollTimer !== null) {
+      clearInterval(maintenancePollTimer);
+      maintenancePollTimer = null;
+    }
+  } catch (err) {
+    console.warn("maintenance status refresh failed", err);
+  } finally {
+    maintenanceSyncing = false;
+  }
+}
+
+$("maintenance-retry").addEventListener("click", async () => {
+  const btn = $("maintenance-retry");
+  btn.disabled = true;
+  try {
+    await api("/maintenance/retry", { method: "POST" });
+    await syncMaintenance();
+  } catch (err) {
+    $("maintenance-detail").textContent = err.message;
+    btn.disabled = false;
+  }
+});
 
 /* ---------------- explorer ---------------- */
 
@@ -981,6 +1046,7 @@ async function syncBatches() {
       }
       if (batch) applyBatchState(batch, state);
     }
+    await syncMaintenance();
     if (active && batchPollTimer === null) ensureBatchPolling();
     if (!active && batchPollTimer !== null) {
       clearInterval(batchPollTimer);
@@ -1216,46 +1282,16 @@ document.addEventListener("keydown", (e) => {
 /* ---------------- organize ---------------- */
 
 $("btn-organize").addEventListener("click", async () => {
-  $("organize").classList.remove("hidden");
-  $("o-body").innerHTML = `<div class="empty">에이전트가 볼트 구조를 살펴보는 중… (조금 걸립니다)</div>`;
+  const btn = $("btn-organize");
+  btn.disabled = true;
   try {
-    const plan = await api("/organize/propose", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-    renderPlan(plan);
-  } catch (err) { $("o-body").innerHTML = `<div class="err">${esc(err.message)}</div>`; }
-});
-$("o-close").addEventListener("click", () => $("organize").classList.add("hidden"));
-
-function renderPlan(plan) {
-  const moves = plan.moves || [];
-  const renames = plan.renames || [];
-  const summary = plan.summary || "";
-  if (!moves.length && !renames.length) {
-    $("o-body").innerHTML = `<div class="note-box">${esc(summary) || "바꿀 것이 없습니다. 구조가 괜찮습니다."}</div>`;
-    return;
+    await api("/maintenance/retry", { method: "POST" });
+    await syncMaintenance();
+  } catch (err) {
+    alert(err.message);
+    btn.disabled = false;
   }
-  $("o-body").innerHTML = `
-    ${summary ? `<div class="note-box">${esc(summary)}</div>` : ""}
-    ${renames.length ? `<div class="sect">이름 변경 ${renames.length}건</div>
-      ${renames.map((r) => `<div class="doc"><div class="t">✎ ${esc(r.folder)} → <span class="dest">${esc(r.new_name)}</span></div></div>`).join("")}` : ""}
-    ${moves.length ? `<div class="sect">이동 ${moves.length}건</div>
-      ${moves.map((m) => `<div class="doc">
-        <div class="t">→ <span class="dest">${esc(m.target)}/</span></div>
-        <div class="sm">${m.paths.map((p) => esc(p.split("/").pop())).join(", ")}</div>
-      </div>`).join("")}` : ""}
-    <div class="rowend">
-      <button class="ghost" id="o-cancel">취소</button>
-      <button class="primary" id="o-apply">이대로 적용</button>
-    </div>`;
-  $("o-cancel").onclick = () => $("organize").classList.add("hidden");
-  $("o-apply").onclick = async () => {
-    const btn = $("o-apply"); btn.disabled = true; btn.textContent = "적용 중…";
-    try {
-      await api("/organize/apply", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ moves, renames }) });
-      $("organize").classList.add("hidden");
-      await refresh();
-    } catch (err) { alert(err.message); btn.disabled = false; btn.textContent = "이대로 적용"; }
-  };
-}
+});
 
 /* ---------------- history ---------------- */
 
@@ -1439,12 +1475,12 @@ $("s-save").addEventListener("click", async () => {
     if (!model) { showErr("모델 이름을 적어 주세요."); return; }
     await api("/setup", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...setupBody(p), model, vault_path: $("s-vault").value }) });
-    $("setup").classList.add("hidden"); await refresh();
+    $("setup").classList.add("hidden"); await refresh(); await syncMaintenance();
   } catch (err) { showErr(err.message); } finally { btn.disabled = false; }
 });
 
 refresh()
-  .then(syncBatches)
+  .then(async () => { await syncBatches(); await syncMaintenance(); })
   .catch((err) => { $("main").innerHTML = `<div class="empty">${esc(err.message)}</div>`; });
 </script>
 </body>

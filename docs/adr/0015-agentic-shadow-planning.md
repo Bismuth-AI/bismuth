@@ -44,8 +44,8 @@ Rejected plans leave the current tree unchanged and may be revised by the agent.
 An accepted plan is compiled into one journal entry containing folder creation,
 stable boundary notes, document moves, and sidecar moves. The transactor applies the
 entry atomically and rolls it back on failure. No user approval is required. The
-existing manual structure-review UI remains an optional correction surface, not the
-autonomous librarian's execution path.
+low-level proposal/apply API remains available for integrations, but the product UI's
+structure action runs this autonomous path directly rather than introducing HITL.
 
 The previous `LibraryMaintenanceService` remains temporarily available as a diagnostic
 comparison point but is no longer connected to per-document ingest. It must not mutate
