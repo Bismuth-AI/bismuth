@@ -23,21 +23,21 @@ DOCUMENT'S OWN LANGUAGE. A Korean document gets a Korean summary. Do not transla
 2. `title` is the document's own title, from its content. If it has none, write \
 one that describes it. Never fall back to the filename -- "final_v3_REAL.pdf" is \
 not a title.
-3. `doc_type` is the genre, as a short noun phrase: contract, proposal, meeting \
-notes, invoice, spec. Use the word this document's own field would use.
+3. `doc_type` is the genre as a short noun phrase. Use the word this document's \
+own field would use; do not choose from a predefined taxonomy.
 4. `topics` are the few things this document is ABOUT -- a project or engagement, \
 a client or organisation, a subject, a period. What someone would say if asked \
 which drawer it belongs in. Two to five of them, in the document's own words. Do \
 not force a fixed set of categories; report what is actually there. Each one is a \
-FILING LABEL of a few words -- "지연배상", "생태계서비스 평가". Never a sentence, a \
+FILING LABEL in the document's own vocabulary. Never a sentence, a \
 list, or a description; if it would not fit on a folder tab it is not a topic.
 5. `entities` are named things, and ONLY of the listed kinds. ONE name per entry, \
 written exactly as the document writes it -- a bibliography is many entities or, \
 more often, none worth recording. Skip anything you are not sure is a real named \
 entity -- two right ones beat ten wrong ones.
-6. `answers_questions` are questions a colleague could answer using this document, \
-phrased as they would ask them. Be specific: "아폴로 지원 계약 기간이 얼마인가?" \
-not "이 계약서 내용".
+6. `answers_questions` are specific questions a colleague could answer using this \
+document, phrased as they would ask them. Do not return a generic request for the \
+document's contents.
 7. If the text is garbled, truncated mid-sentence, or clearly the wrong \
 extraction, say so plainly in `summary` rather than inventing a clean description \
 of noise.
@@ -66,16 +66,10 @@ material to make room.
 replaced. Nothing is ever removed, so add only what you are sure of. Each entry is \
 a short label of a few words, one thing per entry: a page of references or a list \
 of headings is not a topic and not an entity. When a part is nothing but \
-bibliography, boilerplate or contact details, add nothing and say so in `note`.
+bibliography, boilerplate or contact details, add nothing.
 4. `title` and `doc_type` are usually already right. Set them ONLY if this part \
 shows the earlier guess was wrong -- for instance the real title appears after a \
 cover page. Leave them null otherwise.
-5. `contributed` is false when this part told you nothing new about the document \
--- a page of boilerplate, a signature block, repeated headers, garbled extraction. \
-Say so rather than inventing a difference.
-6. `note` is one short line, in English, for a developer reading the log: what this \
-part actually was. "clause 7-12, payment terms", "blank cover page", "OCR noise".
-
 You cannot see the parts you have not read yet. Never describe them.\
 """
 
@@ -92,11 +86,8 @@ LENGTH. Do not append. To make room for something important, drop something less
 important. Same language as the card.
 
 Do not add any fact that is not on the card -- you cannot see the document itself. \
-If the summary is already the best account of these facts, return it unchanged and \
-leave `absorbed` empty.
-
-`absorbed` lists the card items you pulled into the summary, exactly as they are \
-written on the card.\
+If the summary is already the best account of these facts, return it unchanged. \
+Return only the rewritten summary.\
 """
 
 _USER = """\
@@ -158,8 +149,6 @@ class CardUpdate(BaseModel):
     """What one further part of a document changes about the card."""
 
     summary: str = Field(description="The whole document so far, rewritten. Not an append.")
-    contributed: bool = Field(description="False when this part added nothing.")
-    note: str = Field(default="", description="One line for the log: what this part was.")
     title: str | None = Field(
         default=None, description="Only when the earlier title turned out to be wrong."
     )
@@ -176,9 +165,6 @@ class DensifiedSummary(BaseModel):
     """A summary rewritten to carry the facts that matter, at unchanged length."""
 
     summary: str
-    absorbed: list[str] = Field(
-        default_factory=list, description="Card items pulled into the summary."
-    )
 
 
 def build(*, filename: str, window: Window, truncated: bool) -> Prompt:
