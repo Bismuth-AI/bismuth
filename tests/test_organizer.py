@@ -66,12 +66,38 @@ async def test_shadow_plan_is_validated_without_touching_disk(engine: Bismuth) -
 
 async def test_propose_can_recommend_no_change(engine: Bismuth) -> None:
     await add(engine, "a.txt", "아폴로 계약 A")
-    model = FakeModel([says("", call("tree", {})), says("구조가 이미 명확합니다. 바꿀 것 없음.")])
+    model = FakeModel(
+        [
+            says("", call("tree", {})),
+            says(
+                "",
+                call(
+                    "finish_no_change",
+                    {"reason": "구조가 이미 명확합니다. 바꿀 것이 없습니다."},
+                ),
+            ),
+            says("검토를 마쳤습니다."),
+        ]
+    )
 
     proposal = await _svc(engine, model).propose_reorg()
 
     assert proposal.moves == []
-    assert "바꿀 것 없음" in proposal.summary
+    assert "바꿀 것이 없습니다" in proposal.summary
+
+
+async def test_turn_exhaustion_is_not_reported_as_a_successful_no_change(
+    engine: Bismuth,
+) -> None:
+    await _four_documents(engine)
+    model = FakeModel(
+        [says("", call("tree", {}, call_id=f"turn-{index}")) for index in range(24)]
+    )
+
+    proposal = await _svc(engine, model).propose_reorg()
+
+    assert proposal.moves == []
+    assert "exhausted" in " ".join(proposal.problems)
 
 
 def test_completed_upload_set_applies_valid_shadow_plan_automatically(

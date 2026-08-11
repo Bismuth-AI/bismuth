@@ -41,3 +41,12 @@ def test_restart_turns_an_interrupted_pass_into_a_retryable_failure(
     assert recovered.attempts == 2
     assert "retried" in recovered.error
     assert load(tmp_path) == recovered
+
+
+def test_legacy_empty_success_is_recovered_as_an_incomplete_plan(tmp_path: Path) -> None:
+    save(tmp_path, MaintenanceState(status="done", attempts=2))
+
+    recovered = recover_interrupted(tmp_path)
+
+    assert recovered.status == "failed"
+    assert "without submitting" in recovered.error

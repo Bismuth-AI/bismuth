@@ -35,6 +35,12 @@ The UI polls active maintenance, restores a failure banner after refresh, and of
 which also provides a migration path for vaults whose failure predates this checkpoint.
 No user approval of the shadow plan is introduced.
 
+Completion is also explicit. A validated `submit_plan` means a proposed change, while
+`finish_no_change` records a reasoned no-op. Reaching the Agent Kit turn limit, returning
+empty text, or ending without either tool is failed maintenance rather than a successful
+no-op. This distinction prevents orchestration exhaustion from disappearing as
+`done / moved=0`.
+
 ## Consequences
 
 - A provider or model can be changed in settings and the interrupted structure stage can

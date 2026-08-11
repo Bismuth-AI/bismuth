@@ -139,6 +139,9 @@
 - 모델/서버 설정을 바꾼 뒤 재시도하면 원문 추출, 카드 생성, 문서별 배치를 다시 하지 않는다.
   이미 저장된 카드와 트리를 읽어 마지막 구조 계획 단계만 새 엔진으로 다시 실행한다.
 - 이 체크포인트 도입 전 실패한 볼트도 상단 `구조 정리`를 누르면 동일한 경로로 시작할 수 있다.
+- 300건 재시도에서 planner가 inventory·grep·verifier로 24턴을 모두 쓰고 `submit_plan` 없이
+  끝났는데 `done / moved=0`으로 오판한 사건과 수정은
+  [`docs/troubleshooting/agent-maintenance-max-turns.md`](docs/troubleshooting/agent-maintenance-max-turns.md)에 기록했다.
 
 ## 2. 이번에 고친 것 — 전부 실측 근거 있음
 

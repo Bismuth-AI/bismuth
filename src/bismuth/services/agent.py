@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from agentkit import Agent, ChatModel, FunctionTool, RunResult, Tool, subagent_tool
+from agentkit import Agent, ChatModel, FunctionTool, RunResult, Tool
 from agentkit.loop import OnEvent
 from pydantic import BaseModel, Field
 
@@ -47,9 +47,10 @@ You are the planning half of an AI librarian. You may inspect a real document va
 but you can only submit a SHADOW PLAN. You never mutate files yourself.
 
 Maintain one coherent mental model throughout the run:
-1. Start with `tree`, then inspect the requested scope with paginated `inventory`, folder \
-notes, and selected document sidecars. Follow every inventory page needed by the plan; \
-do not infer a whole collection from one page or from folder names alone.
+1. Start with `tree`, then call `inventory` with the largest useful page so the complete \
+compact collection is normally read in one turn. Follow another page only when the tool \
+says one remains. Read notes or selected sidecars only for real ambiguity; do not spend \
+turns recounting fields already present in inventory.
 2. Identify a navigation problem before designing a taxonomy. A large uniform folder \
 is not automatically a problem.
 3. For each parent you reorganise, choose ONE property and create at least TWO sibling \
@@ -61,11 +62,18 @@ a current path, a filename, a list of titles, or text containing an extension su
 than inventing a remainder folder. Reuse a suitable existing child where possible.
 Use only the deterministic `D000001` handles shown by `inventory` when assigning \
 documents; never copy a document path into the submitted membership list.
-6. Ask the `verifier` sub-agent to challenge the COMPLETE intended plan, including its \
-axis, names, and representative document paths. Revise it if challenged.
+6. Call `verify_plan` exactly ONCE to challenge the COMPLETE intended plan, including its \
+axis, names, and representative document handles. Revise it if challenged; never call the \
+verifier again.
 7. Call `submit_plan` with the final complete plan. If validation rejects it, use the \
 returned problems to revise and submit a complete replacement. If no coherent \
-improvement survives inspection, submit nothing and explain why.
+improvement survives inspection, call `finish_no_change` with the concrete reason. \
+Ending with prose alone is an incomplete run.
+
+Hard execution budget: finish inventory and selected evidence within 6 tool turns, call \
+`verify_plan` once, and reserve the remaining turns for `submit_plan` and at most one \
+corrected replacement. Exact statistical counts are not required. A useful partial \
+boundary may omit uncertain documents.
 
 Do not call individual move or rename tools. The application validates the complete \
 shadow plan as one object and rejects path leakage, missing files, duplicate membership, \
@@ -111,7 +119,7 @@ class _InventoryArgs(BaseModel):
     path: str = Field(default="", description="Folder to inventory, or empty for the root.")
     recursive: bool = Field(default=True, description="Include documents in descendants.")
     offset: int = Field(default=0, ge=0, description="First document to return (0-based).")
-    limit: int = Field(default=25, ge=1, le=50, description="Document cards per page.")
+    limit: int = Field(default=500, ge=1, le=500, description="Document cards per page.")
 
 
 class _ReadArgs(BaseModel):
@@ -145,6 +153,22 @@ class _BoundaryPlan(BaseModel):
 
 class _SubmitPlanArgs(BaseModel):
     boundaries: list[_BoundaryPlan] = Field(default_factory=list)
+
+
+class _VerifyPlanArgs(BaseModel):
+    proposal: str = Field(
+        description=(
+            "Complete intended axis, sibling names, membership rule, and representative "
+            "D-handles. Keep it concise; the verifier can inspect the vault itself."
+        )
+    )
+
+
+class _NoChangeArgs(BaseModel):
+    reason: str = Field(
+        min_length=10,
+        description="Concrete reason the current structure should remain unchanged.",
+    )
 
 
 def _document_handles(vault: Vault) -> dict[str, PurePosixPath]:
@@ -616,11 +640,39 @@ class AgentService:
         handles = _document_handles(self._vault)
         boundaries: list[ProposedBoundary] = []
         problems: list[str] = []
+        no_change_reason: list[str] = []
         verifier = Agent(
             model=self._model,
             tools=build_read_tools(self._vault, self._charters, handles=handles),
             system=SYSTEM_VERIFIER,
+            max_turns=8,
         )
+        verifier_used = False
+
+        async def _verify(args: _VerifyPlanArgs) -> str:
+            nonlocal verifier_used
+            if verifier_used:
+                return (
+                    "Verifier already used. Do not call it again; revise from its first "
+                    "findings and call submit_plan now."
+                )
+            verifier_used = True
+            result = await verifier.run(args.proposal, on_event=on_event)
+            if result.stopped == "max_turns":
+                finding = result.text.strip() or "No final verifier text was produced."
+                return (
+                    "Verifier reached its tool budget. Treat these as its last findings, "
+                    f"then call submit_plan without another verification: {finding}"
+                )
+            return result.text.strip() or (
+                "Verifier returned no objections. Call submit_plan now if the plan still "
+                "meets the deterministic rules."
+            )
+
+        async def _finish_no_change(args: _NoChangeArgs) -> str:
+            no_change_reason[:] = [" ".join(args.reason.split())]
+            return "No-change decision recorded. End the run now."
+
         tools = [
             *build_read_tools(self._vault, self._charters, handles=handles),
             build_submit_plan_tool(
@@ -630,7 +682,28 @@ class AgentService:
                 sink=boundaries,
                 problem_sink=problems,
             ),
-            subagent_tool({"verifier": verifier}, on_event=on_event),
+            FunctionTool(
+                name="verify_plan",
+                description=(
+                    "Challenge one complete intended shadow plan. Use exactly once, then "
+                    "revise as needed and call submit_plan."
+                ),
+                params=_VerifyPlanArgs,
+                handler=_verify,
+                read_only=True,
+                concurrency_safe=False,
+            ),
+            FunctionTool(
+                name="finish_no_change",
+                description=(
+                    "Explicitly finish with no structure change after complete inspection. "
+                    "Use only when no coherent improvement survives verification."
+                ),
+                params=_NoChangeArgs,
+                handler=_finish_no_change,
+                read_only=True,
+                concurrency_safe=False,
+            ),
         ]
         agent = Agent(
             model=self._model,
@@ -640,11 +713,17 @@ class AgentService:
             on_event=on_event,
         )
         result = await agent.run(instruction)
+        if not boundaries and not no_change_reason:
+            problems.append(
+                "planner exhausted its tool-turn budget before submitting a plan"
+                if result.stopped == "max_turns"
+                else "planner ended without submit_plan or finish_no_change"
+            )
         moves = [move for boundary in boundaries for move in boundary.moves]
         return ReorgProposal(
             moves=moves,
             renames=[],
-            summary=result.text,
+            summary=no_change_reason[0] if no_change_reason else result.text,
             boundaries=boundaries,
             problems=problems,
         )

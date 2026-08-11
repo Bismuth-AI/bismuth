@@ -514,6 +514,19 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             save_maintenance(engine.vault.root, failed)
             return failed
         else:
+            problems = result.proposal.problems
+            if not result.applied and (problems or not result.proposal.summary.strip()):
+                detail = "; ".join(problems) or "planner returned no plan and no explanation"
+                failed = running.model_copy(
+                    update={
+                        "status": "failed",
+                        "error": f"Structure plan was not completed: {detail}",
+                        "summary": result.proposal.summary,
+                        "finished_at": time.time(),
+                    }
+                )
+                save_maintenance(engine.vault.root, failed)
+                return failed
             done = running.model_copy(
                 update={
                     "status": "done",

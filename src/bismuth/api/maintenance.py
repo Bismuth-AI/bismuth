@@ -75,6 +75,20 @@ def recover_interrupted(root: Path) -> MaintenanceState:
             }
         )
         save(root, state)
+    elif state.status == "done" and not state.applied and not state.summary.strip():
+        # Older builds treated an agent max-turn stop (no submitted plan and no final
+        # explanation) as a successful no-op. Preserve the evidence but make it retryable.
+        state = state.model_copy(
+            update={
+                "status": "failed",
+                "error": (
+                    "The earlier planner stopped without submitting a structure plan. "
+                    "The saved documents can be retried."
+                ),
+                "finished_at": time.time(),
+            }
+        )
+        save(root, state)
     return state
 
 
