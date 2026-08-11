@@ -52,13 +52,14 @@ class Bismuth:
     charters: CharterService
     placement: PlacementService
     maintenance: LibraryMaintenanceService
-    """The librarian that may change the classification tree after filing."""
+    """Legacy deterministic planner, retained for diagnostics but not wired to ingest."""
     subdivision: LibraryMaintenanceService
-    """Compatibility name for :attr:`maintenance`."""
+    """Compatibility name for the diagnostic deterministic planner."""
     ingest: IngestService
     deletion: DeletionService
     move: MoveService
     agent: AgentService
+    """The autonomous librarian: tool navigation, shadow validation, atomic application."""
 
     def recover(self) -> int:
         """Roll back anything a crash left half-done. Returns the number of batches reversed."""
@@ -94,6 +95,7 @@ def build(
         api_key=settings.api_key,
         api_base=settings.api_base,
         timeout=settings.llm_timeout_seconds,
+        absolute_timeout=settings.llm_absolute_timeout_seconds,
         max_concurrency=settings.llm_max_concurrency,
         headers=settings.api_headers,
         body=settings.api_body,
@@ -135,12 +137,20 @@ def build(
             placement=placement,
             charters=charters,
             transactor=transactor,
-            subdivision=maintenance,
+            # Semantic maintenance now runs once over a completed upload batch.  The
+            # old per-document deterministic planner remains available for diagnostics,
+            # but must not reshape the live tree after every arrival.
+            subdivision=None,
             extraction_max_chars=settings.extraction_max_chars,
         ),
         deletion=DeletionService(
             vault=vault, catalog=catalog, transactor=transactor, charters=charters
         ),
         move=move,
-        agent=AgentService(model=chat, vault=vault, charters=charters),
+        agent=AgentService(
+            model=chat,
+            vault=vault,
+            charters=charters,
+            transactor=transactor,
+        ),
     )

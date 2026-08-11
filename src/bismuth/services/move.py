@@ -113,6 +113,8 @@ class MoveService:
             safe = sanitize_segment(new_name)
         except ValueError as exc:
             raise VaultError(f"쓸 수 없는 폴더 이름: {new_name}") from exc
+        if safe != new_name or "/" in new_name or "\\" in new_name:
+            raise VaultError(f"정규화하면 달라지는 폴더 이름은 거부합니다: {new_name}")
 
         target = folder.parent / safe
         if str(target) == str(folder):
@@ -164,16 +166,20 @@ class MoveService:
 
 
 def _safe_folder(raw: str) -> PurePosixPath | None:
-    """Sanitise a target folder path the same way placement does, or None."""
+    """Accept only a path that is already safe; never launder model-authored text."""
     segments: list[str] = []
-    for part in raw.replace("\\", "/").split("/"):
-        part = part.strip()
-        if not part or part in (".", ".."):
-            continue
+    if "\\" in raw or raw.startswith("/") or raw.endswith("/"):
+        return None
+    for part in raw.split("/"):
+        if not part or part in (".", "..") or part != part.strip():
+            return None
         try:
-            segments.append(sanitize_segment(part))
+            safe = sanitize_segment(part)
         except ValueError:
-            continue
+            return None
+        if safe != part:
+            return None
+        segments.append(safe)
     return PurePosixPath(*segments) if segments else None
 
 

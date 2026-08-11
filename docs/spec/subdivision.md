@@ -4,8 +4,11 @@
 > 스펙과 어긋나면 스펙이 이긴다. 여기 있는 것은 전부 스펙에서 유도되거나, 유도되지 않는
 > 판단이면 그렇다고 적혀 있다.
 >
-> **상태: 구현됨.** 모델의 판단과 파일 작업 사이의 검증 경계는
-> [ADR-0009](../adr/0009-model-proposes-the-library-validates.md)에 있다.
+> **상태: 역사적 설계.** 이 문서의 per-document deterministic staged pipeline은 실제 300건
+> 장서에서 구조 품질이 퇴화해 자동 인제스트 경로에서 제거됐다. 현재 구현은
+> [ADR-0015](../adr/0015-agentic-shadow-planning.md)의 agentic shadow planner를 따른다.
+> 아래 내용은 실패 원인과 보존해야 할 불변식의 근거로 남긴다. 현재 동작을 설명하는 규범은
+> [SPEC.md](../../SPEC.md)와 ADR-0015다.
 
 ## 1. 무슨 문제를 푸나
 

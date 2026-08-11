@@ -32,6 +32,26 @@
 - 볼트: `C:\Users\sh\bismuth-vault`
 - 모델: KT Cloud 프록시의 `qwen3.6-35b` (OpenAI 호환)
 
+### 1.0 현재 실험 — agentic shadow planning (2026-08-12)
+
+- 아래 1.1~1.3의 deterministic staged maintenance는 파일 안전성은 지켰지만 실제 분류 품질이
+  퇴화해 자동 인제스트 경로에서 분리했다. 코드는 비교·진단용으로 남아 있다.
+- 실패 run에서 `범용 기본법 체계 vs 분야별 특별법` 같은 비교문과 기존 경로·파일명을 이어 붙인
+  이름이 제안됐고, 길이 제한과 `sanitize_segment()`가 이를 잘라 합법적인 쓰레기 경로로 바꿨다.
+  같은 모델의 단계별 감사들은 각자 좁은 계약만 통과시키며 전체 구조의 책임을 지지 못했다.
+- 현재 자동 사서는 업로드 배치가 전부 안전하게 끝난 뒤 한 번 돈다. Agent Kit으로 `tree`,
+  paginated `inventory`, `ls`, `read_note`, `grep`, `read`를 사용해 장서를 조사하고, verifier가
+  완성안을 공격적으로 검토한 뒤 `submit_plan`에 전체 shadow plan을 제출한다.
+- inventory는 정렬된 장서에 요청 전용 `D000001` 핸들을 붙인다. 모델의 membership 출력에는
+  긴 법령 경로나 난수 ID가 아니라 이 핸들만 들어가며 실제 경로 매핑은 코드가 보유한다.
+- shadow plan은 HITL이 아니다. 제출과 실행 직전에 코드가 경로·중복·범위·직속 형제·singleton
+  새 서가·충돌·파일명 복사·sanitize 변형을 검사한다. 통과하면 폴더 노트와 원본·사이드카 이동을
+  저널 한 건으로 자동 적용하고, 실패하면 기존 트리를 그대로 둔다.
+- Agent Kit 호출도 streaming으로 전 청크를 `logs/llm.jsonl`에 기록하며 inactivity timeout,
+  absolute timeout, 넉넉한 transport token ceiling을 함께 적용한다. 상한은 의미 판단 규칙이 아니다.
+- 실제 분류 품질은 fake LLM 테스트로 증명하지 않는다. 다음 run은 사용자가 직접 초기화한 볼트에
+  같은 장서를 넣어 결과 트리와 로그를 평가한다.
+
 ### 1.1 2026-08-09 유지보수 엔진 개편
 
 - 모델은 축과 이동 계획을 **제안**하고, `domain/maintenance.py`가 전체 계획을 먼저 검증한다.

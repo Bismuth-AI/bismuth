@@ -27,3 +27,4 @@ decision should be revisited. Superseded records stay; they are not deleted.
 | [0012](0012-one-model.md) | Use one configured model for every task |
 | [0013](0013-bounded-llm-output-and-plain-placement.md) | Use a plain choice for placement; bound every LLM generation |
 | [0014](0014-boundary-state-and-closed-membership.md) | Derive managed signs; model membership as closed per-document choices |
+| [0015](0015-agentic-shadow-planning.md) | Plan holistically with tools; validate and atomically apply the shadow plan without HITL |

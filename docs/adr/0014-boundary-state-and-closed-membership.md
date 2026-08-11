@@ -1,6 +1,6 @@
 # 0014 — Boundary state and closed membership decisions
 
-**Status:** accepted
+**Status:** partially superseded by [0015](0015-agentic-shadow-planning.md); transport guards and stable signs retained
 **Amends:** [0011](0011-bounded-maintenance-and-stable-signs.md), [0013](0013-bounded-llm-output-and-plain-placement.md)
 
 ## Context
@@ -56,4 +56,3 @@ must not determine whether a folder name, note, or classification is correct.
 - A rejected repair no longer freezes the library or repeats on every arrival.
 - Fake-LLM functional tests still protect mechanics, not classification quality. Real
   runs must be evaluated through structure metrics and human inspection.
-
