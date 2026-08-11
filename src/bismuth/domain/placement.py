@@ -30,16 +30,6 @@ class Placement(BaseModel):
         default=False,
         description="True when this document caused its destination folder to be created.",
     )
-    confidence: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "What the model reported, kept whatever the verdict. Parking a document used "
-            "to zero this and write the number into the Korean rationale instead, which "
-            "left no way to ask how close a parked document came without parsing prose."
-        ),
-    )
     rationale: str = Field(
         default="",
         description=(
@@ -53,10 +43,9 @@ class Placement(BaseModel):
         return self.verdict is Verdict.PLACED and self.target is not None
 
     @classmethod
-    def to_inbox(cls, document_id: str, *, reason: str, confidence: float = 0.0) -> Placement:
+    def to_inbox(cls, document_id: str, *, reason: str) -> Placement:
         return cls(
             document_id=document_id,
             verdict=Verdict.INBOX,
             rationale=reason,
-            confidence=confidence,
         )

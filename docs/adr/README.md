@@ -25,3 +25,4 @@ decision should be revisited. Superseded records stay; they are not deleted.
 | [0010](0010-corpus-neutral-complete-boundaries.md) | Keep prompts corpus-neutral; replace reviewed boundaries completely |
 | [0011](0011-bounded-maintenance-and-stable-signs.md) | Keep routing signs stable; review complete boundaries in bounded contexts |
 | [0012](0012-one-model.md) | Use one configured model for every task |
+| [0013](0013-bounded-llm-output-and-plain-placement.md) | Use a plain choice for placement; bound every LLM generation |

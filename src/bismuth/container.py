@@ -82,6 +82,7 @@ def build(
         api_key=settings.api_key,
         api_base=settings.api_base,
         timeout=settings.llm_timeout_seconds,
+        absolute_timeout=settings.llm_absolute_timeout_seconds,
         max_schema_retries=settings.llm_max_schema_retries,
         max_concurrency=settings.llm_max_concurrency,
         headers=settings.api_headers,

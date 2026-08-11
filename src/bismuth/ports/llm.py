@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from contextvars import ContextVar
 from typing import Protocol, TypeVar, runtime_checkable
 
@@ -129,6 +129,21 @@ class LLM(Protocol):
 
         Raises:
             StructuredOutputError: if no attempt produced a valid instance.
+        """
+        ...
+
+    async def choose(
+        self,
+        prompt: Prompt,
+        *,
+        choices: Sequence[str],
+        max_tokens: int = 32,
+        temperature: float = 0.0,
+    ) -> str:
+        """Return exactly one member of a closed request-local choice set.
+
+        This is deliberately not JSON. Small routing decisions should not inherit
+        the failure surface of open-ended structured generation.
         """
         ...
 

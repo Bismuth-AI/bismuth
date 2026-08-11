@@ -126,7 +126,19 @@ class Settings(BaseSettings):
     )
     model: str = Field(default="", description="The model used for every LLM task.")
 
-    llm_timeout_seconds: float = 120.0
+    llm_timeout_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        description="Maximum silence after the last received LLM stream chunk.",
+    )
+    llm_absolute_timeout_seconds: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "Maximum provider execution time even while chunks keep arriving. Queue "
+            "wait is excluded; per-schema output caps normally stop generation first."
+        ),
+    )
     llm_max_schema_retries: int = Field(default=2, ge=0)
     llm_max_concurrency: int = Field(default=4, ge=1)
     extraction_max_chars: int = Field(default=200_000, ge=1_000)

@@ -44,7 +44,6 @@ class PlacementService:
             purposes[path] = purpose
 
         current = ROOT
-        confidences: list[float] = []
         steps: list[dict[str, object]] = []
         asked_once = False
         while True:
@@ -60,7 +59,8 @@ class PlacementService:
                 (folder_id, path.name, purpose)
                 for folder_id, (path, purpose) in zip(handles, direct, strict=True)
             ]
-            decision = await self._llm.structured(
+            offered = [*handles, "STAY", "UNREADABLE"]
+            raw_choice = await self._llm.choose(
                 placement_prompts.build(
                     current=str(current),
                     children=prompt_children,
@@ -70,12 +70,12 @@ class PlacementService:
                     summary=card.summary,
                     entities=[entity.name for entity in card.entities],
                 ),
-                schema=placement_prompts.PlacementDecision,
+                choices=offered,
+                max_tokens=32,
+                temperature=0.0,
             )
             asked_once = True
-            confidences.append(decision.confidence)
-            raw_id = decision.folder_id
-            if raw_id is None:
+            if raw_choice == "UNREADABLE":
                 log_trace(
                     "place.decided",
                     document_id=document_id,
@@ -84,16 +84,14 @@ class PlacementService:
                     folders_offered=len(direct),
                     chose=None,
                     verdict=Verdict.INBOX.value,
-                    confidence=min(confidences),
                 )
                 return Placement.to_inbox(
                     document_id,
                     reason="document could not be read",
-                    confidence=min(confidences),
                 )
 
-            choice = raw_id.strip().upper()
-            if not choice:
+            choice = raw_choice.strip().upper()
+            if choice == "STAY":
                 steps.append({"at": str(current), "choice": "stay"})
                 break
             target = handles.get(choice)
@@ -104,7 +102,7 @@ class PlacementService:
                     "place.invalid_handle",
                     document_id=document_id,
                     current=str(current),
-                    asked_for=raw_id,
+                    asked_for=raw_choice,
                     offered=list(handles),
                 )
                 steps.append({"at": str(current), "choice": "invalid"})
@@ -112,7 +110,6 @@ class PlacementService:
             steps.append({"at": str(current), "choice": choice, "to": str(target)})
             current = target
 
-        confidence = min(confidences, default=1.0)
         log_trace(
             "place.decided",
             document_id=document_id,
@@ -121,7 +118,6 @@ class PlacementService:
             chose=str(current),
             root=not current.parts,
             created_folder=False,
-            confidence=confidence,
             steps=steps,
         )
         return Placement(
@@ -129,7 +125,6 @@ class PlacementService:
             verdict=Verdict.PLACED,
             target=current,
             created_folder=False,
-            confidence=confidence,
             rationale="selected through existing folder signs" if current.parts else "kept here",
         )
 
