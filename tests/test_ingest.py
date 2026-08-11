@@ -11,7 +11,7 @@ from bismuth.container import Bismuth
 from bismuth.domain.placement import Verdict
 from bismuth.prompts import placement as placement_prompts
 from bismuth.services.sidecar import read_sidecar_meta
-from tests.conftest import ScriptedModel
+from tests.conftest import ScriptedModel, placement_to
 
 
 async def add(engine: Bismuth, name: str, body: str = "아폴로 지원 계약서, 2023.") -> object:
@@ -19,10 +19,9 @@ async def add(engine: Bismuth, name: str, body: str = "아폴로 지원 계약�
     return await engine.ingest.process(rel)
 
 
-def place_at(folder: str | None, *, confidence: float = 0.9, existing: bool = False):
-    return placement_prompts.PlacementDecision(
-        folder=folder, existing=existing, confidence=confidence, reason="테스트"
-    )
+def place_at(folder: str | None, *, confidence: float = 0.9):
+    """A scripted hierarchical choice for the requested final folder."""
+    return placement_to(folder, confidence=confidence)
 
 
 async def add_into(engine: Bismuth, script: ScriptedModel, name: str, folder: str, body: str = ""):
@@ -35,11 +34,26 @@ async def add_into(engine: Bismuth, script: ScriptedModel, name: str, folder: st
     from tests.conftest import seed_folder
 
     seed_folder(Path(engine.vault.root), PurePosixPath(folder))
-    script.set(placement_prompts.PlacementDecision, place_at(folder, existing=True))
+    script.set(placement_prompts.PlacementDecision, place_at(folder))
     return await add(engine, name, body or f"{folder} 문서 {name}")
 
 
 class TestPlacement:
+    def test_pending_inbox_tolerates_a_file_moved_during_status_poll(
+        self, engine: Bismuth, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine.ingest.stage(b"moving", "moving.txt")
+        original_read = engine.vault.read_bytes
+
+        def disappear_before_read(path: PurePosixPath) -> bytes:
+            absolute = Path(engine.vault.root) / Path(*path.parts)
+            absolute.unlink()
+            return original_read(path)
+
+        monkeypatch.setattr(engine.vault, "read_bytes", disappear_before_read)
+
+        assert engine.ingest.pending_inbox() == []
+
     async def test_a_document_goes_into_a_folder_that_exists(self, engine: Bismuth) -> None:
         result = await add(engine, "contract.txt")
 
@@ -54,7 +68,7 @@ class TestPlacement:
         """Placement chooses; only subdivision creates. Asked for somewhere that is not
         there, the honest answer is the root (SPEC.md 3.4) -- measured otherwise as
         twenty folders each named after one document."""
-        script.set(placement_prompts.PlacementDecision, place_at("새로운/폴더"))
+        script.set(placement_prompts.PlacementDecision, place_at("F999"))
 
         result = await add(engine, "contract.txt")
 
@@ -68,6 +82,37 @@ class TestPlacement:
 
         assert not (engine.vault.root / "_inbox/contract.txt").exists()
         assert (engine.vault.root / "아폴로/2023/contract.txt").read_text(encoding="utf-8") == body
+
+    async def test_maintenance_failure_does_not_turn_a_filed_document_into_an_ingest_failure(
+        self, engine: Bismuth
+    ) -> None:
+        class FailingMaintenance:
+            async def consider_with_ancestors(
+                self, *args: object, **kwargs: object
+            ) -> list[object]:
+                raise RuntimeError("bad maintenance proposal")
+
+        engine.ingest._subdivision = FailingMaintenance()  # type: ignore[assignment]
+
+        result = await add(engine, "safe.txt", "파일은 먼저 안전하게 저장됩니다.")
+
+        assert result.destination == PurePosixPath("아폴로/2023")
+        assert (engine.vault.root / "아폴로/2023/safe.txt").is_file()
+        assert (engine.vault.root / "아폴로/2023/safe.txt.md").is_file()
+
+    async def test_folder_sign_failure_does_not_turn_a_filed_document_into_a_failure(
+        self, engine: Bismuth
+    ) -> None:
+        async def fail(*args: object, **kwargs: object) -> list[object]:
+            raise RuntimeError("folder sign unavailable")
+
+        engine.charters.refresh_operations = fail  # type: ignore[method-assign]
+
+        result = await add(engine, "safe-note.txt", "안전하게 저장될 문서")
+
+        assert result.destination == PurePosixPath("아폴로/2023")
+        assert (engine.vault.root / "아폴로/2023/safe-note.txt").is_file()
+        assert (engine.vault.root / "아폴로/2023/safe-note.txt.md").is_file()
 
     async def test_a_new_folder_gets_a_note(self, engine: Bismuth) -> None:
         await add(engine, "contract.txt")
@@ -83,14 +128,15 @@ class TestPlacement:
         await add(engine, "second.txt", "아폴로 보고서 내용 B")
 
         prompt = llm.prompts_for(placement_prompts.PlacementDecision)[-1]
-        assert "아폴로/2023" in prompt.user
+        assert "CURRENT FOLDER: 아폴로" in prompt.user
+        assert "[F001] 2023" in prompt.user
 
     async def test_a_second_document_reuses_an_existing_folder(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         await add(engine, "first.txt", "아폴로 계약서 A")
         # The model now returns the existing folder rather than a new one.
-        script.set(placement_prompts.PlacementDecision, place_at("아폴로/2023", existing=True))
+        script.set(placement_prompts.PlacementDecision, place_at("아폴로/2023"))
 
         result = await add(engine, "second.txt", "아폴로 보고서 B")
 
@@ -114,7 +160,7 @@ class TestPlacement:
     async def test_a_hostile_path_cannot_escape_the_vault(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        script.set(placement_prompts.PlacementDecision, place_at("../../../etc/pwned"))
+        script.set(placement_prompts.PlacementDecision, place_at("F999"))
 
         await add(engine, "evil.txt")
 
@@ -131,6 +177,22 @@ class TestPlacement:
         assert result.duplicate is True
         assert llm.call_count == calls
         assert engine.catalog.card_count() == 1
+
+    async def test_duplicate_reports_the_current_path_after_maintenance_moves_the_original(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        body = "같은 원본의 현재 위치를 사이드카로 찾습니다."
+        await add(engine, "original.txt", body)
+
+        from tests.conftest import seed_folder
+
+        seed_folder(Path(engine.vault.root), PurePosixPath("현재 위치"))
+        await engine.move.move([PurePosixPath("아폴로/2023/original.txt")], "현재 위치")
+
+        duplicate = await add(engine, "duplicate.txt", body)
+
+        assert duplicate.duplicate is True
+        assert duplicate.destination == PurePosixPath("현재 위치")
 
 
 class TestSidecar:
@@ -198,7 +260,7 @@ class TestRefusal:
     async def test_an_unusable_path_falls_back_to_the_root(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        script.set(placement_prompts.PlacementDecision, place_at("...///..."))
+        script.set(placement_prompts.PlacementDecision, place_at("F999"))
 
         result = await add(engine, "weird.txt")
 

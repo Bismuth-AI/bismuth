@@ -129,12 +129,12 @@ class TestDescribe:
         calls = {"n": 0}
         script = ScriptedModel()
 
-        def flaky(prompt, schema, profile):  # type: ignore[no-untyped-def]
+        def flaky(prompt, schema):  # type: ignore[no-untyped-def]
             if schema is card_prompts.CardUpdate:
                 calls["n"] += 1
                 if calls["n"] == 2:
                     raise StructuredOutputError("scripted failure")
-            return script(prompt, schema, profile)
+            return script(prompt, schema)
 
         card = await CardService(FakeLLM(handler=flaky), context_chars=100).describe(
             _extraction(_long(500)), filename="깨진문서.pdf"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import PurePosixPath
 
 import pytest
@@ -11,6 +12,7 @@ from bismuth.container import Bismuth
 from bismuth.domain.charter import Charter
 from bismuth.prompts import placement as placement_prompts
 from bismuth.prompts import subdivision as subdivision_prompts
+from bismuth.services import subdivision as subdivision_service
 from tests.conftest import ScriptedModel
 from tests.test_ingest import add, place_at
 
@@ -26,12 +28,16 @@ def _emerges(
     script.set(
         subdivision_prompts.Emerging,
         subdivision_prompts.Emerging(
-            emerged=True, axis=axis, name=name, note=note, reason="이 부류가 두껍습니다."
+            emerged=True,
+            axis=axis,
+            axis_question=f"어느 {axis}에 속하는가?",
+            name=name,
+            note=note,
         ),
     )
     script.set(
         subdivision_prompts.Members,
-        subdivision_prompts.Members(document_ids=ids, reason="이 사인 아래 놓입니다."),
+        subdivision_prompts.Members(document_ids=ids),
     )
 
 
@@ -121,6 +127,51 @@ class TestDrawingOutAClass:
         # Existing documents are re-filed, not just future ones (SPEC.md 3.4).
         assert not (engine.vault.root / "doc0.txt").exists()
 
+    async def test_a_proposal_that_translates_the_corpus_is_rejected(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await _fill(engine, script, 4)
+        _emerges(
+            script,
+            "Safety and Occupational Health",
+            "Regulations concerning workplace safety and occupational health.",
+            ids[:2],
+            axis="subject domain",
+        )
+
+        divided = await engine.subdivision.consider(PurePosixPath())
+
+        assert divided == []
+        assert not (engine.vault.root / "Safety and Occupational Health").exists()
+
+    async def test_a_later_class_is_audited_with_all_existing_siblings(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+
+        llm.calls.clear()
+        _emerges(script, "과학", "과학 자료", ids[2:4])
+        await engine.subdivision.consider(PurePosixPath())
+
+        audit_prompt = llm.prompts_for(subdivision_prompts.BoundaryAudit)[-1].user
+        assert "문학" in audit_prompt
+        assert "과학" in audit_prompt
+        assert "current=문학/" in audit_prompt
+
+    async def test_an_essay_length_folder_note_uses_the_validated_class_name(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료에 관한 상세 분석입니다. " * 30, ids[:2])
+
+        divided = await engine.subdivision.consider(PurePosixPath())
+
+        assert divided
+        note = engine.charters.load(PurePosixPath("문학"))
+        assert note is not None and note.purpose == "문학"
+
     async def test_the_rest_stay_and_are_given_no_name(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
@@ -156,19 +207,42 @@ class TestDrawingOutAClass:
     async def test_the_sidecar_travels_with_its_document(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        ids = await _fill(engine, script, 2)
-        _emerges(script, "문학", "문학", ids[:1])
+        ids = await _fill(engine, script, 3)
+        _emerges(script, "문학", "문학", ids[:2])
 
         await engine.subdivision.consider(PurePosixPath())
 
         assert (engine.vault.root / "문학/doc0.txt.md").is_file()
         assert not (engine.vault.root / "doc0.txt.md").exists()
 
+    async def test_a_loose_document_can_reuse_an_existing_direct_sign(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+        script.set(
+            subdivision_prompts.ExistingAssignments,
+            subdivision_prompts.ExistingAssignments(
+                groups=[
+                    subdivision_prompts.ExistingAssignment(folder_id="F001", document_ids=[ids[2]])
+                ],
+            ),
+        )
+
+        divided = await engine.subdivision.consider(PurePosixPath())
+
+        assert divided[0].created == (PurePosixPath("문학"),)
+        assert divided[0].moved == 1
+        assert (engine.vault.root / "문학/doc2.txt").is_file()
+        assert (engine.vault.root / "문학/doc2.txt.md").is_file()
+        assert (engine.vault.root / "doc3.txt").is_file()
+
     async def test_the_new_folder_gets_a_note_that_distinguishes_it(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        ids = await _fill(engine, script, 2)
-        _emerges(script, "문학", "소설과 시. 과학 자료가 아닌 것.", ids[:1])
+        ids = await _fill(engine, script, 3)
+        _emerges(script, "문학", "소설과 시. 과학 자료가 아닌 것.", ids[:2])
 
         await engine.subdivision.consider(PurePosixPath())
 
@@ -179,8 +253,8 @@ class TestDrawingOutAClass:
     async def test_drawing_a_class_out_is_one_undoable_batch(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        ids = await _fill(engine, script, 2)
-        _emerges(script, "문학", "문학", ids[:1])
+        ids = await _fill(engine, script, 3)
+        _emerges(script, "문학", "문학", ids[:2])
         await engine.subdivision.consider(PurePosixPath())
 
         entry = next(e for e in engine.journal.iter_entries() if "divide" in e.reason)
@@ -220,6 +294,121 @@ class TestRemembering:
 
 
 class TestReview:
+    async def test_large_review_is_complete_but_context_isolated(
+        self,
+        engine: Bismuth,
+        llm,
+        monkeypatch,  # type: ignore[no-untyped-def]
+    ) -> None:
+        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 5_000)
+        documents = [
+            (f"D{index:04d}", f"current=x/{index}.txt | " + "가" * 1_300) for index in range(1, 9)
+        ]
+        charter = Charter(
+            path=PurePosixPath(),
+            title="/",
+            purpose="문서",
+            split_basis="문서 종류",
+            split_question="이 문서의 종류는 무엇인가?",
+            split_at_documents=4,
+        )
+
+        review = await engine.maintenance._review_boundary(  # type: ignore[attr-defined]
+            folder=PurePosixPath(),
+            purpose=charter.purpose,
+            charter=charter,
+            total=len(documents),
+            documents=documents,
+            children=[("자료", "자료 문서"), ("기록", "기록 문서")],
+        )
+
+        calls = llm.prompts_for(subdivision_prompts.Review)
+        assert review.holds
+        assert len(calls) > 1
+        assert all(len(prompt.system) + len(prompt.user) <= 5_000 for prompt in calls)
+        seen = [handle for prompt in calls for handle in re.findall(r"\[(D\d{4})\]", prompt.user)]
+        assert sorted(seen) == sorted(document_id for document_id, _ in documents)
+
+    async def test_wide_review_reads_every_direct_sign_in_bounded_packets(
+        self,
+        engine: Bismuth,
+        llm,
+        monkeypatch,  # type: ignore[no-untyped-def]
+    ) -> None:
+        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 5_000)
+        children = [(f"분류-{index:03d}", "범위 " + "다" * 180) for index in range(40)]
+        charter = Charter(
+            path=PurePosixPath(),
+            title="/",
+            purpose="문서",
+            split_basis="문서 종류",
+            split_question="이 문서의 종류는 무엇인가?",
+            split_at_documents=1,
+        )
+
+        review = await engine.maintenance._review_boundary(  # type: ignore[attr-defined]
+            folder=PurePosixPath(),
+            purpose=charter.purpose,
+            charter=charter,
+            total=1,
+            documents=[("D0001", "current=분류-000/문서.txt | 문서")],
+            children=children,
+        )
+
+        calls = llm.prompts_for(subdivision_prompts.Review)
+        assert review.holds
+        assert len(calls) > 1
+        assert all(len(prompt.system) + len(prompt.user) <= 5_000 for prompt in calls)
+        combined = "\n".join(prompt.user for prompt in calls)
+        assert all(name in combined for name, _ in children)
+
+    async def test_large_replacement_assigns_every_document_in_bounded_packets(
+        self,
+        engine: Bismuth,
+        script: ScriptedModel,
+        llm,
+        monkeypatch,  # type: ignore[no-untyped-def]
+    ) -> None:
+        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 5_000)
+        documents = [
+            (f"D{index:04d}", f"current=x/{index}.txt | " + "나" * 1_300) for index in range(1, 9)
+        ]
+        charter = Charter(
+            path=PurePosixPath(),
+            title="/",
+            purpose="문서",
+            split_basis="기존 축",
+            split_question="기존 값은 무엇인가?",
+            split_at_documents=4,
+        )
+
+        def assign(prompt, schema):  # type: ignore[no-untyped-def]
+            ids = re.findall(r"\[(D\d{4})\]", prompt.user)
+            return subdivision_prompts.ReplacementAssignments(
+                groups=[
+                    subdivision_prompts.ReplacementAssignment(folder_id="G001", document_ids=ids)
+                ]
+            )
+
+        script.set(subdivision_prompts.ReplacementAssignments, assign)
+        replacement = await engine.maintenance._propose_replacement(  # type: ignore[attr-defined]
+            folder=PurePosixPath(),
+            purpose=charter.purpose,
+            charter=charter,
+            total=len(documents),
+            documents=documents,
+            children=[("옛 분류", "기존 문서")],
+        )
+
+        assert replacement is not None
+        assigned = [
+            document_id for group in replacement.groups for document_id in group.document_ids
+        ]
+        assert sorted(assigned) == sorted(document_id for document_id, _ in documents)
+        packet_calls = llm.prompts_for(subdivision_prompts.ReplacementAssignments)
+        assert len(packet_calls) > 1
+        assert all(len(prompt.system) + len(prompt.user) <= 5_000 for prompt in packet_calls)
+
     def test_a_division_is_not_revisited_until_the_evidence_doubles(self) -> None:
         charter = Charter(
             path=PurePosixPath("문학"),
@@ -262,9 +451,9 @@ class TestReview:
         llm,  # type: ignore[no-untyped-def]
     ) -> None:
         """Not "how would you divide this" -- that has an answer every time."""
-        ids = await _fill(engine, script, 2)
-        _emerges(script, "문학", "문학", ids[:1])
-        await engine.subdivision.consider(PurePosixPath())  # divided at 2
+        ids = await _fill(engine, script, 3)
+        _emerges(script, "문학", "문학", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())  # divided at 3
         llm.calls.clear()
 
         script.set(placement_prompts.PlacementDecision, place_at(""))
@@ -283,9 +472,9 @@ class TestReview:
         Unrecorded, the folder stays past its doubling for ever and is asked on every
         single ingest from then on -- and, worse, that answer used to end the look, so
         the folder was never asked what else had grown in it."""
-        ids = await _fill(engine, script, 2)
-        _emerges(script, "문학", "문학", ids[:1])
-        await engine.subdivision.consider(PurePosixPath())  # divided, recorded at 2
+        ids = await _fill(engine, script, 3)
+        _emerges(script, "문학", "문학", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())  # divided, recorded at 3
 
         script.set(placement_prompts.PlacementDecision, place_at(""))
         for index in range(4):
@@ -293,7 +482,7 @@ class TestReview:
 
         charter = engine.charters.load(PurePosixPath())
         assert charter is not None
-        assert charter.split_at_documents > 2  # moved up with the holding review
+        assert charter.split_at_documents > 3  # moved up with the holding review
         llm.calls.clear()
 
         await engine.subdivision.consider(PurePosixPath())
@@ -308,8 +497,8 @@ class TestReview:
         """The two questions are different jobs. "The old split still holds" must not
         answer "has anything new grown here", or the folder freezes at the size it was
         first divided at -- measured: nineteen of twenty-nine documents stranded."""
-        ids = await _fill(engine, script, 2)
-        _emerges(script, "문학", "문학", ids[:1])
+        ids = await _fill(engine, script, 3)
+        _emerges(script, "문학", "문학", ids[:2])
         await engine.subdivision.consider(PurePosixPath())
 
         script.set(placement_prompts.PlacementDecision, place_at(""))
@@ -323,7 +512,7 @@ class TestReview:
             root.model_copy(update={"split_at_documents": 1}).to_markdown(), encoding="utf-8"
         )
 
-        # doc0 went into 문학; these two are still loose at the root.
+        # doc0/doc1 went into 문학; these two are still loose at the root.
         by_name = _by_name(engine)
         _emerges(script, "과학", "과학 자료", [by_name["more0.txt"], by_name["more1.txt"]])
         llm.calls.clear()
@@ -336,8 +525,8 @@ class TestReview:
     async def test_a_holding_review_moves_nothing(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        ids = await _fill(engine, script, 2)
-        _emerges(script, "문학", "문학", ids[:1])
+        ids = await _fill(engine, script, 3)
+        _emerges(script, "문학", "문학", ids[:2])
         await engine.subdivision.consider(PurePosixPath())
         before = sorted(p.name for p in engine.vault.root.iterdir())
 
@@ -347,6 +536,216 @@ class TestReview:
 
         assert (engine.vault.root / "문학").is_dir()
         assert "문학" in before
+
+    async def test_a_failed_migration_audit_enters_complete_replacement(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+
+        note_path = engine.vault.root / "_folder.md"
+        note_path.write_text(
+            note_path.read_text(encoding="utf-8").replace(
+                "bismuth_charter: 5", "bismuth_charter: 4", 1
+            ),
+            encoding="utf-8",
+        )
+        audits = iter(
+            (
+                subdivision_prompts.BoundaryAudit(
+                    one_property=False,
+                    names_answer_question=False,
+                    mutually_exclusive=False,
+                    useful_for_navigation=False,
+                    notes_are_routing_signs=False,
+                ),
+                subdivision_prompts.BoundaryAudit(
+                    one_property=True,
+                    names_answer_question=True,
+                    mutually_exclusive=True,
+                    useful_for_navigation=True,
+                    notes_are_routing_signs=True,
+                ),
+            )
+        )
+        script.set(
+            subdivision_prompts.BoundaryAudit,
+            lambda prompt, schema: next(audits),
+        )
+        script.set(
+            subdivision_prompts.Replacement,
+            subdivision_prompts.Replacement(
+                basis="자료 속성",
+                basis_question="어느 자료 속성값에 해당하는가?",
+                groups=[
+                    _group("첫째 값", "첫째 값의 문서", ["D0001", "D0002"]),
+                    _group("둘째 값", "둘째 값의 문서", ["D0003", "D0004"]),
+                ],
+            ),
+        )
+
+        divided = await engine.subdivision.consider(PurePosixPath())
+
+        assert divided[0].moved == 4
+        assert (engine.vault.root / "첫째 값").is_dir()
+        assert (engine.vault.root / "둘째 값").is_dir()
+
+    async def test_an_overlapping_boundary_plan_is_rejected_before_any_move(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await _fill(engine, script, 5)
+        _emerges(script, "문학", "문학", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+
+        root = engine.charters.load(PurePosixPath())
+        assert root is not None
+        (engine.vault.root / "_folder.md").write_text(
+            root.model_copy(update={"split_at_documents": 1}).to_markdown(), encoding="utf-8"
+        )
+        script.set(
+            subdivision_prompts.Review,
+            subdivision_prompts.Review(
+                one_axis=False,
+                coherent_membership=False,
+                useful_navigation=False,
+            ),
+        )
+        script.set(
+            subdivision_prompts.Replacement,
+            subdivision_prompts.Replacement(
+                basis="주제 분야",
+                basis_question="어느 주제 분야에 속하는가?",
+                groups=[
+                    subdivision_prompts.Group(
+                        name="과학", note="과학", document_ids=["D0003", "D0004"]
+                    ),
+                    subdivision_prompts.Group(
+                        name="기술", note="기술", document_ids=["D0003", "D0005"]
+                    ),
+                ],
+            ),
+        )
+
+        divided = await engine.subdivision.consider(PurePosixPath())
+
+        assert divided == []
+        assert not (engine.vault.root / "과학").exists()
+        assert not (engine.vault.root / "기술").exists()
+        assert all((engine.vault.root / f"doc{index}.txt").exists() for index in range(2, 5))
+        assert not any(entry.status.value == "failed" for entry in engine.journal.iter_entries())
+
+    async def test_a_review_replaces_the_whole_boundary_and_reuses_names(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+        waiting = engine.vault.root / "_inbox" / "unreadable.bin"
+        waiting.write_bytes(b"not part of the organised collection")
+
+        root = engine.charters.load(PurePosixPath())
+        assert root is not None
+        (engine.vault.root / "_folder.md").write_text(
+            root.model_copy(update={"split_at_documents": 1}).to_markdown(), encoding="utf-8"
+        )
+        script.set(
+            subdivision_prompts.Review,
+            subdivision_prompts.Review(
+                one_axis=False,
+                coherent_membership=False,
+                useful_navigation=False,
+            ),
+        )
+        script.set(
+            subdivision_prompts.Replacement,
+            subdivision_prompts.Replacement(
+                basis="자료 속성",
+                basis_question="어느 자료 속성값에 해당하는가?",
+                groups=[
+                    _group("문학", "첫 번째 값", ["D0001", "D0002", "D0003"]),
+                    _group("다른 값", "두 번째 값", ["D0004", "D0005", "D0006"]),
+                ],
+            ),
+        )
+
+        divided = await engine.subdivision.consider(PurePosixPath())
+
+        assert divided[0].moved == 6
+        assert len(list((engine.vault.root / "문학").glob("*.txt"))) == 3
+        assert len(list((engine.vault.root / "다른 값").glob("*.txt"))) == 3
+        assert not list(engine.vault.root.glob("*.txt"))
+        assert waiting.is_file()
+        literature = engine.charters.load(PurePosixPath("문학"))
+        other = engine.charters.load(PurePosixPath("다른 값"))
+        assert literature is not None and literature.purpose == "첫 번째 값"
+        assert other is not None and other.purpose == "두 번째 값"
+        updated = engine.charters.load(PurePosixPath())
+        assert updated is not None
+        assert updated.split_basis == "자료 속성"
+
+    async def test_a_valid_alternative_does_not_replace_a_learned_boundary_without_gain(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+        root = engine.charters.load(PurePosixPath())
+        assert root is not None
+        (engine.vault.root / "_folder.md").write_text(
+            root.model_copy(update={"split_at_documents": 1}).to_markdown(), encoding="utf-8"
+        )
+        script.set(
+            subdivision_prompts.Review,
+            subdivision_prompts.Review(
+                one_axis=False, coherent_membership=False, useful_navigation=False
+            ),
+        )
+        script.set(
+            subdivision_prompts.Replacement,
+            subdivision_prompts.Replacement(
+                basis="다른 속성",
+                basis_question="어느 값인가?",
+                groups=[
+                    _group("첫 값", "첫 값 문서", ["D0001", "D0002", "D0003"]),
+                    _group("둘째 값", "둘째 값 문서", ["D0004", "D0005", "D0006"]),
+                ],
+            ),
+        )
+        script.set(
+            subdivision_prompts.ReplacementAudit,
+            subdivision_prompts.ReplacementAudit(
+                fixes_observed_failure=True,
+                better_navigation=False,
+            ),
+        )
+
+        divided = await engine.subdivision.consider(PurePosixPath())
+
+        assert divided == []
+        assert (engine.vault.root / "문학").is_dir()
+        assert not (engine.vault.root / "첫 값").exists()
+
+    async def test_a_semantically_invalid_boundary_is_rejected(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "value a", "first candidate", ids[:2], axis="property a vs property b")
+        script.set(
+            subdivision_prompts.BoundaryAudit,
+            subdivision_prompts.BoundaryAudit(
+                one_property=False,
+                names_answer_question=False,
+                mutually_exclusive=True,
+                useful_for_navigation=False,
+                notes_are_routing_signs=True,
+            ),
+        )
+
+        divided = await engine.subdivision.consider(PurePosixPath())
+
+        assert divided == []
+        assert not (engine.vault.root / "value a").exists()
 
 
 class TestTermination:
@@ -448,7 +847,7 @@ class TestOneAxisPerFolder:
         before = engine.charters.load(PurePosixPath("문학"))
         assert before is not None
 
-        script.set(placement_prompts.PlacementDecision, place_at("문학", existing=True))
+        script.set(placement_prompts.PlacementDecision, place_at("문학"))
         await add(engine, "another.txt", "문학 문서 하나 더")
 
         after = engine.charters.load(PurePosixPath("문학"))
@@ -465,7 +864,7 @@ class TestAnAxisIsSpentOnce:
 
     async def _divide_root(self, engine: Bismuth, script: ScriptedModel) -> list[str]:
         ids = await _fill(engine, script, 4)
-        _emerges(script, "법률", "법률", ids[:2], axis="법령의 종류")
+        _emerges(script, "법률", "법률", ids[:3], axis="법령의 종류")
         await engine.subdivision.consider(PurePosixPath())
         return ids
 
@@ -473,7 +872,7 @@ class TestAnAxisIsSpentOnce:
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await self._divide_root(engine, script)
-        script.set(placement_prompts.PlacementDecision, place_at("법률", existing=True))
+        script.set(placement_prompts.PlacementDecision, place_at("법률"))
         await add(engine, "more.txt", "법률 문서 하나 더")
 
         # The child proposes the axis its parent was already divided along.
@@ -488,7 +887,7 @@ class TestAnAxisIsSpentOnce:
     ) -> None:
         ids = await self._divide_root(engine, script)
 
-        _emerges(script, "금융위원회", "금융위원회 소관", ids[:1], axis="소관 부처")
+        _emerges(script, "금융위원회", "금융위원회 소관", ids[:2], axis="소관 부처")
         divided = await engine.subdivision.consider(PurePosixPath("법률"))
 
         assert (engine.vault.root / "법률/금융위원회").is_dir()
@@ -498,7 +897,7 @@ class TestAnAxisIsSpentOnce:
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await self._divide_root(engine, script)
-        _emerges(script, "금융위원회", "금융위원회 소관", ids[:1], axis="소관 부처")
+        _emerges(script, "금융위원회", "금융위원회 소관", ids[:2], axis="소관 부처")
         await engine.subdivision.consider(PurePosixPath("법률"))
 
         # Two levels down, proposing the name of the top-level folder.
@@ -509,14 +908,9 @@ class TestAnAxisIsSpentOnce:
         assert not (engine.vault.root / "법률/금융위원회/법률").exists()
 
 
-class TestTheAxisStaysAPhrase:
-    def test_an_essay_is_not_an_axis(self) -> None:
-        """Review filled `basis` with paragraphs of English, and that paragraph was then
-        read back as the axis on every later look -- so the folder lost its axis to the
-        explanation of why it had one."""
-        essay = "The existing sub-folder only covers one document type. " * 3
-
+class TestTheAxisStaysSingleLine:
+    def test_multiline_state_is_not_an_axis(self) -> None:
         with pytest.raises(ValidationError):
-            subdivision_prompts.Review(reason="r", holds=False, basis=essay)
+            subdivision_prompts.Replacement(basis="one\ntwo")
         with pytest.raises(ValidationError):
-            subdivision_prompts.Emerging(reason="r", emerged=True, axis=essay, name="x")
+            subdivision_prompts.Emerging(emerged=True, axis="one\ntwo", name="x")

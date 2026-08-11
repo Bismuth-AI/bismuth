@@ -177,21 +177,18 @@ class TestIngestProgress:
         assert parsing.note == "plain"
         assert "자" in parsed.note
 
-    async def test_the_landing_step_never_carries_the_whole_rationale(
+    async def test_the_landing_step_stays_compact(
         self, engine: Bismuth, script: ScriptedModel, make_document: Callable[..., Path]
     ) -> None:
-        """The rationale is a paragraph; a progress line that long buries every other step."""
+        """Per-document progress must not bury the rest of a batch."""
         from tests.conftest import seed_folder
 
         seed_folder(Path(engine.vault.root), PurePosixPath("환경/생태계"))
+        from tests.test_ingest import place_at
+
         script.set(
             placement_prompts.PlacementDecision,
-            placement_prompts.PlacementDecision(
-                folder="환경/생태계",
-                existing=False,
-                confidence=0.12,
-                reason="제시된 폴더들은 미생물학 자료에 한정되어 있고 " * 8,
-            ),
+            place_at("환경/생태계", confidence=0.12),
         )
         seen: list[Progress] = []
         source = make_document("논문.txt", "생태계서비스 논문")
@@ -209,9 +206,7 @@ class TestIngestProgress:
     ) -> None:
         script.set(
             placement_prompts.PlacementDecision,
-            placement_prompts.PlacementDecision(
-                folder="", existing=False, confidence=0.9, reason="아직 나눌 구분이 없습니다."
-            ),
+            placement_prompts.PlacementDecision(folder_id="", confidence=0.9),
         )
         seen: list[Progress] = []
         source = make_document("첫문서.txt", "무언가")

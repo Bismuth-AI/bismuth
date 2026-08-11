@@ -79,7 +79,8 @@ class TestPlacement:
         assert len(decided) == 1
         assert decided[0]["chose"] == "아폴로/2023"
         assert decided[0]["created_folder"] is False
-        assert decided[0]["reason"]
+        assert decided[0]["steps"]
+        assert "reason" not in decided[0]
 
     async def test_the_root_is_recorded_as_the_root(
         self, engine: Bismuth, script: ScriptedModel, logs: Path

@@ -12,7 +12,6 @@ from pathlib import Path
 import pytest
 
 from bismuth.config import PROVIDERS, Settings, load_env_file, provider, save_user_config
-from bismuth.ports.llm import ModelProfile
 
 
 @pytest.fixture
@@ -42,8 +41,7 @@ def configured(**overrides: object) -> Settings:
     base = {
         "provider_id": "openai",
         "api_key": "sk-test",
-        "model_fast": "gpt-4o-mini",
-        "model_reasoning": "gpt-4o",
+        "model": "gpt-4o",
     }
     return Settings(**{**base, **overrides})  # type: ignore[arg-type]
 
@@ -101,7 +99,9 @@ class TestConfigFile:
 
         saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
         assert saved["api_key"] == "sk-test"
-        assert saved["model_fast"] == "gpt-4o-mini"
+        assert saved["model"] == "gpt-4o"
+        assert "model_fast" not in saved
+        assert "model_reasoning" not in saved
         assert "pressure_folder_size" not in saved
         assert "llm_timeout_seconds" not in saved
 
@@ -145,17 +145,25 @@ class TestModelNames:
 
     def test_the_provider_prefix_is_added(self, clean_env: None) -> None:
         settings = configured()
-        assert settings.model_for(ModelProfile.FAST) == "openai/gpt-4o-mini"
-        assert settings.model_for(ModelProfile.REASONING) == "openai/gpt-4o"
+        assert settings.model_for() == "openai/gpt-4o"
 
     def test_an_already_qualified_name_is_left_alone(self, clean_env: None) -> None:
-        settings = configured(model_fast="openrouter/meta/llama-3")
-        assert settings.model_for(ModelProfile.FAST) == "openrouter/meta/llama-3"
+        settings = configured(model="openrouter/meta/llama-3")
+        assert settings.model_for() == "openrouter/meta/llama-3"
 
     def test_a_compatible_endpoint_is_addressed_as_openai(self, clean_env: None) -> None:
         """LiteLLM routes by protocol, and these speak OpenAI's."""
-        settings = configured(provider_id="custom", api_key="", model_fast="qwen3.6-35b")
-        assert settings.model_for(ModelProfile.FAST) == "openai/qwen3.6-35b"
+        settings = configured(provider_id="custom", api_key="", model="qwen3.6-35b")
+        assert settings.model_for() == "openai/qwen3.6-35b"
+
+    def test_a_legacy_pair_migrates_to_the_judgement_model(self, clean_env: None) -> None:
+        settings = Settings(
+            provider_id="openai",
+            api_key="sk-test",
+            model_fast="gpt-4o-mini",
+            model_reasoning="gpt-4o",
+        )
+        assert settings.model == "gpt-4o"
 
 
 class TestLocality:

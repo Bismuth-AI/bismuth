@@ -34,9 +34,10 @@ class TestSanitizeSegment:
     def test_escapes_windows_device_names(self, reserved: str) -> None:
         assert sanitize_segment(reserved) == f"{reserved}_"
 
-    def test_strips_leading_underscore(self) -> None:
-        # _inbox and _folder.md are Bismuth's namespace; a folder name must not collide.
+    def test_strips_private_namespace_prefixes(self) -> None:
+        # These names are Bismuth's namespace; a model-authored folder cannot collide.
         assert sanitize_segment("_inbox") == "inbox"
+        assert sanitize_segment(".bismuth") == "bismuth"
 
     @pytest.mark.parametrize("hostile", ["...", "   ", "///"])
     def test_rejects_the_unusable(self, hostile: str) -> None:
@@ -65,21 +66,22 @@ def _card() -> DocumentCard:
     return DocumentCard(title="t", summary="s", doc_type="문서", topics=("x",))
 
 
-def _decision(folder: str | None, *, confidence: float = 0.9, existing: bool = False):
-    return placement_prompts.PlacementDecision(
-        folder=folder, existing=existing, confidence=confidence, reason="r"
-    )
+def _decision(folder: str | None, *, confidence: float = 0.9):
+    folder_id = folder if folder is None or folder == "" or folder.startswith("F") else "F001"
+    return placement_prompts.PlacementDecision(folder_id=folder_id, confidence=confidence)
 
 
 async def _decide(decision, *, exists: str | None = None, **kwargs):
     """Decide against a tree that holds `exists`, if anything."""
-    llm = FakeLLM(queue=[decision])
-    folders = [(exists, "기존")] if exists else []
+    llm = FakeLLM(handler=lambda prompt, schema: decision)
+    path = PurePosixPath(exists) if exists else PurePosixPath()
+    existing = [PurePosixPath(*path.parts[:index]) for index in range(1, len(path.parts) + 1)]
+    folders = [(str(candidate), "기존") for candidate in existing]
     return await PlacementService(llm).decide(
         document_id="doc1",
         card=_card(),
         folders=folders,
-        existing_paths=frozenset({exists} if exists else set()),
+        existing_paths=frozenset(str(candidate) for candidate in existing),
         **kwargs,
     )
 
@@ -136,6 +138,30 @@ class TestPlacementService:
 
     async def test_the_model_saying_existing_does_not_make_it_so(self) -> None:
         """Decided against the real folder set, never the model's own `existing` flag."""
-        placement = await _decide(_decision("없는/폴더", existing=True), exists="아폴로/2023")
+        placement = await _decide(_decision("F999"), exists="아폴로/2023")
 
         assert placement.target == PurePosixPath()
+
+    async def test_a_document_can_stop_at_an_intermediate_folder(self) -> None:
+        """Choosing a parent must not force a document into its only child."""
+        answers = iter((_decision("F001", confidence=0.8), _decision("", confidence=0.7)))
+        llm = FakeLLM(handler=lambda prompt, schema: next(answers))
+        folders = [("법령", "법령"), ("법령/시행규칙", "시행규칙")]
+
+        placement = await PlacementService(llm).decide(
+            document_id="doc1",
+            card=_card(),
+            folders=folders,
+            existing_paths=frozenset(path for path, _ in folders),
+        )
+
+        assert placement.target == PurePosixPath("법령")
+        assert placement.confidence == pytest.approx(0.7)
+
+    def test_folder_handles_tolerate_common_formatting_noise(self) -> None:
+        decision = placement_prompts.PlacementDecision(folder_id=" [f001]/ ", confidence=0.9)
+        assert decision.folder_id == "F001"
+
+    def test_a_dot_is_normalised_to_stay_here(self) -> None:
+        decision = placement_prompts.PlacementDecision(folder_id="./", confidence=0.9)
+        assert decision.folder_id == ""

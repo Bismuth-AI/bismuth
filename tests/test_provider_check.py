@@ -208,8 +208,7 @@ class TestRequestBody:
         """The whole point: a qwen model with thinking left on took 93 seconds a
         document instead of 6."""
         adapter = LiteLLMAdapter(
-            model_fast="openai/qwen3.6-35b",
-            model_reasoning="openai/qwen3.6-35b",
+            model="openai/qwen3.6-35b",
             body={"chat_template_kwargs": {"enable_thinking": False}, "top_p": 0.8},
         )
 
@@ -257,12 +256,8 @@ class TestSchemaSupport:
         assert not catalog.supports_response_schema(api_base="https://g/v1", model="m")
 
     def test_the_adapter_obeys_the_setting_over_the_table(self) -> None:
-        forced = LiteLLMAdapter(
-            model_fast="openai/qwen3.6-35b", model_reasoning="openai/q", native_schema=True
-        )
-        refused = LiteLLMAdapter(
-            model_fast="openai/gpt-4o", model_reasoning="openai/gpt-4o", native_schema=False
-        )
+        forced = LiteLLMAdapter(model="openai/qwen3.6-35b", native_schema=True)
+        refused = LiteLLMAdapter(model="openai/gpt-4o", native_schema=False)
 
         assert forced._supports_native_schema("openai/qwen3.6-35b") is True
         assert refused._supports_native_schema("openai/gpt-4o") is False

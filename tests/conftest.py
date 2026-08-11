@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,7 +17,7 @@ from bismuth.config import Settings
 from bismuth.container import Bismuth, build
 from bismuth.domain.charter import CHARTER_FILENAME, Charter
 from bismuth.domain.document import Entity, EntityKind
-from bismuth.ports.llm import ModelProfile, Prompt
+from bismuth.ports.llm import Prompt
 from bismuth.prompts import cards as card_prompts
 from bismuth.prompts import charters as charter_prompts
 from bismuth.prompts import placement as placement_prompts
@@ -44,11 +45,43 @@ def settings(vault_path: Path) -> Settings:
     return Settings(vault_path=vault_path)
 
 
+def placement_to(folder: str | None, *, confidence: float = 0.9):
+    """Return a scripted direct-child chooser that walks to ``folder``."""
+    target = PurePosixPath(folder or "")
+
+    def decide(prompt: Prompt, schema: type[BaseModel]) -> BaseModel:
+        if folder is None:
+            return placement_prompts.PlacementDecision(folder_id=None, confidence=confidence)
+        current_line = next(
+            line for line in prompt.user.splitlines() if line.startswith("CURRENT FOLDER:")
+        )
+        current_raw = current_line.partition(":")[2].strip()
+        current = PurePosixPath() if current_raw == "(root)" else PurePosixPath(current_raw)
+        if target.parts[: len(current.parts)] != current.parts or len(target.parts) <= len(
+            current.parts
+        ):
+            return placement_prompts.PlacementDecision(folder_id="", confidence=confidence)
+        wanted = target.parts[len(current.parts)]
+        for line in prompt.user.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("[F"):
+                continue
+            folder_id, _, shown = stripped.partition("]")
+            name = shown.strip().split(" — ", 1)[0]
+            if name == wanted:
+                return placement_prompts.PlacementDecision(
+                    folder_id=folder_id.removeprefix("["), confidence=confidence
+                )
+        return placement_prompts.PlacementDecision(folder_id="", confidence=confidence)
+
+    return decide
+
+
 class ScriptedModel:
     """FakeLLM handler that returns a scripted response keyed by schema."""
 
     def __init__(self) -> None:
-        self.responses: dict[type[BaseModel], BaseModel] = {
+        self.responses: dict[type[BaseModel], Any] = {
             card_prompts.CardDraft: card_prompts.CardDraft(
                 title="아폴로 지원 계약서",
                 summary="대한물산과 유엔진 간의 아폴로 사업 유지보수 계약.",
@@ -61,8 +94,6 @@ class ScriptedModel:
             ),
             card_prompts.CardUpdate: card_prompts.CardUpdate(
                 summary="대한물산과 유엔진 간의 아폴로 사업 유지보수 계약. 지연배상 조항을 포함한다.",
-                contributed=True,
-                note="scripted update",
                 new_topics=["지연배상"],
                 new_entities=[Entity(name="대한물산", kind=EntityKind.ORGANIZATION)],
                 new_keywords=["지연배상금"],
@@ -70,39 +101,67 @@ class ScriptedModel:
             ),
             card_prompts.DensifiedSummary: card_prompts.DensifiedSummary(
                 summary="대한물산과 유엔진 간 아폴로 유지보수 계약. 기간 24개월, 지연배상 조항 포함.",
-                absorbed=["지연배상"],
             ),
-            placement_prompts.PlacementDecision: placement_prompts.PlacementDecision(
-                folder="아폴로/2023",
-                existing=False,
-                confidence=0.9,
-                reason="아폴로 사업 2023년 계약서라 아폴로/2023 에 둡니다.",
-            ),
+            placement_prompts.PlacementDecision: placement_to("아폴로/2023"),
             # Default: nothing has grown out yet. A test that wants a folder scripts it,
             # so every other test keeps the tree its assertions were written against.
             subdivision_prompts.Emerging: subdivision_prompts.Emerging(
-                emerged=False, reason="아직 목록이 더 잘 보입니다."
+                emerged=False,
             ),
             subdivision_prompts.Members: subdivision_prompts.Members(
-                document_ids=[], reason="이 사인에 속하는 문서가 없습니다."
+                document_ids=[],
             ),
             subdivision_prompts.Review: subdivision_prompts.Review(
-                holds=True, reason="기존 구분이 아직 맞습니다."
+                one_axis=True,
+                coherent_membership=True,
+                useful_navigation=True,
+            ),
+            subdivision_prompts.Replacement: subdivision_prompts.Replacement(
+                basis="",
+                basis_question="",
+                groups=[],
+            ),
+            subdivision_prompts.ReplacementSketch: subdivision_prompts.ReplacementSketch(
+                basis="문서 종류",
+                basis_question="이 문서의 종류는 무엇인가?",
+                signs=[
+                    subdivision_prompts.ReplacementSign(name="자료", note="자료 문서"),
+                    subdivision_prompts.ReplacementSign(name="기록", note="기록 문서"),
+                ],
+            ),
+            subdivision_prompts.ReplacementAssignments: (
+                subdivision_prompts.ReplacementAssignments(groups=[])
+            ),
+            subdivision_prompts.BoundaryAudit: subdivision_prompts.BoundaryAudit(
+                one_property=True,
+                names_answer_question=True,
+                mutually_exclusive=True,
+                useful_for_navigation=True,
+                notes_are_routing_signs=True,
+            ),
+            subdivision_prompts.ReplacementAudit: subdivision_prompts.ReplacementAudit(
+                fixes_observed_failure=True,
+                better_navigation=True,
+            ),
+            subdivision_prompts.ExistingAssignments: subdivision_prompts.ExistingAssignments(
+                groups=[],
+            ),
+            subdivision_prompts.RoutingAudit: subdivision_prompts.RoutingAudit(
+                assignments_match_signs=True,
+                no_forced_fit=True,
             ),
             charter_prompts.CharterDraft: charter_prompts.CharterDraft(
-                title="아폴로 2023",
                 purpose="아폴로 사업의 2023년 문서를 모아둡니다.",
-                holds=["아폴로 사업 계약서·보고서"],
-                answers=["2023년 아폴로 사업에서 무엇이 합의되었나?"],
             ),
         }
 
-    def set(self, schema: type[BaseModel], response: BaseModel) -> None:
+    def set(self, schema: type[BaseModel], response: object) -> None:
         self.responses[schema] = response
 
-    def __call__(self, prompt: Prompt, schema: type[BaseModel], profile: ModelProfile) -> BaseModel:
+    def __call__(self, prompt: Prompt, schema: type[BaseModel]) -> BaseModel:
         try:
-            return self.responses[schema]
+            response = self.responses[schema]
+            return response(prompt, schema) if callable(response) else response
         except KeyError as exc:  # pragma: no cover
             raise AssertionError(f"nothing scripted for {schema.__name__}") from exc
 

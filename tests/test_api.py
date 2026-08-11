@@ -2,7 +2,23 @@
 
 from __future__ import annotations
 
+import time
+from pathlib import Path
+
 from fastapi.testclient import TestClient
+
+
+class TestIndex:
+    def test_ui_shell_is_not_cached_across_server_upgrades(self, client: TestClient) -> None:
+        response = client.get("/")
+
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store, max-age=0"
+        assert response.headers["pragma"] == "no-cache"
+
+    def test_batch_success_excludes_duplicates_inbox_and_failures(self, client: TestClient) -> None:
+        page = client.get("/").text
+        assert "batch.completed - batch.failed - batch.duplicate - batch.inbox" in page
 
 
 class TestStatus:
@@ -15,6 +31,16 @@ class TestStatus:
         # 아폴로 and 아폴로/2023 are seeded so placement has somewhere to choose.
         assert body["folders"] == 2
         assert "runs_locally" in body
+
+    def test_status_counts_documents_waiting_at_root(self, client: TestClient) -> None:
+        vault = client.app.state.engine.vault  # type: ignore[attr-defined]
+        (Path(vault.root) / "waiting.txt").write_bytes(b"waiting for a useful class")
+
+        body = client.get("/api/status").json()
+
+        assert body["documents"] == 1
+        assert body["placed"] == 1
+        assert body["inbox"] == 0
 
 
 class TestOpenFile:
@@ -86,6 +112,35 @@ class TestFolder:
 
     def test_unknown_folder_is_a_404(self, client: TestClient) -> None:
         assert client.get("/api/folder", params={"path": "nope"}).status_code == 404
+
+
+class TestBatchUpload:
+    def test_batch_keeps_processing_after_the_submit_response(self, client: TestClient) -> None:
+        submitted = client.post(
+            "/api/batches",
+            files=[
+                ("files", ("one.txt", "아폴로 계약서 하나".encode(), "text/plain")),
+                ("files", ("two.txt", "아폴로 계약서 둘".encode(), "text/plain")),
+            ],
+        )
+
+        assert submitted.status_code == 202
+        batch = submitted.json()
+        assert batch["total"] == 2
+        assert batch["completed"] <= 2
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            batch = client.get(f"/api/batches/{batch['id']}").json()
+            if batch["status"] == "done":
+                break
+            time.sleep(0.01)
+
+        assert batch["status"] == "done"
+        assert batch["completed"] == 2
+        assert batch["failed"] == 0
+        # A newly loaded page discovers the same server-owned batch.
+        assert batch["id"] in {item["id"] for item in client.get("/api/batches").json()}
 
 
 class TestUndo:
