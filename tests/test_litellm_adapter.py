@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -16,6 +17,10 @@ from bismuth.ports.llm import Prompt
 class Answer(BaseModel):
     name: str
     year: int
+
+
+class Emerging(BaseModel):
+    emerged: bool
 
 
 class FakeUsage:
@@ -170,6 +175,18 @@ class TestStructured:
         await adapter().structured(Prompt(system="s", user="u"), schema=Answer)
         assert fake.calls[0]["max_retries"] == 0
 
+    async def test_schema_specific_cap_is_sent(self, stub: Any) -> None:
+        fake = stub(['{"emerged": false}'])
+        await adapter().structured(Prompt(system="s", user="u"), schema=Emerging)
+        assert fake.calls[0]["max_tokens"] == 4096
+
+    async def test_config_can_lower_but_not_raise_a_schema_cap(self, stub: Any) -> None:
+        lowered = stub(['{"emerged": false}'])
+        await adapter(body={"max_tokens": 64}).structured(
+            Prompt(system="s", user="u"), schema=Emerging
+        )
+        assert lowered.calls[0]["max_tokens"] == 64
+
     async def test_every_raw_stream_chunk_is_kept(
         self, stub: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -270,6 +287,22 @@ class TestRepair:
         await engine.structured(Prompt(system="s", user="u"), schema=Answer)
         assert [u.retries for u in engine.drain_usage()] == [0, 1]
 
+    async def test_full_bad_output_is_logged_but_not_copied_into_repair_context(
+        self, stub: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bad = "not-json:" + "".join(f"{index:04x}" for index in range(1250))
+        fake = stub([bad, '{"name": "a", "year": 1}'])
+        records: list[dict[str, Any]] = []
+        monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
+
+        await adapter(max_schema_retries=1).structured(Prompt(system="s", user="u"), schema=Answer)
+
+        assert records[-1]["attempts"][0]["raw"] == bad
+        repair_messages = fake.calls[1]["messages"]
+        assert all(message["role"] != "assistant" for message in repair_messages)
+        assert bad[:2000] in repair_messages[-1]["content"]
+        assert bad[:2001] not in repair_messages[-1]["content"]
+
     async def test_giving_up_says_what_to_do(self, stub: Any) -> None:
         stub(["not json at all"])
         with pytest.raises(StructuredOutputError, match="choose a more capable model"):
@@ -308,3 +341,87 @@ class TestJsonSalvage:
     def test_hopeless_replies_raise(self, junk: str) -> None:
         with pytest.raises(ValueError):
             _parse_json(junk)
+
+
+class TestPlainChoice:
+    async def test_choice_is_plain_bounded_and_deterministic(self, stub: Any) -> None:
+        fake = stub(["F002"])
+        result = await adapter(body={"temperature": 0.7, "max_tokens": 999}).choose(
+            Prompt(system="s", user="u"),
+            choices=["F001", "F002", "STAY", "UNREADABLE"],
+        )
+
+        assert result == "F002"
+        request = fake.calls[0]
+        assert "response_format" not in request
+        assert request["temperature"] == 0.0
+        assert request["max_tokens"] == 32
+        assert request["max_retries"] == 0
+
+    async def test_invalid_reply_gets_one_clean_retry(self, stub: Any) -> None:
+        bad = '{"folder_id":"F002"}'
+        fake = stub([bad, "F002"])
+
+        result = await adapter().choose(
+            Prompt(system="original system", user="document facts"),
+            choices=["F001", "F002", "STAY", "UNREADABLE"],
+        )
+
+        assert result == "F002"
+        assert len(fake.calls) == 2
+        retry = fake.calls[1]["messages"]
+        assert all(bad not in str(message["content"]) for message in retry)
+        assert retry[0]["content"] == litellm_adapter._CHOICE_RETRY_SYSTEM
+
+    async def test_two_invalid_replies_fail_closed(self, stub: Any) -> None:
+        stub(["the answer is F002", '"F002"'])
+        with pytest.raises(StructuredOutputError, match="one allowed choice"):
+            await adapter().choose(Prompt(system="s", user="u"), choices=["F001", "F002", "STAY"])
+
+    async def test_repetition_is_aborted_then_retried_cleanly(
+        self, stub: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub(["}]}" * 1000, "F002"])
+        records: list[dict[str, Any]] = []
+        monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
+
+        result = await adapter().choose(
+            Prompt(system="s", user="u"), choices=["F001", "F002", "STAY"]
+        )
+
+        assert result == "F002"
+        first = records[-1]["attempts"][0]["stream"]
+        assert first["abort"]["kind"] == "repetition"
+        assert first["abort"]["after_chars"] < 3000
+        assert first["content"]
+
+
+class TestAbsoluteDeadline:
+    async def test_continuous_generation_cannot_run_past_absolute_deadline(
+        self, stub: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = stub(['{"unused": true}'])
+
+        class SlowStream:
+            def __aiter__(self) -> SlowStream:
+                return self
+
+            async def __anext__(self) -> FakeChunk:
+                await asyncio.sleep(0.02)
+                return FakeChunk("x")
+
+        async def stream_forever(**kwargs: Any) -> SlowStream:
+            fake.calls.append(kwargs)
+            return SlowStream()
+
+        fake.acompletion = stream_forever  # type: ignore[method-assign]
+        records: list[dict[str, Any]] = []
+        monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
+
+        with pytest.raises(ModelRequestError, match="제한시간"):
+            await adapter(timeout=1.0, absolute_timeout=0.01).structured(
+                Prompt(system="s", user="u"), schema=Answer
+            )
+
+        abort = records[-1]["attempts"][0]["stream"]["abort"]
+        assert abort["kind"] == "absolute_timeout"

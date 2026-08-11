@@ -45,13 +45,14 @@ def settings(vault_path: Path) -> Settings:
     return Settings(vault_path=vault_path)
 
 
-def placement_to(folder: str | None, *, confidence: float = 0.9):
+def placement_to(folder: str | None, *, confidence: float | None = None):
     """Return a scripted direct-child chooser that walks to ``folder``."""
+    del confidence  # compatibility with older test scripts; production has no such field
     target = PurePosixPath(folder or "")
 
-    def decide(prompt: Prompt, schema: type[BaseModel]) -> BaseModel:
+    def decide(prompt: Prompt, schema: type[BaseModel] | None) -> str:
         if folder is None:
-            return placement_prompts.PlacementDecision(folder_id=None, confidence=confidence)
+            return "UNREADABLE"
         current_line = next(
             line for line in prompt.user.splitlines() if line.startswith("CURRENT FOLDER:")
         )
@@ -60,7 +61,7 @@ def placement_to(folder: str | None, *, confidence: float = 0.9):
         if target.parts[: len(current.parts)] != current.parts or len(target.parts) <= len(
             current.parts
         ):
-            return placement_prompts.PlacementDecision(folder_id="", confidence=confidence)
+            return "STAY"
         wanted = target.parts[len(current.parts)]
         for line in prompt.user.splitlines():
             stripped = line.strip()
@@ -69,10 +70,8 @@ def placement_to(folder: str | None, *, confidence: float = 0.9):
             folder_id, _, shown = stripped.partition("]")
             name = shown.strip().split(" — ", 1)[0]
             if name == wanted:
-                return placement_prompts.PlacementDecision(
-                    folder_id=folder_id.removeprefix("["), confidence=confidence
-                )
-        return placement_prompts.PlacementDecision(folder_id="", confidence=confidence)
+                return folder_id.removeprefix("[")
+        return "STAY"
 
     return decide
 
@@ -81,7 +80,7 @@ class ScriptedModel:
     """FakeLLM handler that returns a scripted response keyed by schema."""
 
     def __init__(self) -> None:
-        self.responses: dict[type[BaseModel], Any] = {
+        self.responses: dict[type[BaseModel] | None, Any] = {
             card_prompts.CardDraft: card_prompts.CardDraft(
                 title="아폴로 지원 계약서",
                 summary="대한물산과 유엔진 간의 아폴로 사업 유지보수 계약.",
@@ -154,16 +153,22 @@ class ScriptedModel:
                 purpose="아폴로 사업의 2023년 문서를 모아둡니다.",
             ),
         }
+        self.responses[None] = self.responses.pop(placement_prompts.PlacementDecision)
 
     def set(self, schema: type[BaseModel], response: object) -> None:
-        self.responses[schema] = response
+        key = None if schema is placement_prompts.PlacementDecision else schema
+        self.responses[key] = response
 
-    def __call__(self, prompt: Prompt, schema: type[BaseModel]) -> BaseModel:
+    def set_choice(self, response: object) -> None:
+        self.responses[None] = response
+
+    def __call__(self, prompt: Prompt, schema: type[BaseModel] | None) -> BaseModel | str:
         try:
             response = self.responses[schema]
             return response(prompt, schema) if callable(response) else response
         except KeyError as exc:  # pragma: no cover
-            raise AssertionError(f"nothing scripted for {schema.__name__}") from exc
+            wanted = schema.__name__ if schema is not None else "PlainChoice"
+            raise AssertionError(f"nothing scripted for {wanted}") from exc
 
 
 @pytest.fixture

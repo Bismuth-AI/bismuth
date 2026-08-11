@@ -8,6 +8,7 @@ import pytest
 
 from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.container import Bismuth
+from bismuth.domain.errors import StructuredOutputError
 from bismuth.domain.placement import Verdict
 from bismuth.prompts import placement as placement_prompts
 from bismuth.services.sidecar import read_sidecar_meta
@@ -233,17 +234,32 @@ class TestRefusal:
         assert result.placement.verdict is Verdict.INBOX
         assert (engine.vault.root / "_inbox/garbage.txt").is_file()
 
-    async def test_low_confidence_is_filed_anyway(
+    async def test_legacy_fake_confidence_does_not_affect_filing(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        """There is no threshold. Being unsure is answered by the root, not by waiting."""
+        """The former self-reported number is ignored; only the literal is consumed."""
         script.set(placement_prompts.PlacementDecision, place_at("아폴로/2023", confidence=0.2))
 
         result = await add(engine, "vague.txt")
 
         assert result.placement.verdict is Verdict.PLACED
-        assert result.placement.confidence == pytest.approx(0.2)
+        assert "confidence" not in result.placement.model_dump()
         assert (engine.vault.root / "아폴로/2023/vague.txt").is_file()
+
+    async def test_two_failed_choice_attempts_leave_the_original_in_inbox(
+        self, engine: Bismuth
+    ) -> None:
+        rel = engine.ingest.stage(b"readable but temporarily unfiled", "waiting.txt")
+
+        async def fail_choice(*args: object, **kwargs: object) -> str:
+            raise StructuredOutputError("no exact allowed choice")
+
+        engine.llm.choose = fail_choice  # type: ignore[method-assign]
+
+        with pytest.raises(StructuredOutputError, match="exact allowed choice"):
+            await engine.ingest.process(rel)
+
+        assert (engine.vault.root / "_inbox/waiting.txt").is_file()
 
     async def test_the_root_is_a_normal_answer(
         self, engine: Bismuth, script: ScriptedModel

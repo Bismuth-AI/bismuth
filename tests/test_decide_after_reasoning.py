@@ -6,7 +6,6 @@ when the same response later supplied a coherent candidate. The candidate must
 therefore be formed before the verdict, without adding a free-form scratchpad.
 """
 
-from bismuth.prompts import placement as placement_prompts
 from bismuth.prompts import subdivision as subdivision_prompts
 
 
@@ -36,9 +35,3 @@ def test_maintenance_schemas_have_no_free_form_reason_metadata() -> None:
     )
 
     assert all("reason" not in schema.model_fields for schema in schemas)
-
-
-def test_placement_contains_only_the_consumed_choice_and_confidence() -> None:
-    fields = list(placement_prompts.PlacementDecision.model_json_schema()["properties"])
-
-    assert fields == ["folder_id", "confidence"]

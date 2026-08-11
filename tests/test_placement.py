@@ -87,8 +87,7 @@ async def _decide(decision, *, exists: str | None = None, **kwargs):
 
 
 class TestPlacementService:
-    """There is no confidence threshold: not knowing where a document goes is answered
-    by the root, which is what "no distinction drawn yet" means (SPEC.md 3.4)."""
+    """A readable document may stay at the current level when no child fits."""
 
     async def test_a_folder_is_placed(self) -> None:
         placement = await _decide(_decision("아폴로/2023"), exists="아폴로/2023")
@@ -120,15 +119,15 @@ class TestPlacementService:
         placement = await _decide(_decision(None))
         assert placement.verdict is Verdict.INBOX
 
-    async def test_low_confidence_still_files_the_document(self) -> None:
+    async def test_legacy_fake_confidence_does_not_affect_the_choice(self) -> None:
         placement = await _decide(_decision("아폴로/2023", confidence=0.02), exists="아폴로/2023")
 
         assert placement.verdict is Verdict.PLACED
         assert placement.target == PurePosixPath("아폴로/2023")
 
-    async def test_the_number_is_recorded_even_though_it_gates_nothing(self) -> None:
+    async def test_model_self_reported_confidence_is_not_stored(self) -> None:
         placement = await _decide(_decision("아폴로/2023", confidence=0.42), exists="아폴로/2023")
-        assert placement.confidence == pytest.approx(0.42)
+        assert "confidence" not in placement.model_dump()
 
     async def test_an_unusable_path_falls_back_to_the_root(self) -> None:
         placement = await _decide(_decision("...///..."))
@@ -156,7 +155,7 @@ class TestPlacementService:
         )
 
         assert placement.target == PurePosixPath("법령")
-        assert placement.confidence == pytest.approx(0.7)
+        assert "confidence" not in placement.model_dump()
 
     def test_folder_handles_tolerate_common_formatting_noise(self) -> None:
         decision = placement_prompts.PlacementDecision(folder_id=" [f001]/ ", confidence=0.9)

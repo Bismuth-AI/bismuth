@@ -104,6 +104,7 @@ class TestConfigFile:
         assert "model_reasoning" not in saved
         assert "pressure_folder_size" not in saved
         assert "llm_timeout_seconds" not in saved
+        assert "llm_absolute_timeout_seconds" not in saved
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
     def test_the_key_file_is_not_world_readable(
