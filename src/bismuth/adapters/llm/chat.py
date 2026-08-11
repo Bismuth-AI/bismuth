@@ -51,6 +51,7 @@ class LiteLLMChatModel:
             "messages": wire,
             "timeout": self._timeout,
             "temperature": 0.0,
+            "max_retries": 0,
         }
         if tools:
             kwargs["tools"] = [_tool_to_wire(t) for t in tools]

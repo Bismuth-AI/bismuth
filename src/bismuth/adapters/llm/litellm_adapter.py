@@ -11,9 +11,9 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from bismuth.domain.errors import StructuredOutputError
+from bismuth.domain.errors import ModelRequestError, StructuredOutputError
 from bismuth.logging_setup import log_llm_call
-from bismuth.ports.llm import CURRENT_DOCUMENT, ModelProfile, Prompt, Usage
+from bismuth.ports.llm import CURRENT_DOCUMENT, Prompt, Usage
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
@@ -41,6 +41,15 @@ def preload() -> None:
     started server look like a hung one. Call once, after the configuration is loaded.
     """
     _load_litellm()
+
+
+async def close_clients() -> None:
+    """Close LiteLLM's shared async transports during application shutdown."""
+    if _litellm is None:
+        return
+    close = getattr(_litellm, "close_litellm_async_clients", None)
+    if close is not None:
+        await close()
 
 
 def usage_of(response: Any, model: str) -> Usage:
@@ -139,28 +148,22 @@ class LiteLLMAdapter:
     def __init__(
         self,
         *,
-        model_fast: str,
-        model_reasoning: str,
+        model: str,
         api_key: str = "",
         api_base: str | None = None,
         timeout: float = 120.0,
         max_schema_retries: int = 2,
         max_concurrency: int = 4,
-        reasoning_effort: str = "",
         headers: dict[str, str] | None = None,
         body: dict[str, Any] | None = None,
         native_schema: bool | None = None,
     ) -> None:
-        self._models = {
-            ModelProfile.FAST: model_fast,
-            ModelProfile.REASONING: model_reasoning,
-        }
+        self._model = model
         self._api_key = api_key
         self._api_base = api_base
         self._headers = dict(headers or {})
         self._body = dict(body or {})
         self._native_schema = native_schema
-        self._reasoning_effort = reasoning_effort
         self._timeout = timeout
         self._max_retries = max_schema_retries
         self._semaphore = asyncio.Semaphore(max_concurrency)
@@ -175,10 +178,9 @@ class LiteLLMAdapter:
         prompt: Prompt,
         *,
         schema: type[SchemaT],
-        profile: ModelProfile = ModelProfile.FAST,
         temperature: float = 0.0,
     ) -> SchemaT:
-        model = self._models[profile]
+        model = self._model
         native = self._supports_native_schema(model)
 
         messages = self._build_messages(prompt, schema=schema, native=native)
@@ -189,7 +191,6 @@ class LiteLLMAdapter:
         record: dict[str, Any] = {
             "call": call_id,
             "model": model,
-            "profile": profile.value,
             "schema": schema.__name__,
             "native_schema": native,
             "system": prompt.system,
@@ -200,26 +201,40 @@ class LiteLLMAdapter:
         began = time.monotonic()
         for attempt in range(self._max_retries + 1):
             started = time.monotonic()
-            raw, usage = await self._call(
-                model,
-                messages,
-                schema=schema if native else None,
-                temperature=temperature,
-                profile=profile,
-            )
+            attempt_log: dict[str, Any] = {"n": attempt + 1}
+            record["attempts"].append(attempt_log)
+            try:
+                raw, usage = await self._call(
+                    model,
+                    messages,
+                    schema=schema if native else None,
+                    temperature=temperature,
+                    attempt_log=attempt_log,
+                )
+            except Exception as exc:
+                elapsed_ms = round((time.monotonic() - started) * 1000)
+                error = f"{type(exc).__name__}: {exc}"
+                attempt_log.update(ms=elapsed_ms, transport_error=error)
+                record["ok"] = False
+                record["ms"] = round((time.monotonic() - began) * 1000)
+                record["final_error"] = error
+                log_llm_call(record)
+                if _looks_like_timeout(exc):
+                    raise ModelRequestError(
+                        f"LLM 응답 제한시간 {self._timeout:g}초를 초과했습니다"
+                    ) from exc
+                raise ModelRequestError(f"LLM 요청 실패: {error}") from exc
             # Waiting for the semaphore counts: on a shared endpoint the queue is most
             # of the wall clock, and a duration that excluded it would say every call
             # was fast while the run took an hour.
             elapsed_ms = round((time.monotonic() - started) * 1000)
             self._usage.append(usage.model_copy(update={"retries": attempt}))
-            attempt_log: dict[str, Any] = {
-                "n": attempt + 1,
-                "ms": elapsed_ms,
-                "raw": raw,
-                "in_tokens": usage.input_tokens,
-                "out_tokens": usage.output_tokens,
-            }
-            record["attempts"].append(attempt_log)
+            attempt_log.update(
+                ms=elapsed_ms,
+                raw=raw,
+                in_tokens=usage.input_tokens,
+                out_tokens=usage.output_tokens,
+            )
 
             try:
                 result = schema.model_validate(_parse_json(raw))
@@ -260,7 +275,7 @@ class LiteLLMAdapter:
             f"Last error: {last_error}\n"
             f"Last reply: {last_raw[:500]}\n"
             f"If this model is small, either raise BISMUTH_LLM_MAX_SCHEMA_RETRIES or "
-            f"point the profile at a larger model."
+            f"choose a more capable model."
         )
 
     def _next_call_id(self) -> str:
@@ -315,18 +330,20 @@ class LiteLLMAdapter:
         *,
         schema: type[BaseModel] | None,
         temperature: float,
-        profile: ModelProfile = ModelProfile.FAST,
+        attempt_log: dict[str, Any],
     ) -> tuple[str, Usage]:
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
             "timeout": self._timeout,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            # OpenAI-compatible clients otherwise retry a timed-out local request twice.
+            # The server may keep generating the abandoned requests, turning one
+            # 120-second timeout into a six-minute queue that looks like a dead batch.
+            "max_retries": 0,
         }
-        if self._reasoning_effort and profile is ModelProfile.REASONING:
-            # Only the profile it names, so turning thinking down is one variable and not
-            # also a change to cataloguing. drop_params discards it where unsupported.
-            kwargs["reasoning_effort"] = self._reasoning_effort
         if self._api_key:
             # Explicit every call, so a stale key in os.environ can't silently
             # override the one configured in .env.
@@ -341,15 +358,98 @@ class LiteLLMAdapter:
         if schema is not None:
             kwargs["response_format"] = schema
 
-        async with self._semaphore:
-            response = await _load_litellm().acompletion(**kwargs)
+        stream_log: dict[str, Any] = {
+            "chunks": [],
+            "content": "",
+            "reasoning_content": "",
+            "finish_reason": None,
+            "completed": False,
+        }
+        attempt_log["stream"] = stream_log
+        chunks: list[Any] = []
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        began = time.monotonic()
+        previous = began
 
-        content = response.choices[0].message.content or ""
-        return content, self._usage_of(response, model)
+        # The provider timeout is intentionally an inactivity timeout. Every received
+        # chunk resets the read deadline; a model that is still producing is not hung.
+        # Continuous output therefore ends only when the provider finishes or a separate
+        # request-level output limit is configured; the timer does not pretend it is idle.
+        async with self._semaphore:
+            response_stream = await _load_litellm().acompletion(**kwargs)
+            try:
+                async for chunk in response_stream:
+                    now = time.monotonic()
+                    chunks.append(chunk)
+                    choice = _first_choice(chunk)
+                    delta = _field(choice, "delta")
+                    content = _text_field(delta, "content")
+                    reasoning = _text_field(delta, "reasoning_content") or _text_field(
+                        delta, "reasoning"
+                    )
+                    finish_reason = _field(choice, "finish_reason")
+                    content_parts.append(content)
+                    reasoning_parts.append(reasoning)
+                    stream_log["chunks"].append(
+                        {
+                            "n": len(chunks),
+                            "ms": round((now - began) * 1000),
+                            "gap_ms": round((now - previous) * 1000),
+                            "raw": _dump_chunk(chunk),
+                        }
+                    )
+                    if finish_reason is not None:
+                        stream_log["finish_reason"] = str(finish_reason)
+                    previous = now
+            finally:
+                # Preserve the complete partial output even when reading the next chunk
+                # raises a timeout. Joining once avoids quadratic work on long streams.
+                stream_log["content"] = "".join(content_parts)
+                stream_log["reasoning_content"] = "".join(reasoning_parts)
+
+        stream_log["completed"] = True
+        complete = _load_litellm().stream_chunk_builder(chunks=chunks, messages=messages)
+        if complete is None:
+            raise RuntimeError("LLM stream ended without a response")
+        return stream_log["content"], self._usage_of(complete, model)
 
     @staticmethod
     def _usage_of(response: Any, model: str) -> Usage:
         return usage_of(response, model)
+
+
+def _looks_like_timeout(exc: Exception) -> bool:
+    names = " ".join(item.__name__ for item in exc.__class__.__mro__)
+    return "timeout" in names.casefold() or "timed out" in str(exc).casefold()
+
+
+def _field(value: Any, name: str) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _text_field(value: Any, name: str) -> str:
+    found = _field(value, name)
+    return found if isinstance(found, str) else ""
+
+
+def _first_choice(chunk: Any) -> Any:
+    choices = _field(chunk, "choices") or []
+    return choices[0] if choices else None
+
+
+def _dump_chunk(chunk: Any) -> Any:
+    """Preserve every field LiteLLM exposes for the received stream chunk."""
+    dump = getattr(chunk, "model_dump", None)
+    if dump is not None:
+        return dump(mode="json")
+    if isinstance(chunk, dict):
+        return chunk
+    return str(chunk)
 
 
 def _parse_json(raw: str) -> Any:

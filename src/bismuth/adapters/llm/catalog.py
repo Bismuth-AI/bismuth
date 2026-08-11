@@ -174,20 +174,25 @@ def _explain(exc: Exception) -> str:
     return str(exc)[:200]
 
 
-_PREFERRED_FAST = ("haiku", "nano", "mini", "flash", "8b", "7b", "small")
-_PREFERRED_REASONING = ("sonnet", "opus", "gpt-5", "gpt-4.1", "14b", "32b", "70b", "large")
+_PREFERRED_MODELS = (
+    "sonnet",
+    "gpt-5",
+    "gpt-4.1",
+    "32b",
+    "35b",
+    "14b",
+    "large",
+    "mini",
+    "flash",
+)
 
 
-def suggest_models(models: tuple[str, ...]) -> tuple[str, str]:
-    """Guess a sensible (fast, reasoning) model pair from a provider's catalogue by matching family-name substrings."""
+def suggest_model(models: tuple[str, ...]) -> str:
+    """Choose one generally capable model from a provider catalogue."""
     if not models:
-        return "", ""
-
-    def best(preferences: tuple[str, ...]) -> str:
-        for want in preferences:
-            for model in models:
-                if want in model.lower():
-                    return model
-        return models[0]
-
-    return best(_PREFERRED_FAST), best(_PREFERRED_REASONING)
+        return ""
+    for want in _PREFERRED_MODELS:
+        for model in models:
+            if want in model.lower():
+                return model
+    return models[0]

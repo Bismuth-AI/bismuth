@@ -8,11 +8,11 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from bismuth.domain.errors import StructuredOutputError
-from bismuth.ports.llm import CURRENT_DOCUMENT, ModelProfile, Prompt, Usage
+from bismuth.ports.llm import CURRENT_DOCUMENT, Prompt, Usage
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
-Handler = Callable[[Prompt, type[BaseModel], ModelProfile], BaseModel]
+Handler = Callable[[Prompt, type[BaseModel]], BaseModel]
 
 
 class FakeLLM:
@@ -28,7 +28,7 @@ class FakeLLM:
             raise ValueError("FakeLLM needs either a queue or a handler")
         self._queue = list(queue or [])
         self._handler = handler
-        self.calls: list[tuple[Prompt, type[BaseModel], ModelProfile]] = []
+        self.calls: list[tuple[Prompt, type[BaseModel]]] = []
         self._usage: list[Usage] = []
 
     async def structured(
@@ -36,13 +36,12 @@ class FakeLLM:
         prompt: Prompt,
         *,
         schema: type[SchemaT],
-        profile: ModelProfile = ModelProfile.FAST,
         temperature: float = 0.0,
     ) -> SchemaT:
-        self.calls.append((prompt, schema, profile))
+        self.calls.append((prompt, schema))
         self._usage.append(
             Usage(
-                model=f"fake/{profile.value}",
+                model="fake/model",
                 document_id=CURRENT_DOCUMENT.get(""),
                 input_tokens=0,
                 output_tokens=0,
@@ -50,7 +49,7 @@ class FakeLLM:
         )
 
         if self._handler is not None:
-            response = self._handler(prompt, schema, profile)
+            response = self._handler(prompt, schema)
         elif self._queue:
             response = self._queue.pop(0)
         else:
@@ -77,4 +76,4 @@ class FakeLLM:
 
     def prompts_for(self, schema: type[BaseModel]) -> list[Prompt]:
         """Every prompt sent while asking for ``schema``, so a test can assert on what the service told the model."""
-        return [p for p, s, _ in self.calls if s is schema]
+        return [p for p, s in self.calls if s is schema]
