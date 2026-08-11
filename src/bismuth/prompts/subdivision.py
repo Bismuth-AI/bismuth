@@ -21,8 +21,8 @@ and it is the only question that may redraw a boundary.
 There is no free-form reasoning metadata in these schemas. Emerging writes its concrete
 candidate before its verdict so constrained decoding does not commit before identifying
 what allegedly emerged. Review returns only checks that directly decide whether the
-boundary holds. A complete replacement plan is requested in a second call only after one
-of those checks fails.
+boundary holds. After a failed review, membership-free replacement signs are designed
+first and request-local document handles are assigned in separate bounded packets.
 """
 
 from __future__ import annotations
@@ -142,19 +142,6 @@ the application derives whether the boundary holds from all of them. If no curre
 question was recorded, `one_axis` is false because the sibling contract is incomplete.\
 """
 
-_REPLACEMENT_SYSTEM = f"""\
-The existing boundary has failed an independent structural review. Propose a COMPLETE \
-replacement using every listed document exactly once. A group name may exactly reuse an \
-existing direct sub-folder or name a new one. Anything not named is retired.
-
-{_SIGNS}
-
-The replacement axis names ONE property, its question asks only that property, and every \
-group name directly answers the question. Never compare candidate axes. Return only the \
-structured plan: do not narrate analysis, enumerate documents outside `document_ids`, or \
-recount memberships. The application validates completeness mechanically.\
-"""
-
 _LISTING = """\
 FOLDER: {path}
 {purpose}
@@ -205,13 +192,6 @@ class Emerging(BaseModel):
         ),
     )
     name: str = Field(default="", description="Folder name for that class, one level. Not a path.")
-    note: str = Field(
-        default="",
-        description=(
-            "One short line positively describing only what belongs here. Do not discuss "
-            "candidate axes, excluded documents, leftovers, or the classification process."
-        ),
-    )
     emerged: bool = Field(description="False when the concrete candidate is not worth a shelf.")
 
     @field_validator("axis")
@@ -324,16 +304,19 @@ class Replacement(BaseModel):
 class ReplacementSign(BaseModel):
     """One sign in a context-bounded replacement sketch; membership comes later."""
 
-    name: str = Field(description="Folder name, one level. Not a path.")
-    note: str = Field(description="One short positive routing sign for this class.")
+    name: str = Field(max_length=120, description="Folder name, one level. Not a path.")
 
 
 class ReplacementSketch(BaseModel):
     """A boundary design with no document IDs, safe to reduce across evidence packets."""
 
-    basis: str = Field(description="The name of the one property used by every sign.")
-    basis_question: str = Field(description="One question every sign name directly answers.")
-    signs: list[ReplacementSign] = Field(min_length=2)
+    basis: str = Field(
+        max_length=120, description="The name of the one property used by every sign."
+    )
+    basis_question: str = Field(
+        max_length=240, description="One question every sign name directly answers."
+    )
+    signs: list[ReplacementSign] = Field(min_length=2, max_length=12)
 
     @field_validator("basis")
     @classmethod
@@ -383,12 +366,6 @@ class BoundaryAudit(BaseModel):
     useful_for_navigation: bool = Field(
         description="The signs materially narrow the search instead of restating the documents."
     )
-    notes_are_routing_signs: bool = Field(
-        description=(
-            "Every note positively describes only what belongs behind its sign, without "
-            "axis comparison, process narration, leftovers, or excluded documents."
-        )
-    )
 
     @property
     def accepted(self) -> bool:
@@ -398,7 +375,6 @@ class BoundaryAudit(BaseModel):
                 self.names_answer_question,
                 self.mutually_exclusive,
                 self.useful_for_navigation,
-                self.notes_are_routing_signs,
             )
         )
 
@@ -508,7 +484,7 @@ def build_emerging_reduce(
     """Choose one class from candidates discovered in isolated document packets."""
     rendered = "\n".join(
         f"  - axis={candidate.axis or axis} | question={candidate.axis_question} | "
-        f"name={candidate.name} | sign={candidate.note}"
+        f"name={candidate.name}"
         for candidate in candidates
         if candidate.emerged
     )
@@ -559,33 +535,6 @@ def build_review(
     )
 
 
-def build_replacement(
-    *,
-    path: str,
-    purpose: str,
-    basis: str,
-    basis_question: str,
-    before: int,
-    count: int,
-    documents: list[tuple[str, str]],
-    children: list[tuple[str, str]],
-) -> Prompt:
-    """Ask for a complete plan only after the current boundary fails."""
-    return Prompt(
-        system=_REPLACEMENT_SYSTEM,
-        user=_review_listing(
-            path=path,
-            purpose=purpose,
-            basis=basis,
-            basis_question=basis_question,
-            before=before,
-            count=count,
-            documents=documents,
-            children=children,
-        ),
-    )
-
-
 def build_replacement_sketch(
     *,
     path: str,
@@ -619,7 +568,7 @@ def build_replacement_reduce(*, path: str, sketches: list[ReplacementSketch]) ->
     """Reduce several isolated packet sketches into one coherent boundary design."""
     rendered = "\n\n".join(
         f"CANDIDATE {index}:\n  AXIS: {sketch.basis}\n  QUESTION: {sketch.basis_question}\n"
-        + "\n".join(f"  - {sign.name}/ — {sign.note}" for sign in sketch.signs)
+        + "\n".join(f"  - {sign.name}/" for sign in sketch.signs)
         for index, sketch in enumerate(sketches, start=1)
     )
     return Prompt(
@@ -627,8 +576,8 @@ def build_replacement_reduce(*, path: str, sketches: list[ReplacementSketch]) ->
             "Consolidate candidate library boundaries produced from separate evidence packets. "
             "Return one boundary on one property whose signs can cover the classes evidenced "
             "across all candidates. Resolve synonyms and competing axes; do not mix axes or add "
-            "a remainder class. Use the archive's own language. Notes are short positive routing "
-            "rules. Return no document IDs and no explanation."
+            "a remainder class. Use the archive's own language. Return no document IDs and "
+            "no explanation."
         ),
         user=f"FOLDER: {path or '(root)'}\n\nPACKET CANDIDATES:\n{rendered}",
     )
@@ -642,8 +591,7 @@ def build_replacement_assignments(
 ) -> Prompt:
     """Assign one bounded packet completely after the global signs are fixed."""
     signs = "\n".join(
-        f"  [G{index:03d}] {sign.name}/ — {sign.note}"
-        for index, sign in enumerate(sketch.signs, start=1)
+        f"  [G{index:03d}] {sign.name}/" for index, sign in enumerate(sketch.signs, start=1)
     )
     return Prompt(
         system=(
@@ -656,6 +604,67 @@ def build_replacement_assignments(
             f"FOLDER: {path or '(root)'}\nAXIS: {sketch.basis}\n"
             f"QUESTION: {sketch.basis_question}\nSIGNS:\n{signs}\n\n"
             f"DOCUMENT PACKET ({len(documents)}):\n{_render_documents(documents)}"
+        ),
+    )
+
+
+def build_existing_choice(
+    *,
+    path: str,
+    document: tuple[str, str],
+    axis: str,
+    axis_question: str,
+    children: list[tuple[str, str]],
+) -> Prompt:
+    """Route one loose document with a closed, non-JSON decision."""
+    signs = "\n".join(
+        f"  [F{index:03d}] {name}/" for index, (name, _) in enumerate(children, start=1)
+    )
+    return Prompt(
+        system=(
+            "Route this one loose document only when an existing sign positively describes it. "
+            "Reply with exactly one shown F### handle or STAY. STAY is normal when no sign is a "
+            "clear fit. Do not explain, rename, or create a sign."
+        ),
+        user=(
+            f"FOLDER: {path or '(root)'}\nAXIS: {axis}\nQUESTION: {axis_question}\n"
+            f"SIGNS:\n{signs}\n\nDOCUMENT:\n  [{document[0]}] {document[1]}"
+        ),
+    )
+
+
+def build_member_choice(*, path: str, purpose: str, document: tuple[str, str], name: str) -> Prompt:
+    """Decide membership in one new class without echoing a document ID."""
+    return Prompt(
+        system=(
+            "A new library class has been named. Decide whether this one document genuinely "
+            "belongs behind that sign. Reply with exactly SHELF or STAY. Do not explain. STAY "
+            "means the document remains safely in its current folder."
+        ),
+        user=(
+            f"FOLDER: {path or '(root)'}\nPURPOSE: {purpose or '(none)'}\n"
+            f"NEW SIGN: {name}/\n\nDOCUMENT:\n  [{document[0]}] {document[1]}"
+        ),
+    )
+
+
+def build_replacement_choice(
+    *, path: str, document: tuple[str, str], sketch: ReplacementSketch
+) -> Prompt:
+    """Assign one document to one fixed replacement sign."""
+    signs = "\n".join(
+        f"  [G{index:03d}] {sign.name}/" for index, sign in enumerate(sketch.signs, start=1)
+    )
+    return Prompt(
+        system=(
+            "A complete replacement boundary has already been fixed. Assign this one document "
+            "to exactly one shown sign. Reply with exactly one G### handle. Do not explain, "
+            "rename, or create a sign."
+        ),
+        user=(
+            f"FOLDER: {path or '(root)'}\nAXIS: {sketch.basis}\n"
+            f"QUESTION: {sketch.basis_question}\nSIGNS:\n{signs}\n\n"
+            f"DOCUMENT:\n  [{document[0]}] {document[1]}"
         ),
     )
 
@@ -685,9 +694,8 @@ def build_boundary_audit(
             "taxonomy. The axis must name one property, its question must ask only that "
             "property, and every sibling name must be an answer to that question. Reject "
             "candidate comparisons, mixed axes, overlapping siblings, document-title shelves, "
-            "and distinctions that do not help a reader rule alternatives out. A note is a "
-            "short positive routing sign for its own members, never an analysis of candidate "
-            "axes or a description of excluded or leftover documents."
+            "and distinctions that do not help a reader rule alternatives out. Folder notes "
+            "are derived by the application and are not part of this judgement."
         ),
         user=(
             f"FOLDER: {path or '(root)'}\nMODE: {mode}\nAXIS: {axis}\n"

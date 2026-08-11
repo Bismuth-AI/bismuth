@@ -20,6 +20,7 @@ SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 _litellm: Any = None
+_owned_aiohttp_sessions: dict[int, Any] = {}
 
 
 def _load_litellm() -> Any:
@@ -46,11 +47,38 @@ def preload() -> None:
 
 async def close_clients() -> None:
     """Close LiteLLM's shared async transports during application shutdown."""
+    sessions = list(_owned_aiohttp_sessions.values())
+    _owned_aiohttp_sessions.clear()
+    for session in sessions:
+        if not getattr(session, "closed", True):
+            await session.close()
     if _litellm is None:
         return
     close = getattr(_litellm, "close_litellm_async_clients", None)
     if close is not None:
         await close()
+
+
+async def _shared_aiohttp_session() -> Any | None:
+    """Own one explicit aiohttp session per event loop for real LiteLLM calls.
+
+    LiteLLM otherwise creates an implicit session on some OpenAI-compatible streaming
+    paths.  Exception/fallback paths can let that object be collected before its cache
+    cleanup runs, producing ``Unclosed client session`` during a live batch.  Tests and
+    embedders that replace LiteLLM with a stub do not need or receive this transport.
+    """
+    client = _load_litellm()
+    if getattr(client, "__name__", "") != "litellm":
+        return None
+    loop = asyncio.get_running_loop()
+    key = id(loop)
+    session = _owned_aiohttp_sessions.get(key)
+    if session is None or getattr(session, "closed", False):
+        from aiohttp import ClientSession
+
+        session = ClientSession()
+        _owned_aiohttp_sessions[key] = session
+    return session
 
 
 def usage_of(response: Any, model: str) -> Usage:
@@ -156,18 +184,20 @@ _SCHEMA_MAX_TOKENS: dict[str, int] = {
     "ReplacementAudit": 256,
     "RoutingAudit": 256,
     "Review": 256,
-    "ExistingAssignments": 256,
+    "ExistingAssignments": 1024,
     "DensifiedSummary": 512,
     "Members": 512,
-    "ReplacementSketch": 512,
-    "Replacement": 768,
+    "ReplacementSketch": 2048,
+    "Replacement": 4096,
     "ReplacementAssignments": 1024,
     "CardDraft": 2048,
     "CardUpdate": 2048,
     "Emerging": 4096,
 }
 _DEFAULT_SCHEMA_MAX_TOKENS = 2048
+_MAX_SCHEMA_MAX_TOKENS = 8192
 _REPAIR_RAW_CHARS = 2000
+_STALLED_WHITESPACE_CHARS = 512
 
 
 class _RepetitionDetectedError(RuntimeError):
@@ -230,6 +260,7 @@ class LiteLLMAdapter:
         messages = self._build_messages(prompt, schema=schema, native=native)
         last_error = ""
         last_raw = ""
+        output_cap = _schema_output_cap(schema)
 
         call_id = self._next_call_id()
         record: dict[str, Any] = {
@@ -253,7 +284,7 @@ class LiteLLMAdapter:
                     messages,
                     schema=schema if native else None,
                     temperature=temperature,
-                    max_tokens=_schema_output_cap(schema),
+                    max_tokens=output_cap,
                     attempt_log=attempt_log,
                 )
             except _RepetitionDetectedError as exc:
@@ -271,15 +302,12 @@ class LiteLLMAdapter:
                 )
                 if attempt == self._max_retries:
                     break
-                messages = [
-                    *self._build_messages(prompt, schema=schema, native=native),
-                    {
-                        "role": "user",
-                        "content": _REPAIR_INSTRUCTION.format(
-                            raw=raw[:_REPAIR_RAW_CHARS], error=last_error[:1500]
-                        ),
-                    },
-                ]
+                # A native constrained decoder can itself be the source of a loop: JSON
+                # whitespace remains legal forever when it cannot choose the next field.
+                # Retry from the original task, without poisoned partial output, using
+                # prompt-embedded JSON instead of the same decoder path.
+                native = False
+                messages = self._build_messages(prompt, schema=schema, native=False)
                 continue
             except Exception as exc:
                 elapsed_ms = round((time.monotonic() - started) * 1000)
@@ -311,6 +339,29 @@ class LiteLLMAdapter:
                 in_tokens=usage.input_tokens,
                 out_tokens=usage.output_tokens,
             )
+
+            if attempt_log["stream"].get("finish_reason") == "length":
+                last_raw = raw
+                effective_cap = int(attempt_log.get("max_tokens", output_cap))
+                last_error = f"output reached the {effective_cap}-token generation limit"
+                attempt_log["error"] = last_error
+                logger.warning(
+                    "%s output reached %d tokens on attempt %d/%d",
+                    schema.__name__,
+                    effective_cap,
+                    attempt + 1,
+                    self._max_retries + 1,
+                )
+                if effective_cap < output_cap:
+                    # A user-configured API body deliberately imposed the lower cap;
+                    # retrying cannot raise it and would reproduce the same truncation.
+                    break
+                next_cap = min(max(output_cap, effective_cap) * 2, _MAX_SCHEMA_MAX_TOKENS)
+                if attempt == self._max_retries or next_cap <= effective_cap:
+                    break
+                output_cap = next_cap
+                messages = self._build_messages(prompt, schema=schema, native=native)
+                continue
 
             try:
                 result = schema.model_validate(_parse_json(raw))
@@ -352,8 +403,7 @@ class LiteLLMAdapter:
             f"{self._max_retries + 1} attempts.\n"
             f"Last error: {last_error}\n"
             f"Last reply: {last_raw[:500]}\n"
-            f"If this model is small, either raise BISMUTH_LLM_MAX_SCHEMA_RETRIES or "
-            f"choose a more capable model."
+            "Inspect finish_reason and the preserved stream before changing retry counts."
         )
 
     async def choose(
@@ -556,6 +606,7 @@ class LiteLLMAdapter:
             if isinstance(value, int) and value > 0
         ]
         kwargs["max_tokens"] = min([max_tokens, *configured_limits])
+        attempt_log["max_tokens"] = kwargs["max_tokens"]
         if schema is not None:
             kwargs["response_format"] = schema
 
@@ -579,10 +630,13 @@ class LiteLLMAdapter:
             absolute = asyncio.timeout(self._absolute_timeout)
             try:
                 async with absolute:
+                    if shared_session := await _shared_aiohttp_session():
+                        kwargs["shared_session"] = shared_session
                     response_stream = await _load_litellm().acompletion(**kwargs)
                     iterator: AsyncIterator[Any] = response_stream.__aiter__()
                     repeat_tail = ""
                     generated_chars = 0
+                    whitespace_tail_chars = 0
                     while True:
                         try:
                             chunk = await asyncio.wait_for(
@@ -617,6 +671,18 @@ class LiteLLMAdapter:
                             stream_log["finish_reason"] = str(finish_reason)
                         previous = now
                         generated_chars += len(content)
+                        if content:
+                            if content.strip():
+                                whitespace_tail_chars = len(content) - len(content.rstrip())
+                            else:
+                                whitespace_tail_chars += len(content)
+                        if whitespace_tail_chars >= _STALLED_WHITESPACE_CHARS:
+                            stream_log["abort"] = {
+                                "kind": "repetition",
+                                "pattern": "<whitespace>",
+                                "after_chars": generated_chars,
+                            }
+                            raise _RepetitionDetectedError("<whitespace>")
                         repeat_tail = (repeat_tail + content)[-240:]
                         if generated_chars >= 24:
                             pattern = _repeated_suffix(repeat_tail)
@@ -636,6 +702,15 @@ class LiteLLMAdapter:
                     raise _AbsoluteTimeoutError(
                         f"generation exceeded {self._absolute_timeout:g} seconds"
                     ) from exc
+                raise
+            except Exception as exc:
+                if _looks_like_repetition(exc):
+                    stream_log["abort"] = {
+                        "kind": "repetition",
+                        "pattern": "<provider repeated stream chunk>",
+                        "after_chars": generated_chars,
+                    }
+                    raise _RepetitionDetectedError("<provider repeated stream chunk>") from exc
                 raise
             finally:
                 # Preserve the complete partial output even when reading the next chunk
@@ -659,6 +734,19 @@ class LiteLLMAdapter:
 def _looks_like_timeout(exc: Exception) -> bool:
     names = " ".join(item.__name__ for item in exc.__class__.__mro__)
     return "timeout" in names.casefold() or "timed out" in str(exc).casefold()
+
+
+def _looks_like_repetition(exc: Exception) -> bool:
+    """Recognise provider/LiteLLM repetition errors through wrapper exceptions."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        message = f"{type(current).__name__}: {current}".casefold()
+        if "repeating the same chunk" in message or "repeated stream chunk" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _schema_output_cap(schema: type[BaseModel]) -> int:
