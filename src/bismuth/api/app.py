@@ -287,6 +287,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                 name = Path(upload_file.filename or "untitled").name
                 rel = engine.ingest.stage(data, name)
                 results.append(await _process(engine, rel))
+            await _maintain(engine)
         return results
 
     async def run_batch(batch_id: str, staged: list[PurePosixPath], engine: Bismuth) -> None:
@@ -321,6 +322,10 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                         batch.duplicate += 1
                     elif not result.placed:
                         batch.inbox += 1
+                batch.current = ""
+                batch.current_stage = "maintenance"
+                batch.current_label = "Reviewing the completed library structure"
+                await _maintain(engine)
             batch.status = "done"
         except asyncio.CancelledError:
             batch.status = "interrupted"
@@ -386,7 +391,9 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
     async def scan(engine: Engine) -> list[IngestOut]:
         """Read whatever is sitting unprocessed in the inbox, including hand-dropped files."""
         async with app.state.ingest_lock:
-            return [await _process(engine, rel) for rel in engine.ingest.pending_inbox()]
+            results = [await _process(engine, rel) for rel in engine.ingest.pending_inbox()]
+            await _maintain(engine)
+            return results
 
     @app.get("/api/progress")
     async def progress_stream() -> StreamingResponse:
@@ -412,6 +419,20 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             publish(Progress(stage=Stage.FAILED, filename=rel.name, note=str(exc)))
             return IngestOut(filename=rel.name, ok=False, reason=str(exc), spend=_drain(engine))
         return _result_of(result, spend=_drain(engine))
+
+    async def _maintain(engine: Bismuth) -> None:
+        """Run autonomous maintenance once per completed arrival set.
+
+        Filing is already durable.  Planning or validation failure therefore leaves the
+        safely ingested documents where they are and must not convert them into upload
+        failures.
+        """
+        try:
+            await engine.agent.reorganize()
+        except Exception:
+            logger.exception("autonomous library maintenance failed; preserving current tree")
+        finally:
+            _drain(engine)
 
     def _drain(engine: Bismuth) -> Spend:
         """Collect and reset what the models have spent. Documents are processed one at a
@@ -476,11 +497,12 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             if body.folder
             else DEFAULT_ORGANIZE_INSTRUCTION
         )
-        proposal = await engine.agent.propose_reorg(instruction)
+        proposal = await engine.agent.propose_reorg(instruction, scope=body.folder)
         return {
             "summary": proposal.summary,
             "moves": [{"paths": m.paths, "target": m.target} for m in proposal.moves],
             "renames": [{"folder": r.folder, "new_name": r.new_name} for r in proposal.renames],
+            "problems": proposal.problems,
         }
 
     @app.post("/api/organize/apply")

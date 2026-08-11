@@ -41,7 +41,7 @@ async def test_agent_reads_a_document(engine: Bismuth) -> None:
 
 def test_read_tools_are_all_read_only(engine: Bismuth) -> None:
     tools = build_read_tools(engine.vault, engine.charters)
-    assert {t.name for t in tools} == {"ls", "tree", "read", "grep", "read_note"}
+    assert {t.name for t in tools} == {"ls", "tree", "inventory", "read", "grep", "read_note"}
     assert all(getattr(t, "read_only", False) for t in tools)
 
 
