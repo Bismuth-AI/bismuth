@@ -1,6 +1,6 @@
 # 0004 — Route by profile, not by model name
 
-**Status:** accepted
+**Status:** superseded by [0012](0012-one-model.md)
 
 ## Context
 

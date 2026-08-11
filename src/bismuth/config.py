@@ -10,15 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     JsonConfigSettingsSource,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
-
-from bismuth.ports.llm import ModelProfile
 
 CONFIG_DIR = Path.home() / ".bismuth"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -126,20 +124,7 @@ class Settings(BaseSettings):
             "the schema in the prompt. Detected against the endpoint at setup instead."
         ),
     )
-    model_fast: str = Field(default="", description="High-volume work. Bare model name.")
-    model_reasoning: str = Field(
-        default="", description="Decisions worth paying for. Bare model name."
-    )
-
-    reasoning_effort: str = Field(
-        default="",
-        description=(
-            "How hard the REASONING profile thinks, when the provider takes it "
-            "(OpenAI: minimal/low/medium/high). Empty leaves the provider's default. "
-            "Applies to that profile only, so it can be varied without also changing "
-            "cataloguing."
-        ),
-    )
+    model: str = Field(default="", description="The model used for every LLM task.")
 
     llm_timeout_seconds: float = 120.0
     llm_max_schema_retries: int = Field(default=2, ge=0)
@@ -184,6 +169,20 @@ class Settings(BaseSettings):
     def _expand(cls, value: Path) -> Path:
         return value.expanduser().resolve()
 
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_model_pair(cls, value: Any) -> Any:
+        """Read old two-model config files once; the next save writes one model.
+
+        The former judgement model is preferred because it was the capability ceiling
+        users selected for placement and maintenance. Explicit new ``model`` always wins.
+        """
+        if not isinstance(value, dict) or value.get("model"):
+            return value
+        migrated = dict(value)
+        migrated["model"] = value.get("model_reasoning") or value.get("model_fast") or ""
+        return migrated
+
     @property
     def provider(self) -> Provider | None:
         return provider(self.provider_id)
@@ -192,15 +191,15 @@ class Settings(BaseSettings):
     def is_configured(self) -> bool:
         """Whether Bismuth can call a model. Gates the setup wizard, nothing else."""
         chosen = self.provider
-        if chosen is None or not self.model_fast or not self.model_reasoning:
+        if chosen is None or not self.model:
             return False
         if chosen.needs_key and not self.api_key:
             return False
         return not (chosen.needs_api_base and not self.api_base)
 
-    def model_for(self, profile: ModelProfile) -> str:
-        """Resolve a profile to the string LiteLLM wants. The only place this mapping exists."""
-        bare = self.model_fast if profile is ModelProfile.FAST else self.model_reasoning
+    def model_for(self) -> str:
+        """Resolve the selected bare model name to the string LiteLLM wants."""
+        bare = self.model
         chosen = self.provider
         if chosen is None or "/" in bare:
             return bare
@@ -247,8 +246,7 @@ def save_user_config(settings: Settings) -> Path:
         "api_headers": settings.api_headers,
         "api_body": settings.api_body,
         "native_schema": settings.native_schema,
-        "model_fast": settings.model_fast,
-        "model_reasoning": settings.model_reasoning,
+        "model": settings.model,
     }
 
     # Temp file + chmod before write: no half-written config, key never world-readable.

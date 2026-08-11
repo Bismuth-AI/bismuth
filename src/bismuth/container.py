@@ -18,7 +18,7 @@ from bismuth.config import Settings
 from bismuth.ports.catalog import Catalog
 from bismuth.ports.journal import JournalStore
 from bismuth.ports.ledger import SpendLedger
-from bismuth.ports.llm import LLM, ModelProfile
+from bismuth.ports.llm import LLM
 from bismuth.ports.parser import ParserRegistry
 from bismuth.ports.vault import STATE_DIR, Vault
 from bismuth.services.agent import AgentService
@@ -28,7 +28,7 @@ from bismuth.services.deletion import DeletionService
 from bismuth.services.ingest import IngestService
 from bismuth.services.move import MoveService
 from bismuth.services.placement import PlacementService
-from bismuth.services.subdivision import SubdivisionService
+from bismuth.services.subdivision import LibraryMaintenanceService
 from bismuth.services.transactor import Transactor
 
 
@@ -51,7 +51,10 @@ class Bismuth:
     cards: CardService
     charters: CharterService
     placement: PlacementService
-    subdivision: SubdivisionService
+    maintenance: LibraryMaintenanceService
+    """The librarian that may change the classification tree after filing."""
+    subdivision: LibraryMaintenanceService
+    """Compatibility name for :attr:`maintenance`."""
     ingest: IngestService
     deletion: DeletionService
     move: MoveService
@@ -75,20 +78,18 @@ def build(
     parsers = build_registry()
 
     model: LLM = llm or LiteLLMAdapter(
-        model_fast=settings.model_for(ModelProfile.FAST),
-        model_reasoning=settings.model_for(ModelProfile.REASONING),
+        model=settings.model_for(),
         api_key=settings.api_key,
         api_base=settings.api_base,
         timeout=settings.llm_timeout_seconds,
         max_schema_retries=settings.llm_max_schema_retries,
         max_concurrency=settings.llm_max_concurrency,
-        reasoning_effort=settings.reasoning_effort,
         headers=settings.api_headers,
         body=settings.api_body,
         native_schema=settings.native_schema,
     )
     chat: ChatModel = chat_model or LiteLLMChatModel(
-        model=settings.model_for(ModelProfile.REASONING),
+        model=settings.model_for(),
         api_key=settings.api_key,
         api_base=settings.api_base,
         timeout=settings.llm_timeout_seconds,
@@ -106,7 +107,7 @@ def build(
     charters = CharterService(vault, model, catalog)
     placement = PlacementService(model)
     move = MoveService(vault=vault, transactor=transactor, charters=charters)
-    subdivision = SubdivisionService(
+    maintenance = LibraryMaintenanceService(
         vault=vault, catalog=catalog, charters=charters, transactor=transactor, llm=model
     )
 
@@ -123,7 +124,8 @@ def build(
         cards=cards,
         charters=charters,
         placement=placement,
-        subdivision=subdivision,
+        maintenance=maintenance,
+        subdivision=maintenance,
         ingest=IngestService(
             vault=vault,
             catalog=catalog,
@@ -132,7 +134,7 @@ def build(
             placement=placement,
             charters=charters,
             transactor=transactor,
-            subdivision=subdivision,
+            subdivision=maintenance,
             extraction_max_chars=settings.extraction_max_chars,
         ),
         deletion=DeletionService(

@@ -1,10 +1,9 @@
-"""The model boundary: services request a profile, not a model, and every call is structured."""
+"""The model boundary: services send structured tasks to one configured model."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from contextvars import ContextVar
-from enum import StrEnum
 from typing import Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,18 +18,6 @@ drain-before/drain-after bracket attributes whatever finished in the window rath
 whatever belongs to the document. A context variable rides with the task instead, so the
 attribution stays right however the caller schedules the work.
 """
-
-
-class ModelProfile(StrEnum):
-    """What a call is worth, expressed as intent rather than as a model name."""
-
-    FAST = "fast"
-    """Runs once per document: reading it and cataloguing what it is. Cheap and
-    frequent; the budget lives or dies here."""
-
-    REASONING = "reasoning"
-    """The decisions worth paying for: placing a document into the tree, and
-    drafting a folder's note. Fewer calls than FAST, higher stakes each."""
 
 
 class Prompt(BaseModel):
@@ -66,7 +53,7 @@ class Usage(BaseModel):
     retries: int = Field(
         default=0,
         description=(
-            "Schema-repair attempts. Persistently non-zero for a profile means the "
+            "Schema-repair attempts. Persistently non-zero means the "
             "model behind it is too small for the task -- a diagnostic worth "
             "surfacing rather than swallowing."
         ),
@@ -136,7 +123,6 @@ class LLM(Protocol):
         prompt: Prompt,
         *,
         schema: type[SchemaT],
-        profile: ModelProfile = ModelProfile.FAST,
         temperature: float = 0.0,
     ) -> SchemaT:
         """Return a validated instance of ``schema``, retrying with the validation error on failure.
