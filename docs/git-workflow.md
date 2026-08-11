@@ -47,9 +47,9 @@ naming the layer or module the change lands in:
 ```
 feat(placement): place from the first file, with no fixed axes
 
-The first document creates the first folder; every one after it is placed
-against the structure built so far. Below the confidence threshold Bismuth
-declines and the document waits in _inbox rather than being guessed at.
+Each document is placed against the structure built so far. Placement accepts
+only one offered opaque handle, STAY, or UNREADABLE; an invalid choice leaves
+the document in _inbox rather than being guessed at.
 See ADR-0007.
 ```
 
