@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -141,6 +142,47 @@ Reply again with the corrected JSON object only. Fix exactly what the validator 
 objected to and change nothing else.
 """
 
+_CHOICE_RETRY_SYSTEM = """\
+Return exactly one allowed literal and nothing else. Do not use JSON, quotes, prose,
+markdown, or an answer wrapper.
+"""
+
+# Initial operational caps measured against real successful calls. They are safety
+# ceilings, not a substitute for schema validation. Unknown extension schemas get the
+# conservative general cap rather than running unbounded.
+_SCHEMA_MAX_TOKENS: dict[str, int] = {
+    "CharterDraft": 256,
+    "BoundaryAudit": 256,
+    "ReplacementAudit": 256,
+    "RoutingAudit": 256,
+    "Review": 256,
+    "ExistingAssignments": 256,
+    "DensifiedSummary": 512,
+    "Members": 512,
+    "ReplacementSketch": 512,
+    "Replacement": 768,
+    "ReplacementAssignments": 1024,
+    "CardDraft": 2048,
+    "CardUpdate": 2048,
+    "Emerging": 4096,
+}
+_DEFAULT_SCHEMA_MAX_TOKENS = 2048
+_REPAIR_RAW_CHARS = 2000
+
+
+class _RepetitionDetectedError(RuntimeError):
+    def __init__(self, pattern: str) -> None:
+        super().__init__(f"repeated output pattern {pattern!r}")
+        self.pattern = pattern
+
+
+class _InactivityTimeoutError(TimeoutError):
+    pass
+
+
+class _AbsoluteTimeoutError(TimeoutError):
+    pass
+
 
 class LiteLLMAdapter:
     """Talks to whatever model the configuration points at."""
@@ -152,6 +194,7 @@ class LiteLLMAdapter:
         api_key: str = "",
         api_base: str | None = None,
         timeout: float = 120.0,
+        absolute_timeout: float = 180.0,
         max_schema_retries: int = 2,
         max_concurrency: int = 4,
         headers: dict[str, str] | None = None,
@@ -165,6 +208,7 @@ class LiteLLMAdapter:
         self._body = dict(body or {})
         self._native_schema = native_schema
         self._timeout = timeout
+        self._absolute_timeout = absolute_timeout
         self._max_retries = max_schema_retries
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._usage: list[Usage] = []
@@ -209,8 +253,34 @@ class LiteLLMAdapter:
                     messages,
                     schema=schema if native else None,
                     temperature=temperature,
+                    max_tokens=_schema_output_cap(schema),
                     attempt_log=attempt_log,
                 )
+            except _RepetitionDetectedError as exc:
+                elapsed_ms = round((time.monotonic() - started) * 1000)
+                raw = str(attempt_log.get("stream", {}).get("content", ""))
+                last_raw = raw
+                last_error = str(exc)
+                attempt_log.update(ms=elapsed_ms, raw=raw, error=last_error)
+                logger.warning(
+                    "stopped repeated %s output on attempt %d/%d: %s",
+                    schema.__name__,
+                    attempt + 1,
+                    self._max_retries + 1,
+                    exc,
+                )
+                if attempt == self._max_retries:
+                    break
+                messages = [
+                    *self._build_messages(prompt, schema=schema, native=native),
+                    {
+                        "role": "user",
+                        "content": _REPAIR_INSTRUCTION.format(
+                            raw=raw[:_REPAIR_RAW_CHARS], error=last_error[:1500]
+                        ),
+                    },
+                ]
+                continue
             except Exception as exc:
                 elapsed_ms = round((time.monotonic() - started) * 1000)
                 error = f"{type(exc).__name__}: {exc}"
@@ -219,9 +289,15 @@ class LiteLLMAdapter:
                 record["ms"] = round((time.monotonic() - began) * 1000)
                 record["final_error"] = error
                 log_llm_call(record)
+                if isinstance(exc, _AbsoluteTimeoutError):
+                    raise ModelRequestError(
+                        f"LLM 응답 제한시간 {self._absolute_timeout:g}초를 초과했습니다 "
+                        "(absolute generation limit)"
+                    ) from exc
                 if _looks_like_timeout(exc):
                     raise ModelRequestError(
-                        f"LLM 응답 제한시간 {self._timeout:g}초를 초과했습니다"
+                        f"LLM 응답 제한시간 {self._timeout:g}초를 초과했습니다 "
+                        "(stream inactivity limit)"
                     ) from exc
                 raise ModelRequestError(f"LLM 요청 실패: {error}") from exc
             # Waiting for the semaphore counts: on a shared endpoint the queue is most
@@ -254,13 +330,15 @@ class LiteLLMAdapter:
                 )
                 if attempt == self._max_retries:
                     break
+                # Start a clean request from the original task. The full invalid reply
+                # remains in the diagnostic log, but only a bounded fragment is allowed
+                # back into model context.
                 messages = [
-                    *messages,
-                    {"role": "assistant", "content": raw},
+                    *self._build_messages(prompt, schema=schema, native=native),
                     {
                         "role": "user",
                         "content": _REPAIR_INSTRUCTION.format(
-                            raw=raw[:2000], error=last_error[:1500]
+                            raw=raw[:_REPAIR_RAW_CHARS], error=last_error[:1500]
                         ),
                     },
                 ]
@@ -276,6 +354,116 @@ class LiteLLMAdapter:
             f"Last reply: {last_raw[:500]}\n"
             f"If this model is small, either raise BISMUTH_LLM_MAX_SCHEMA_RETRIES or "
             f"choose a more capable model."
+        )
+
+    async def choose(
+        self,
+        prompt: Prompt,
+        *,
+        choices: Sequence[str],
+        max_tokens: int = 32,
+        temperature: float = 0.0,
+    ) -> str:
+        """Return one exact provider-neutral literal, retrying once without bad context."""
+        allowed = tuple(dict.fromkeys(choice.strip().upper() for choice in choices))
+        if not allowed or any(not choice for choice in allowed):
+            raise ValueError("choices must contain non-empty literals")
+        allowed_line = ", ".join(allowed)
+        base_messages = [
+            {"role": "system", "content": prompt.system},
+            {
+                "role": "user",
+                "content": f"{prompt.user}\n\nALLOWED OUTPUTS: {allowed_line}",
+            },
+        ]
+        clean_messages = [
+            {"role": "system", "content": _CHOICE_RETRY_SYSTEM},
+            {
+                "role": "user",
+                "content": (
+                    f"Choose the correct literal for this filing task.\n\n{prompt.user}"
+                    f"\n\nALLOWED OUTPUTS: {allowed_line}"
+                ),
+            },
+        ]
+        call_id = self._next_call_id()
+        record: dict[str, Any] = {
+            "call": call_id,
+            "model": self._model,
+            "schema": "PlainChoice",
+            "native_schema": False,
+            "system": prompt.system,
+            "user": prompt.user,
+            "allowed": list(allowed),
+            "attempts": [],
+        }
+        began = time.monotonic()
+        last_raw = ""
+        last_error = ""
+        for attempt, messages in enumerate((base_messages, clean_messages)):
+            started = time.monotonic()
+            attempt_log: dict[str, Any] = {"n": attempt + 1, "messages": messages}
+            record["attempts"].append(attempt_log)
+            try:
+                raw, usage = await self._call(
+                    self._model,
+                    messages,
+                    schema=None,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    attempt_log=attempt_log,
+                    force_temperature=True,
+                )
+            except _RepetitionDetectedError as exc:
+                last_error = str(exc)
+                last_raw = str(attempt_log.get("stream", {}).get("content", ""))
+                attempt_log.update(
+                    ms=round((time.monotonic() - started) * 1000),
+                    raw=last_raw,
+                    error=last_error,
+                )
+                if attempt == 0:
+                    continue
+                break
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                attempt_log.update(
+                    ms=round((time.monotonic() - started) * 1000),
+                    transport_error=error,
+                )
+                record.update(
+                    ok=False,
+                    ms=round((time.monotonic() - began) * 1000),
+                    final_error=error,
+                )
+                log_llm_call(record)
+                raise ModelRequestError(f"LLM choice request failed: {error}") from exc
+
+            self._usage.append(usage.model_copy(update={"retries": attempt}))
+            attempt_log.update(
+                ms=round((time.monotonic() - started) * 1000),
+                raw=raw,
+                in_tokens=usage.input_tokens,
+                out_tokens=usage.output_tokens,
+            )
+            last_raw = raw
+            selected = raw.strip().upper()
+            if selected in allowed:
+                record.update(ok=True, ms=round((time.monotonic() - began) * 1000))
+                log_llm_call(record)
+                return selected
+            last_error = f"reply {raw[:200]!r} is not one exact allowed literal"
+            attempt_log["error"] = last_error
+
+        record.update(
+            ok=False,
+            ms=round((time.monotonic() - began) * 1000),
+            final_error=last_error,
+        )
+        log_llm_call(record)
+        raise StructuredOutputError(
+            f"{self._model} did not return one allowed choice after 2 attempts. "
+            f"Last error: {last_error}. Last reply: {last_raw[:200]!r}"
         )
 
     def _next_call_id(self) -> str:
@@ -330,7 +518,9 @@ class LiteLLMAdapter:
         *,
         schema: type[BaseModel] | None,
         temperature: float,
+        max_tokens: int,
         attempt_log: dict[str, Any],
+        force_temperature: bool = False,
     ) -> tuple[str, Usage]:
         kwargs: dict[str, Any] = {
             "model": model,
@@ -355,6 +545,17 @@ class LiteLLMAdapter:
             # its own header; without these the call never reaches the model.
             kwargs["extra_headers"] = self._headers
         apply_body(kwargs, self._body)
+        if force_temperature:
+            kwargs["temperature"] = temperature
+        # Config may request a smaller budget, but it cannot raise a task's reviewed
+        # safety ceiling. Use one OpenAI-compatible spelling to avoid sending two
+        # contradictory limits.
+        configured_limits = [
+            value
+            for value in (kwargs.pop("max_tokens", None), kwargs.pop("max_completion_tokens", None))
+            if isinstance(value, int) and value > 0
+        ]
+        kwargs["max_tokens"] = min([max_tokens, *configured_limits])
         if schema is not None:
             kwargs["response_format"] = schema
 
@@ -366,47 +567,83 @@ class LiteLLMAdapter:
             "completed": False,
         }
         attempt_log["stream"] = stream_log
+        attempt_log["messages"] = messages
         chunks: list[Any] = []
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         began = time.monotonic()
         previous = began
 
-        # The provider timeout is intentionally an inactivity timeout. Every received
-        # chunk resets the read deadline; a model that is still producing is not hung.
-        # Continuous output therefore ends only when the provider finishes or a separate
-        # request-level output limit is configured; the timer does not pretend it is idle.
         async with self._semaphore:
-            response_stream = await _load_litellm().acompletion(**kwargs)
+            response_stream: Any = None
+            absolute = asyncio.timeout(self._absolute_timeout)
             try:
-                async for chunk in response_stream:
-                    now = time.monotonic()
-                    chunks.append(chunk)
-                    choice = _first_choice(chunk)
-                    delta = _field(choice, "delta")
-                    content = _text_field(delta, "content")
-                    reasoning = _text_field(delta, "reasoning_content") or _text_field(
-                        delta, "reasoning"
-                    )
-                    finish_reason = _field(choice, "finish_reason")
-                    content_parts.append(content)
-                    reasoning_parts.append(reasoning)
-                    stream_log["chunks"].append(
-                        {
-                            "n": len(chunks),
-                            "ms": round((now - began) * 1000),
-                            "gap_ms": round((now - previous) * 1000),
-                            "raw": _dump_chunk(chunk),
-                        }
-                    )
-                    if finish_reason is not None:
-                        stream_log["finish_reason"] = str(finish_reason)
-                    previous = now
+                async with absolute:
+                    response_stream = await _load_litellm().acompletion(**kwargs)
+                    iterator: AsyncIterator[Any] = response_stream.__aiter__()
+                    repeat_tail = ""
+                    generated_chars = 0
+                    while True:
+                        try:
+                            chunk = await asyncio.wait_for(
+                                iterator.__anext__(), timeout=self._timeout
+                            )
+                        except StopAsyncIteration:
+                            break
+                        except TimeoutError as exc:
+                            raise _InactivityTimeoutError(
+                                f"no stream chunk received for {self._timeout:g} seconds: {exc}"
+                            ) from exc
+                        now = time.monotonic()
+                        chunks.append(chunk)
+                        choice = _first_choice(chunk)
+                        delta = _field(choice, "delta")
+                        content = _text_field(delta, "content")
+                        reasoning = _text_field(delta, "reasoning_content") or _text_field(
+                            delta, "reasoning"
+                        )
+                        finish_reason = _field(choice, "finish_reason")
+                        content_parts.append(content)
+                        reasoning_parts.append(reasoning)
+                        stream_log["chunks"].append(
+                            {
+                                "n": len(chunks),
+                                "ms": round((now - began) * 1000),
+                                "gap_ms": round((now - previous) * 1000),
+                                "raw": _dump_chunk(chunk),
+                            }
+                        )
+                        if finish_reason is not None:
+                            stream_log["finish_reason"] = str(finish_reason)
+                        previous = now
+                        generated_chars += len(content)
+                        repeat_tail = (repeat_tail + content)[-240:]
+                        if generated_chars >= 24:
+                            pattern = _repeated_suffix(repeat_tail)
+                            if pattern is not None:
+                                stream_log["abort"] = {
+                                    "kind": "repetition",
+                                    "pattern": pattern,
+                                    "after_chars": generated_chars,
+                                }
+                                raise _RepetitionDetectedError(pattern)
+            except TimeoutError as exc:
+                if absolute.expired():
+                    stream_log["abort"] = {
+                        "kind": "absolute_timeout",
+                        "seconds": self._absolute_timeout,
+                    }
+                    raise _AbsoluteTimeoutError(
+                        f"generation exceeded {self._absolute_timeout:g} seconds"
+                    ) from exc
+                raise
             finally:
                 # Preserve the complete partial output even when reading the next chunk
                 # raises a timeout. Joining once avoids quadratic work on long streams.
                 stream_log["content"] = "".join(content_parts)
                 stream_log["reasoning_content"] = "".join(reasoning_parts)
+                if response_stream is not None and not stream_log["completed"]:
+                    await _close_stream(response_stream)
 
         stream_log["completed"] = True
         complete = _load_litellm().stream_chunk_builder(chunks=chunks, messages=messages)
@@ -422,6 +659,37 @@ class LiteLLMAdapter:
 def _looks_like_timeout(exc: Exception) -> bool:
     names = " ".join(item.__name__ for item in exc.__class__.__mro__)
     return "timeout" in names.casefold() or "timed out" in str(exc).casefold()
+
+
+def _schema_output_cap(schema: type[BaseModel]) -> int:
+    return _SCHEMA_MAX_TOKENS.get(schema.__name__, _DEFAULT_SCHEMA_MAX_TOKENS)
+
+
+def _repeated_suffix(text: str, *, count: int = 6, maximum_pattern: int = 40) -> str | None:
+    """Find only an obvious exact non-whitespace suffix loop."""
+    for size in range(2, min(maximum_pattern, len(text) // count) + 1):
+        pattern = text[-size:]
+        if pattern.strip() and text.endswith(pattern * count):
+            return pattern
+    return None
+
+
+async def _close_stream(stream: Any) -> None:
+    """Best-effort cancellation; never hide the response or error being logged."""
+    try:
+        closer = getattr(stream, "aclose", None)
+        if closer is not None:
+            result = closer()
+            if asyncio.iscoroutine(result):
+                await result
+            return
+        closer = getattr(stream, "close", None)
+        if closer is not None:
+            result = closer()
+            if asyncio.iscoroutine(result):
+                await result
+    except Exception:
+        logger.debug("failed to close LLM stream", exc_info=True)
 
 
 def _field(value: Any, name: str) -> Any:

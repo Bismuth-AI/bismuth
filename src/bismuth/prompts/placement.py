@@ -16,8 +16,8 @@ SYSTEM = """\
 You are a meticulous library clerk choosing ONE next step through an existing folder \
 tree. You are shown the current folder, the document, and only the direct child signs.
 
-Return exactly one child ID shown, or `""` to KEEP THE DOCUMENT IN THE CURRENT FOLDER. \
-Return null only when the document itself is unreadable or garbage.
+Return exactly one child ID shown, `STAY` to KEEP THE DOCUMENT IN THE CURRENT FOLDER, \
+or `UNREADABLE` only when the document itself is unreadable or garbage.
 
 Choose a child only when its sign positively describes the document. Never choose the \
 closest child merely because no better child exists. Having one child does not make it \
@@ -25,7 +25,7 @@ the default. Staying here is a confident, normal filing decision and lets a late
 maintenance pass create a real class after several related documents gather.
 
 The IDs are opaque handles. Do not copy, translate, repair or compose folder names. \
-There is no field for an explanation because the application uses only the decision.
+There is no JSON and no explanation because the application uses only the one literal.
 """
 
 _USER = """\
@@ -43,7 +43,11 @@ mentions: {entities}\
 
 
 class PlacementDecision(BaseModel):
-    """One direct-child choice; an empty ID means stay at the current level."""
+    """Legacy FakeLLM fixture; production Placement uses the plain-choice LLM port.
+
+    Kept temporarily so downstream test scripts written against the former structured
+    response can continue to drive FakeLLM while the on-wire contract is plain text.
+    """
 
     folder_id: str | None = Field(
         description=(
