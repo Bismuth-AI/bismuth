@@ -20,7 +20,7 @@ from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.config import Settings
 from bismuth.container import build
 from bismuth.domain.document import Entity, EntityKind
-from bismuth.ports.llm import ModelProfile, Prompt
+from bismuth.ports.llm import Prompt
 from bismuth.prompts import cards as card_prompts
 from bismuth.prompts import charters as charter_prompts
 from bismuth.prompts import placement as placement_prompts
@@ -35,7 +35,7 @@ DOCUMENTS = {
 }
 
 
-def scripted(prompt: Prompt, schema: type[BaseModel], profile: ModelProfile) -> BaseModel:
+def scripted(prompt: Prompt, schema: type[BaseModel]) -> BaseModel:
     """What a model would return. Keyed off a string unique to each document."""
     u = prompt.user
     zephyr = "한빛전자" in u or "제피르" in u
@@ -63,10 +63,7 @@ def scripted(prompt: Prompt, schema: type[BaseModel], profile: ModelProfile) -> 
             answers_questions=["아폴로 사업에서 무엇이 합의되었나?"],
         )
     if schema is placement_prompts.PlacementDecision:
-        folder = "제피르/2024" if zephyr else "아폴로/2023"
-        return placement_prompts.PlacementDecision(
-            folder=folder, existing=folder in u, confidence=0.9, reason=f"{folder} 에 둡니다."
-        )
+        return placement_prompts.PlacementDecision(folder_id="F001", confidence=0.9)
     if schema is charter_prompts.CharterDraft:
         name = "제피르 2024" if zephyr else "아폴로 2023"
         return charter_prompts.CharterDraft(

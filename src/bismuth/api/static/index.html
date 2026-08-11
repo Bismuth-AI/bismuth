@@ -188,6 +188,14 @@ h2 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.01em; }
 .job .tail { display: none; }
 .job.settled .tail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job.settled.failed .tail { color: var(--danger); }
+.batch-job { display: flex; flex-direction: column; gap: 8px; }
+.batch-job .head { display: flex; align-items: baseline; gap: 10px; }
+.batch-job .title { font-weight: 650; flex: 1; }
+.batch-job .count { color: var(--accent); font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.batch-job .current { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-job .summary { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.batch-job.done .current { color: var(--ok); }
+.batch-job.failed .current, .batch-job.failed .summary { color: var(--danger); }
 @media (prefers-reduced-motion: reduce) { .bar > i, .bar.wait > i { transition: none; animation: none; } }
 
 /* setup + modal */
@@ -297,8 +305,7 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
   <div id="s-models" class="hidden">
     <hr>
     <p id="s-models-count" class="muted"></p>
-    <div class="field"><label>빠른 모델 <span class="muted" style="font-weight:400">— 문서마다 실행됩니다</span></label><input type="text" id="s-fast" list="s-model-list" spellcheck="false" autocomplete="off"></div>
-    <div class="field"><label>판단 모델 <span class="muted" style="font-weight:400">— 배치·폴더 노트에 실행됩니다</span></label><input type="text" id="s-reasoning" list="s-model-list" spellcheck="false" autocomplete="off"></div>
+    <div class="field"><label>모델 <span class="muted" style="font-weight:400">— 모든 문서 읽기와 정리에 사용됩니다</span></label><input type="text" id="s-model" list="s-model-list" spellcheck="false" autocomplete="off"></div>
     <datalist id="s-model-list"></datalist>
     <div class="rowend">
       <button class="ghost" id="s-cancel">취소</button>
@@ -334,6 +341,8 @@ async function api(path, opts = {}) {
 // The vault root, as /api/tree names it. Documents live here until enough of them
 // arrive to show a distinction, which early on is most of them.
 const ROOT = ".";
+const UI_VERSION = "2026.08.10-resumable-batch-5";
+document.documentElement.dataset.uiVersion = UI_VERSION;
 let state = {}, tree = [], selected = ROOT, expanded = new Set();
 let rootInfo = null;   // the root's own entry: its loose documents are the common early case
 let sel = new Set(), selAnchor = null, viewDocs = [], moveTargets = [];
@@ -370,7 +379,7 @@ async function refresh() {
   if (!onInbox && !onRoot && !tree.some((f) => f.path === selected)) {
     selected = tree.length ? topLevel()[0]?.path ?? ROOT : ROOT;
   }
-  renderMain();
+  await renderMain();
 }
 
 const topLevel = () => tree.filter((f) => f.depth === 1);
@@ -737,6 +746,28 @@ const ORDER = ["received", "parsing", "parsed", "reading", "densifying", "carded
                "placing", "placed", "filing", "notes", "done", "duplicate", "failed"];
 const CHIP_LIMIT = 8;   // beyond this the chips stop being scannable and become a wall
 const jobs = new Map();   // filename -> { el, lines: Map(stage -> li), found: Set, chips: el }
+const compactJobs = new Map();   // filename -> one compact multi-file batch card
+const settledCompactJobs = new Set();   // suppress an SSE event that races its POST response
+const batchCards = new Map();   // server batch id -> reloadable compact card
+let liveSyncTimer = null;
+let batchPollTimer = null;
+let batchPollRunning = false;
+
+function keepExplorerLive() {
+  if (liveSyncTimer !== null) return;
+  // SSE completion is the primary invalidation signal. This poll is deliberately a
+  // fallback: proxies, suspended tabs and reconnect boundaries can lose one transient
+  // progress event even though later events continue to arrive. While any job card is
+  // alive, periodically reconcile against the authoritative filesystem APIs.
+  liveSyncTimer = setInterval(() => {
+    if (!jobs.size && !compactJobs.size) {
+      clearInterval(liveSyncTimer);
+      liveSyncTimer = null;
+      return;
+    }
+    refreshAfterDocument();
+  }, 3000);
+}
 
 function jobCard(filename) {
   const el = document.createElement("div");
@@ -753,6 +784,7 @@ function ensureJob(filename, container) {
   if (job) return job;
   job = jobCard(filename);
   jobs.set(filename, job);
+  keepExplorerLive();
   (container || standaloneBox()).appendChild(job.el);
   return job;
 }
@@ -828,14 +860,193 @@ function renderStep(p) {
   else { bar.className = "bar wait"; fill.style.width = ""; }
 }
 
+function compactBatch(filenames, container) {
+  const el = document.createElement("div");
+  el.className = "batch-job";
+  el.innerHTML = `<div class="head"><span class="title">파일 정리</span><span class="count"></span></div>
+    <div class="bar"><i></i></div><div class="current"></div><div class="summary"></div>`;
+  container.appendChild(el);
+  const names = filenames.map((file) => typeof file === "string" ? file : file.name);
+  const batch = {
+    id: "", el, box: container.closest(".up"), filenames: names, total: names.length,
+    completed: 0, failed: 0, duplicate: 0, inbox: 0, current: "",
+    currentLabel: "", currentProgress: 0, status: "uploading", cleanup: null,
+  };
+  for (const filename of names) {
+    settledCompactJobs.delete(filename);
+    compactJobs.set(filename, batch);
+  }
+  keepExplorerLive();
+  drawCompactBatch(batch);
+  return batch;
+}
+
+function drawCompactBatch(batch, progress = null) {
+  const { el } = batch;
+  el.querySelector(".count").textContent = `${batch.completed}/${batch.total} 완료`;
+  if (progress?.fraction != null) batch.currentProgress = Math.max(batch.currentProgress, progress.fraction);
+  const fraction = Math.min(1, (batch.completed + batch.currentProgress) / batch.total);
+  el.querySelector(".bar i").style.width = `${Math.round(fraction * 100)}%`;
+  const current = el.querySelector(".current");
+  const stopped = batch.status === "failed" || batch.status === "interrupted";
+  if (batch.status === "uploading") {
+    current.textContent = "파일을 인박스에 안전하게 저장 중";
+  } else if (stopped) {
+    current.textContent = "작업이 중단되었습니다";
+  } else if (batch.completed === batch.total) {
+    current.textContent = batch.failed ? `완료 · ${batch.failed}개 실패` : "모든 파일 정리 완료";
+  } else if (batch.status === "queued") {
+    current.textContent = "서버 처리 순서를 기다리는 중";
+  } else {
+    const labelText = progress?.label || batch.currentLabel;
+    const label = labelText ? ` · ${labelText}` : "";
+    current.textContent = `${batch.current}${label}`;
+    current.title = current.textContent;
+  }
+  const parts = [
+    `성공 ${batch.completed - batch.failed - batch.duplicate - batch.inbox}개`,
+  ];
+  if (batch.duplicate) parts.push(`중복 ${batch.duplicate}개`);
+  if (batch.inbox) parts.push(`인박스 ${batch.inbox}개`);
+  if (batch.failed) parts.push(`실패 ${batch.failed}개`);
+  el.querySelector(".summary").textContent = parts.join(" · ");
+  const finished = batch.completed === batch.total || stopped;
+  el.classList.toggle("done", finished && !batch.failed && !stopped);
+  el.classList.toggle("failed", finished && (batch.failed > 0 || stopped));
+  el.querySelector(".bar").className = batch.status === "uploading"
+    ? "bar wait"
+    : `bar${finished ? (batch.failed || stopped ? " fail" : " done") : ""}`;
+}
+
+function applyBatchState(batch, state) {
+  const previousCompleted = batch.completed;
+  const previousCurrent = batch.current;
+  for (const filename of batch.filenames) {
+    if (compactJobs.get(filename) === batch) compactJobs.delete(filename);
+  }
+  batch.id = state.id;
+  batch.filenames = state.filenames;
+  batch.total = state.total;
+  batch.completed = state.completed;
+  batch.failed = state.failed;
+  batch.duplicate = state.duplicate;
+  batch.inbox = state.inbox;
+  batch.status = state.status;
+  batch.current = state.current;
+  batch.currentLabel = state.current_label;
+  if (previousCurrent !== batch.current || previousCompleted !== batch.completed) batch.currentProgress = 0;
+  const active = state.status === "queued" || state.status === "running";
+  if (active) {
+    for (const filename of batch.filenames) compactJobs.set(filename, batch);
+  } else {
+    for (const filename of batch.filenames) {
+      settledCompactJobs.add(filename);
+      setTimeout(() => settledCompactJobs.delete(filename), 10000);
+    }
+  }
+  drawCompactBatch(batch);
+  if (batch.completed > previousCompleted) refreshAfterDocument();
+  if (!active && !batch.cleanup) {
+    batch.cleanup = setTimeout(() => {
+      batchCards.delete(batch.id);
+      batch.box?.remove();
+    }, state.status === "done" && !state.failed ? 6000 : 10000);
+  }
+}
+
+function ensureBatchPolling() {
+  if (batchPollTimer !== null) return;
+  batchPollTimer = setInterval(syncBatches, 1000);
+}
+
+async function syncBatches() {
+  if (batchPollRunning) return;
+  batchPollRunning = true;
+  try {
+    const states = await api("/batches");
+    let active = false;
+    const now = Date.now() / 1000;
+    for (const state of states) {
+      const isActive = state.status === "queued" || state.status === "running";
+      active ||= isActive;
+      let batch = batchCards.get(state.id);
+      // Finished work is restored only briefly; an hour of old toast cards is noise.
+      if (!batch && (isActive || (state.finished_at && now - state.finished_at < 15))) {
+        const box = document.createElement("div");
+        box.className = "up";
+        $("uploads").prepend(box);
+        batch = compactBatch(state.filenames, box);
+        batch.id = state.id;
+        batchCards.set(state.id, batch);
+      }
+      if (batch) applyBatchState(batch, state);
+    }
+    if (active && batchPollTimer === null) ensureBatchPolling();
+    if (!active && batchPollTimer !== null) {
+      clearInterval(batchPollTimer);
+      batchPollTimer = null;
+    }
+  } catch (err) {
+    console.warn("batch status refresh failed", err);
+  } finally {
+    batchPollRunning = false;
+  }
+}
+
+// Completion events and upload responses can arrive together. Share one refresh promise
+// so every caller can await the authoritative status/tree reconciliation instead of
+// merely asking a refresh that may still be in flight.
+let liveRefreshPromise = null;
+let liveRefreshQueued = false;
+
+function refreshAfterDocument() {
+  liveRefreshQueued = true;
+  if (liveRefreshPromise) return liveRefreshPromise;
+  liveRefreshPromise = (async () => {
+    try {
+      do {
+        liveRefreshQueued = false;
+        const before = new Set(tree.map((f) => f.path));
+        await refresh();
+        const added = tree.filter((f) => !before.has(f.path));
+        // A newly created nested folder would otherwise remain hidden behind a collapsed
+        // parent, which defeats the point of refreshing live. Preserve every existing
+        // expansion and only open the ancestors required to reveal new folders.
+        for (const folder of added) openAncestors(folder.path);
+        if (added.length) renderTree();
+      } while (liveRefreshQueued);
+    } catch (err) {
+      // Live refresh is a view update, never a reason to disturb a successful ingest.
+      console.warn("live explorer refresh failed", err);
+    } finally {
+      liveRefreshPromise = null;
+    }
+  })();
+  return liveRefreshPromise;
+}
+
 function watchProgress() {
   const src = new EventSource("/api/progress");   // EventSource reconnects on its own
   src.onmessage = (ev) => {
     let p; try { p = JSON.parse(ev.data); } catch { return; }
+    if (settledCompactJobs.has(p.filename)) {
+      if (p.stage === "done" || p.stage === "failed") refreshAfterDocument();
+      return;
+    }
+    const compact = compactJobs.get(p.filename);
+    if (compact) {
+      compact.current = p.filename;
+      drawCompactBatch(compact, p);
+      if (p.stage === "done" || p.stage === "failed") refreshAfterDocument();
+      return;
+    }
     ensureJob(p.filename, null);
     renderStep(p);
     if (p.terminal) {
       const job = jobs.get(p.filename);
+      // Duplicate means nothing changed. DONE reveals the new folder/file immediately;
+      // FAILED reveals a file that remains in the inbox.
+      if (p.stage === "done" || p.stage === "failed") refreshAfterDocument();
       // Held briefly so the last line is readable, then the batch summary takes over.
       setTimeout(() => { jobs.delete(p.filename); job?.el.parentElement?.classList.contains("live") && job.el.remove(); }, 4000);
     }
@@ -910,43 +1121,63 @@ async function upload(files) {
   const box = document.createElement("div");
   box.className = "up";
   $("uploads").prepend(box);
-  for (const f of files) {
-    const job = ensureJob(f.name, box);
-    job.el.querySelector(".steps").innerHTML = `<li class="now"><span class="mark">▸</span><span class="what">올리는 중…</span></li>`;
+  const isBatch = files.length > 1;
+  const batch = isBatch ? compactBatch(files, box) : null;
+  const summary = isBatch ? null : document.createElement("div");
+  if (summary) box.appendChild(summary);
+  if (batch) {
+    const fd = new FormData();
+    for (const file of files) fd.append("files", file);
+    try {
+      const state = await api("/batches", { method: "POST", body: fd });
+      batch.id = state.id;
+      batchCards.set(state.id, batch);
+      applyBatchState(batch, state);
+      ensureBatchPolling();
+    } catch (err) {
+      batch.status = "failed";
+      batch.failed = batch.total;
+      batch.currentLabel = err.message;
+      box.classList.add("err");
+      drawCompactBatch(batch);
+    }
+    return;
   }
 
+  const job = ensureJob(files[0].name, box);
+  job.el.querySelector(".steps").innerHTML = `<li class="now"><span class="mark">▸</span><span class="what">올리는 중…</span></li>`;
+
+  const cost = (r) => { const t = spendText(r.spend); return t ? `<div class="spend">${esc(t)}</div>` : ""; };
+  const resultHtml = (r) => r.ok
+    ? (r.duplicate
+        ? `<div><span class="dupflag">⚠ 중복</span> <span class="fn">${esc(r.filename)}</span>
+           <div class="muted" style="font-size:12px">같은 내용이 이미 <code>${esc(r.destination)}/</code> 에 있어 넣지 않았습니다.</div></div>`
+        : r.placed
+          ? `<div><span class="fn">${esc(r.filename)}</span> → <span class="dest">${esc(r.destination)}/</span>${r.created_folder ? ' <span class="muted">(새 폴더)</span>' : ""}${cost(r)}</div>`
+          : `<div><span class="fn">${esc(r.filename)}</span> <span class="muted">— 인박스 (${esc(r.reason)})</span>${cost(r)}</div>`)
+    : `<div class="err-line"><span class="fn">실패: ${esc(r.filename)}</span> <span class="muted">${esc(r.reason)}</span>${cost(r)}</div>`;
+
+  const f = files[0];
   const fd = new FormData();
-  for (const f of files) fd.append("files", f);
+  fd.append("files", f);
   try {
-    const results = await api("/documents", { method: "POST", body: fd });
-    for (const f of files) jobs.delete(f.name);   // the summary below replaces the live cards
-    for (const r of results) addSpend(r.spend);
-    const cost = (r) => { const t = spendText(r.spend); return t ? `<div class="spend">${esc(t)}</div>` : ""; };
-    box.innerHTML = results.map((r) => r.ok
-      ? (r.duplicate
-          ? `<div><span class="dupflag">⚠ 중복</span> <span class="fn">${esc(r.filename)}</span>
-             <div class="muted" style="font-size:12px">같은 내용이 이미 <code>${esc(r.destination)}/</code> 에 있어 넣지 않았습니다.</div></div>`
-          : r.placed
-            ? `<div><span class="fn">${esc(r.filename)}</span> → <span class="dest">${esc(r.destination)}/</span>${r.created_folder ? ' <span class="muted">(새 폴더)</span>' : ""}${cost(r)}</div>`
-            : `<div><span class="fn">${esc(r.filename)}</span> <span class="muted">— 인박스 (${esc(r.reason)})</span>${cost(r)}</div>`)
-      : `<div class="err-line"><span class="fn">실패: ${esc(r.filename)}</span> <span class="muted">${esc(r.reason)}</span>${cost(r)}</div>`
-    ).join("");
-    if (results.some((r) => !r.ok)) box.classList.add("err");
-    else if (results.some((r) => r.duplicate)) box.classList.add("dup");
-    // jump to where the first document landed
-    const landed = results.find((r) => r.ok && r.placed);
-    if (landed) {
-      selected = landed.destination;
-      let p = ""; for (const seg of selected.split("/").slice(0, -1)) { p = p ? p + "/" + seg : seg; expanded.add(p); }
-    }
-    await refresh();
-    setTimeout(() => box.remove(), 6000);
+    const [result] = await api("/documents", { method: "POST", body: fd });
+    jobs.delete(f.name);
+    box.querySelectorAll(".job").forEach((el) => {
+      if (el.querySelector(".fn")?.textContent === f.name) el.remove();
+    });
+    addSpend(result.spend);
+    summary.insertAdjacentHTML("beforeend", resultHtml(result));
+    if (!result.ok) box.classList.add("err");
+    else if (result.duplicate) box.classList.add("dup");
+    await refreshAfterDocument();
   } catch (err) {
-    for (const f of files) jobs.delete(f.name);
-    box.className = "up err";
-    box.innerHTML = `<span class="fn">${esc(err.message)}</span>`;
-    setTimeout(() => box.remove(), 8000);
+    jobs.delete(f.name);
+    box.classList.add("err");
+    summary.insertAdjacentHTML("beforeend", `<div class="err-line"><span class="fn">실패: ${esc(f.name)}</span> <span class="muted">${esc(err.message)}</span></div>`);
+    await refreshAfterDocument();
   }
+  setTimeout(() => box.remove(), box.classList.contains("err") ? 8000 : 6000);
 }
 
 const drop = $("drop");
@@ -1191,12 +1422,11 @@ $("s-check").addEventListener("click", async () => {
     // The saved names belong to the saved provider; offering gpt-5.4-nano for a local
     // endpoint is a name that will simply 404 on the first upload.
     const saved = p.id === setup.provider_id;
-    $("s-fast").value = (saved && setup.model_fast) || r.suggested_fast || "";
-    $("s-reasoning").value = (saved && setup.model_reasoning) || r.suggested_reasoning || "";
+    $("s-model").value = (saved && setup.model) || r.suggested_model || "";
     // A missing catalogue is not a missing endpoint. Plenty of OpenAI-compatible servers
     // never expose /models, or gate it differently from the thing we actually call.
     $("s-models-count").textContent = r.models.length
-      ? `쓸 수 있는 모델 ${r.models.length}개. 무난한 조합을 골라 뒀으니 원하면 바꾸세요.`
+      ? `쓸 수 있는 모델 ${r.models.length}개. 무난한 모델을 골라 뒀으니 원하면 바꾸세요.`
       : `모델 목록을 받지 못했습니다${r.error ? ` (${r.error})` : ""} — 쓸 모델 이름을 직접 적어 주세요.`;
     $("s-models").classList.remove("hidden");
   } catch (err) { showErr(err.message); } finally { btn.disabled = false; btn.textContent = "다음"; }
@@ -1205,15 +1435,17 @@ $("s-save").addEventListener("click", async () => {
   const p = currentProvider(); const btn = $("s-save"); btn.disabled = true;
   try {
     if (!bodyIsValid()) return;
-    const fast = $("s-fast").value.trim(), reasoning = $("s-reasoning").value.trim();
-    if (!fast || !reasoning) { showErr("두 모델 이름을 모두 적어 주세요."); return; }
+    const model = $("s-model").value.trim();
+    if (!model) { showErr("모델 이름을 적어 주세요."); return; }
     await api("/setup", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...setupBody(p), model_fast: fast, model_reasoning: reasoning, vault_path: $("s-vault").value }) });
+      body: JSON.stringify({ ...setupBody(p), model, vault_path: $("s-vault").value }) });
     $("setup").classList.add("hidden"); await refresh();
   } catch (err) { showErr(err.message); } finally { btn.disabled = false; }
 });
 
-refresh().catch((err) => { $("main").innerHTML = `<div class="empty">${esc(err.message)}</div>`; });
+refresh()
+  .then(syncBatches)
+  .catch((err) => { $("main").innerHTML = `<div class="empty">${esc(err.message)}</div>`; });
 </script>
 </body>
 </html>

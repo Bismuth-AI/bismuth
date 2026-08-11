@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
-from collections.abc import AsyncIterator
+import time
+import uuid
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from urllib.parse import quote
 
 import anyio
@@ -19,7 +22,7 @@ from bismuth import __version__
 from bismuth.adapters.llm import (
     list_models,
     litellm_adapter,
-    suggest_models,
+    suggest_model,
     supports_response_schema,
 )
 from bismuth.api.progress import ProgressBus, stream
@@ -85,12 +88,23 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         _preload(engine)
         if recovered := engine.recover():
             logger.warning("rolled back %d interrupted change(s) from a previous run", recovered)
-        yield
+        try:
+            yield
+        finally:
+            tasks: set[asyncio.Task[None]] = getattr(app.state, "batch_tasks", set())
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await litellm_adapter.close_clients()
 
     app = FastAPI(title="Bismuth", version=__version__, lifespan=lifespan)
     app.state.engine = engine
     app.state.settings = settings
     app.state.progress = ProgressBus()
+    app.state.ingest_lock = asyncio.Lock()
+    app.state.batches = {}
+    app.state.batch_tasks = set()
 
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception) -> JSONResponse:
@@ -106,8 +120,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             providers=[p.model_dump(mode="json") for p in PROVIDERS],
             provider_id=current.provider_id,
             api_base=current.api_base,
-            model_fast=current.model_fast,
-            model_reasoning=current.model_reasoning,
+            model=current.model,
             vault_path=str(current.vault_path),
             api_headers=current.api_headers,
             api_body=current.api_body,
@@ -130,13 +143,11 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                 headers=body.api_headers,
             )
         )
-        fast, reasoning = suggest_models(check.models)
         return ProviderCheckOut(
             ok=check.ok,
             error=check.error,
             models=list(check.models),
-            suggested_fast=fast,
-            suggested_reasoning=reasoning,
+            suggested_model=suggest_model(check.models),
         )
 
     @app.post("/api/setup", response_model=SetupStateOut)
@@ -158,7 +169,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             native = await anyio.to_thread.run_sync(
                 lambda: supports_response_schema(
                     api_base=body.api_base or chosen.default_api_base or "",
-                    model=body.model_fast,
+                    model=body.model,
                     api_key=key,
                     headers=body.api_headers,
                 )
@@ -173,11 +184,10 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             api_headers=body.api_headers,
             api_body=body.api_body,
             native_schema=native,
-            model_fast=body.model_fast,
-            model_reasoning=body.model_reasoning,
+            model=body.model,
         )
         if not updated.is_configured:
-            raise HTTPException(400, "두 모델을 각각 골라 주세요.")
+            raise HTTPException(400, "모델을 골라 주세요.")
 
         save_user_config(updated)
         app.state.settings = updated
@@ -195,7 +205,9 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         placed = sum(
             engine.vault.count_files(f, recursive=False)
             for f in engine.vault.iter_folders()
-            if f.parts and f.parts[0] != INBOX.parts[0]
+            # Root is a real shelf: young libraries deliberately keep documents there
+            # until a useful distinction emerges. Exclude only the inbox, not root.
+            if not f.parts or f.parts[0] != INBOX.parts[0]
         )
         return StatusOut(
             configured=app.state.settings.is_configured,
@@ -269,17 +281,112 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
     async def upload(files: list[UploadFile], engine: Engine) -> list[IngestOut]:
         """Accept files and file them. Each is journalled into the inbox before anything clever."""
         results: list[IngestOut] = []
-        for upload_file in files:
-            data = await upload_file.read()
-            name = Path(upload_file.filename or "untitled").name
-            rel = engine.ingest.stage(data, name)
-            results.append(await _process(engine, rel))
+        async with app.state.ingest_lock:
+            for upload_file in files:
+                data = await upload_file.read()
+                name = Path(upload_file.filename or "untitled").name
+                rel = engine.ingest.stage(data, name)
+                results.append(await _process(engine, rel))
         return results
+
+    async def run_batch(batch_id: str, staged: list[PurePosixPath], engine: Bismuth) -> None:
+        """Process already-safe inbox files independently of the browser connection."""
+        batch: BatchOut = app.state.batches[batch_id]
+        batch.status = "queued"
+        try:
+            async with app.state.ingest_lock:
+                batch.status = "running"
+                for rel in staged:
+                    batch.current = rel.name
+                    batch.current_stage = "received"
+                    batch.current_label = "읽기 준비 중"
+
+                    def report(progress: Progress) -> None:
+                        batch.current = progress.filename
+                        batch.current_stage = progress.stage.value
+                        batch.current_label = progress.label()
+                        app.state.progress.publish(progress)
+
+                    try:
+                        result = await _process(engine, rel, on_progress=report)
+                    except Exception as exc:
+                        logger.exception("batch %s failed while processing %s", batch_id, rel)
+                        report(Progress(stage=Stage.FAILED, filename=rel.name, note=str(exc)))
+                        result = IngestOut(filename=rel.name, ok=False, reason=str(exc))
+
+                    batch.completed += 1
+                    if not result.ok:
+                        batch.failed += 1
+                    elif result.duplicate:
+                        batch.duplicate += 1
+                    elif not result.placed:
+                        batch.inbox += 1
+            batch.status = "done"
+        except asyncio.CancelledError:
+            batch.status = "interrupted"
+            raise
+        except Exception:
+            batch.status = "failed"
+            logger.exception("batch %s stopped unexpectedly", batch_id)
+        finally:
+            batch.finished_at = time.time()
+            if batch.status == "done":
+                batch.current = ""
+                batch.current_stage = "done"
+                batch.current_label = "모든 파일 정리 완료"
+
+    @app.post("/api/batches", response_model=BatchOut, status_code=202)
+    async def create_batch(files: list[UploadFile], engine: Engine) -> BatchOut:
+        """Stage a whole selection, then let the server finish it after a page refresh."""
+        if not files:
+            raise HTTPException(400, "올릴 파일이 없습니다.")
+        staged: list[PurePosixPath] = []
+        async with app.state.ingest_lock:
+            for upload_file in files:
+                data = await upload_file.read()
+                name = Path(upload_file.filename or "untitled").name
+                staged.append(engine.ingest.stage(data, name))
+
+        batch_id = uuid.uuid4().hex[:12]
+        batch = BatchOut(
+            id=batch_id,
+            total=len(staged),
+            filenames=[rel.name for rel in staged],
+            created_at=time.time(),
+        )
+        app.state.batches[batch_id] = batch
+        task = asyncio.create_task(
+            run_batch(batch_id, staged, engine), name=f"bismuth-batch-{batch_id}"
+        )
+        app.state.batch_tasks.add(task)
+        task.add_done_callback(app.state.batch_tasks.discard)
+        return batch.model_copy(deep=True)
+
+    @app.get("/api/batches", response_model=list[BatchOut])
+    def list_batches() -> list[BatchOut]:
+        """Active and recent work, used to rebuild progress cards after a reload."""
+        cutoff = time.time() - 3600
+        expired = [
+            batch_id
+            for batch_id, batch in app.state.batches.items()
+            if batch.finished_at is not None and batch.finished_at < cutoff
+        ]
+        for batch_id in expired:
+            app.state.batches.pop(batch_id, None)
+        return sorted(app.state.batches.values(), key=lambda batch: batch.created_at, reverse=True)
+
+    @app.get("/api/batches/{batch_id}", response_model=BatchOut)
+    def get_batch(batch_id: str) -> BatchOut:
+        batch = cast(BatchOut | None, app.state.batches.get(batch_id))
+        if batch is None:
+            raise HTTPException(404, "그런 업로드 작업이 없습니다.")
+        return batch
 
     @app.post("/api/scan", response_model=list[IngestOut])
     async def scan(engine: Engine) -> list[IngestOut]:
         """Read whatever is sitting unprocessed in the inbox, including hand-dropped files."""
-        return [await _process(engine, rel) for rel in engine.ingest.pending_inbox()]
+        async with app.state.ingest_lock:
+            return [await _process(engine, rel) for rel in engine.ingest.pending_inbox()]
 
     @app.get("/api/progress")
     async def progress_stream() -> StreamingResponse:
@@ -291,13 +398,18 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
         )
 
-    async def _process(engine: Bismuth, rel: PurePosixPath) -> IngestOut:
-        bus: ProgressBus = app.state.progress
+    async def _process(
+        engine: Bismuth,
+        rel: PurePosixPath,
+        *,
+        on_progress: Callable[[Progress], None] | None = None,
+    ) -> IngestOut:
+        publish = on_progress or app.state.progress.publish
         _drain(engine)  # anything left from an earlier document is not this one's bill
         try:
-            result = await engine.ingest.process(rel, on_progress=bus.publish)
+            result = await engine.ingest.process(rel, on_progress=publish)
         except BismuthError as exc:
-            bus.publish(Progress(stage=Stage.FAILED, filename=rel.name, note=str(exc)))
+            publish(Progress(stage=Stage.FAILED, filename=rel.name, note=str(exc)))
             return IngestOut(filename=rel.name, ok=False, reason=str(exc), spend=_drain(engine))
         return _result_of(result, spend=_drain(engine))
 
@@ -400,7 +512,17 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        return FileResponse(STATIC / "index.html")
+        # The UI is a single embedded file with no hashed asset URL. An already-open
+        # tab naturally keeps running its old JavaScript, and ordinary reloads may also
+        # reuse a cached response after a server upgrade. Always return a fresh shell;
+        # vault data has its own API and is unaffected.
+        return FileResponse(
+            STATIC / "index.html",
+            headers={
+                "Cache-Control": "no-store, max-age=0",
+                "Pragma": "no-cache",
+            },
+        )
 
     return app
 
@@ -477,6 +599,22 @@ class IngestOut(BaseModel):
     spend: Spend = Spend()
 
 
+class BatchOut(BaseModel):
+    id: str
+    total: int
+    filenames: list[str] = Field(default_factory=list)
+    completed: int = 0
+    failed: int = 0
+    duplicate: int = 0
+    inbox: int = 0
+    status: str = "queued"
+    current: str = ""
+    current_stage: str = ""
+    current_label: str = ""
+    created_at: float
+    finished_at: float | None = None
+
+
 class SetupStateOut(BaseModel):
     configured: bool
     providers: list[dict[str, Any]]
@@ -486,8 +624,7 @@ class SetupStateOut(BaseModel):
     api_headers: dict[str, str] = Field(default_factory=dict)
     api_body: dict[str, Any] = Field(default_factory=dict)
     native_schema: bool | None = None
-    model_fast: str = ""
-    model_reasoning: str = ""
+    model: str = ""
     vault_path: str = ""
 
 
@@ -503,8 +640,7 @@ class ProviderCheckOut(BaseModel):
     ok: bool
     error: str = ""
     models: list[str] = []
-    suggested_fast: str = ""
-    suggested_reasoning: str = ""
+    suggested_model: str = ""
 
 
 class DeleteIn(BaseModel):
@@ -547,8 +683,7 @@ class SetupIn(BaseModel):
     api_base: str | None = None
     api_headers: dict[str, str] = Field(default_factory=dict)
     api_body: dict[str, Any] = Field(default_factory=dict)
-    model_fast: str
-    model_reasoning: str
+    model: str
     vault_path: str
 
 

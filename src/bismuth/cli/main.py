@@ -25,7 +25,6 @@ from bismuth.config import CONFIG_FILE, Settings, load_env_file
 from bismuth.container import Bismuth, build
 from bismuth.domain.errors import BismuthError
 from bismuth.logging_setup import configure_logging
-from bismuth.ports.llm import ModelProfile
 from bismuth.ports.vault import INBOX
 
 
@@ -119,8 +118,7 @@ def doctor(vault: VaultOption = None) -> None:
     chosen = settings.provider
     assert chosen is not None
     table.add_row("프로바이더", chosen.label)
-    table.add_row("모델 (빠른)", settings.model_for(ModelProfile.FAST))
-    table.add_row("모델 (판단)", settings.model_for(ModelProfile.REASONING))
+    table.add_row("모델", settings.model_for())
     table.add_row("엔드포인트", settings.api_base or "(프로바이더 기본값)")
     table.add_row(
         "API 키", f"…{settings.api_key[-4:]}" if settings.api_key else "[dim](필요 없음)[/]"
@@ -154,12 +152,11 @@ def doctor(vault: VaultOption = None) -> None:
     console.print(
         f"\n[green]프로바이더가 응답했습니다.[/] 이 키로 쓸 수 있는 모델 {len(check.models)}개."
     )
-    for label, model in (("빠른", settings.model_fast), ("판단", settings.model_reasoning)):
-        if model not in check.models:
-            console.print(
-                f"  [yellow]![/] {label} 모델 [cyan]{model}[/] 이(가) 그 목록에 없습니다. "
-                f"호출하면 실패합니다. [cyan]bismuth[/] 를 실행해 다른 걸 골라 주세요."
-            )
+    if settings.model not in check.models:
+        console.print(
+            f"  [yellow]![/] 모델 [cyan]{settings.model}[/] 이(가) 그 목록에 없습니다. "
+            f"호출하면 실패합니다. [cyan]bismuth[/] 를 실행해 다른 걸 골라 주세요."
+        )
 
 
 @app.command()
