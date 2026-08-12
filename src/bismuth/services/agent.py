@@ -54,8 +54,9 @@ windows. Use `inventory` only inside folders affected by these arrivals, one bou
 at a time. Read selected sidecars only for real ambiguity; never enumerate the whole vault.
 2. Identify a navigation problem before designing a taxonomy. A large uniform folder \
 is not automatically a problem.
-3. For each parent you reorganise, choose ONE property and create at least TWO sibling \
-classes that are direct, mutually exclusive answers to one question.
+3. When changing a boundary, choose ONE property and create at least TWO sibling classes \
+that are direct, mutually exclusive answers to one question. Filing arrivals into an \
+already-existing child is not a boundary change and may target only that one child.
 4. A class name is one reusable value, not a comparison (never "A vs B"), a sentence, \
 a current path, a filename, a list of titles, or text containing an extension such as \
 `.pdf`. Use the documents' own language.
@@ -66,7 +67,11 @@ documents; never copy a document path into the submitted membership list.
 6. Call `verify_plan` exactly ONCE to challenge the COMPLETE intended plan, including its \
 axis, names, and representative document handles. Revise it if challenged; never call the \
 verifier again.
-7. Call `submit_plan` with the final complete plan. If validation rejects it, use the \
+7. Existing-folder filing is still work: when arrivals fit current shelves, submit their \
+actual moves even if every move targets only one existing child. `finish_no_change` means \
+the arrivals are already correctly located or genuinely cannot be filed yet; never use it \
+to merely describe moves that were not submitted. Call `submit_plan` with the final complete \
+plan. If validation rejects it, use the \
 returned problems to revise and submit a complete replacement. If no coherent \
 improvement survives inspection, call `finish_no_change` with the concrete reason. \
 Ending with prose alone is an incomplete run.
@@ -153,7 +158,7 @@ class _BoundaryPlan(BaseModel):
     parent: str = Field(default="", description="Existing folder whose direct boundary changes.")
     axis: str = Field(description="One property shared by every proposed sibling.")
     axis_question: str = Field(description="One question every sibling name directly answers.")
-    moves: list[_PlanMove] = Field(min_length=2)
+    moves: list[_PlanMove] = Field(min_length=1)
 
 
 class _SubmitPlanArgs(BaseModel):
@@ -508,6 +513,7 @@ class ReorgResult:
     proposal: ReorgProposal
     applied: bool
     moved: int = 0
+    unresolved_document_ids: tuple[str, ...] = ()
 
 
 def _folder(raw: str) -> PurePosixPath:
@@ -638,8 +644,10 @@ def _validate_shadow_plan(
                 bucket.append(source)
 
         nonempty = {target: paths for target, paths in targets.items() if paths}
-        if len(nonempty) < 2:
-            problems.append(f"{parent or '/'} does not create at least two sibling classes")
+        if len(nonempty) < 2 and any(not vault.exists(target) for target in nonempty):
+            problems.append(
+                f"{parent or '/'} cannot create a new boundary with fewer than two sibling classes"
+            )
         for target, paths in nonempty.items():
             if not vault.exists(target) and len(paths) < 2:
                 problems.append(f"new shelf {target} would contain only one document")
@@ -718,6 +726,18 @@ class AgentService:
             on_event=on_event,
         )
         return await agent.run(question)
+
+    def loose_document_ids(self, scope: str = "") -> list[str]:
+        """Stable IDs for documents directly on a boundary rather than inside a shelf."""
+        scope_path = _boundary_parent(scope)
+        if scope_path is None:
+            return []
+        paths = _document_paths_by_id(self._vault)
+        return [
+            document_id
+            for document_id, path in sorted(paths.items(), key=lambda item: str(item[1]).casefold())
+            if path.parent == scope_path
+        ]
 
     async def propose_reorg(
         self,
@@ -808,7 +828,8 @@ class AgentService:
                 name="finish_no_change",
                 description=(
                     "Explicitly finish with no structure change after complete inspection. "
-                    "Use only when no coherent improvement survives verification."
+                    "Use only when no coherent improvement survives verification; do not "
+                    "use it when loose arrivals can be moved into existing folders."
                 ),
                 params=_NoChangeArgs,
                 handler=_finish_no_change,
@@ -871,7 +892,13 @@ class AgentService:
                 boundaries=[],
                 problems=[],
             )
-            return ReorgResult(proposal=proposal, applied=False)
+            return ReorgResult(
+                proposal=proposal,
+                applied=False,
+                unresolved_document_ids=self._unresolved_at_scope_root(
+                    focus_document_ids, scope_path
+                ),
+            )
         proposal = await self.propose_reorg(
             instruction,
             scope=scope,
@@ -879,13 +906,18 @@ class AgentService:
             on_event=on_event,
         )
         if not proposal.boundaries:
+            unresolved = self._unresolved_at_scope_root(focus_document_ids, scope_path)
             log_trace(
                 "agent_maintenance.skipped",
                 scope=scope or "/",
                 problems=proposal.problems,
                 summary=proposal.summary,
             )
-            return ReorgResult(proposal=proposal, applied=False)
+            return ReorgResult(
+                proposal=proposal,
+                applied=False,
+                unresolved_document_ids=unresolved,
+            )
 
         # Rebuild the typed submission and validate again immediately before execution.
         # The first validation happened during the tool loop; this closes the window in
@@ -934,6 +966,7 @@ class AgentService:
             return ReorgResult(proposal=rejected, applied=False)
 
         moved = self._apply_boundaries(boundaries)
+        unresolved = self._unresolved_at_scope_root(focus_document_ids, scope_path)
         applied = moved > 0
         log_trace(
             "agent_maintenance.applied" if applied else "agent_maintenance.skipped",
@@ -942,7 +975,25 @@ class AgentService:
             moved=moved,
             summary=proposal.summary,
         )
-        return ReorgResult(proposal=proposal, applied=applied, moved=moved)
+        return ReorgResult(
+            proposal=proposal,
+            applied=applied,
+            moved=moved,
+            unresolved_document_ids=unresolved,
+        )
+
+    def _unresolved_at_scope_root(
+        self,
+        document_ids: Sequence[str],
+        scope: PurePosixPath,
+    ) -> tuple[str, ...]:
+        """Return focused documents still loose at the reviewed boundary root."""
+        paths = _document_paths_by_id(self._vault)
+        return tuple(
+            document_id
+            for document_id in document_ids
+            if (path := paths.get(document_id)) is not None and path.parent == scope
+        )
 
     def _apply_boundaries(self, boundaries: list[ProposedBoundary]) -> int:
         """Compile an accepted shadow plan into one journal transaction."""

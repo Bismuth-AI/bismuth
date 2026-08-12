@@ -35,6 +35,14 @@ After a window's shadow plan validates and applies, the next documents are place
 that updated tree. Thus a 300-document upload normally performs six bounded maintenance
 passes, and document 51 sees the structure learned from documents 1–50.
 
+Review is not completion. Focus documents still loose at the reviewed boundary after a
+window are accumulated for a second bounded sweep. Filing into one already-existing child
+is valid even though creating a new boundary still requires at least two reusable siblings.
+After two sweeps, unresolved loose documents remain in a durable, retryable `partial`
+checkpoint; they are never discarded merely because the model called `finish_no_change`.
+A manual action on a legacy false-success checkpoint seeds the loose root documents first,
+not the entire catalogue.
+
 Small multi-file arrival sets flush their final partial window. A stable library receiving
 single files does not run structural maintenance for every file: those IDs remain in the
 durable waiting queue until a context window fills or the user explicitly requests
