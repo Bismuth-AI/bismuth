@@ -352,7 +352,7 @@ async function api(path, opts = {}) {
 // The vault root, as /api/tree names it. Documents live here until enough of them
 // arrive to show a distinction, which early on is most of them.
 const ROOT = ".";
-const UI_VERSION = "2026.08.12-maintenance-resume-2";
+const UI_VERSION = "2026.08.12-incremental-maintenance-1";
 document.documentElement.dataset.uiVersion = UI_VERSION;
 let state = {}, tree = [], selected = ROOT, expanded = new Set();
 let rootInfo = null;   // the root's own entry: its loose documents are the common early case
@@ -381,8 +381,11 @@ async function syncMaintenance() {
       $("maintenance-retry").disabled = false;
     } else if (active) {
       banner.className = "maintenance-banner";
-      $("maintenance-title").textContent = "저장된 문서 카드로 구조 정리를 계속하는 중입니다…";
-      $("maintenance-detail").textContent = "PDF를 다시 읽거나 다시 업로드하지 않습니다.";
+      const windowNo = checkpoint.completed_windows + 1;
+      const queued = checkpoint.pending_documents || 0;
+      const inWindow = checkpoint.current_window_documents || Math.min(queued, 50);
+      $("maintenance-title").textContent = `구조 정리 중 — ${windowNo}번째 묶음 · 문서 ${inWindow}개`;
+      $("maintenance-detail").textContent = `남은 도착 문서 ${queued}개 · 기존 트리를 갱신한 뒤 다음 묶음을 배치합니다.`;
       $("maintenance-retry").classList.add("hidden");
     } else if (checkpoint.status === "done") {
       banner.className = "maintenance-banner";

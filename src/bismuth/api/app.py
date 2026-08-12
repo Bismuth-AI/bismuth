@@ -40,6 +40,7 @@ from bismuth.ports.llm import Spend
 from bismuth.ports.vault import INBOX
 from bismuth.services.agent import DEFAULT_ORGANIZE_INSTRUCTION
 from bismuth.services.ingest import IngestResult
+from bismuth.services.maintenance_windows import next_window, window_ready
 from bismuth.services.sidecar import read_sidecar_meta
 
 logger = logging.getLogger(__name__)
@@ -210,13 +211,13 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         logger.info("configuration updated: %s", updated.redacted())
         return setup_state()
 
-    @app.get("/api/maintenance", response_model=MaintenanceState)
-    def maintenance_state(engine: Engine) -> MaintenanceState:
+    @app.get("/api/maintenance", response_model=MaintenanceOut)
+    def maintenance_state(engine: Engine) -> MaintenanceOut:
         """Return the durable checkpoint for the current vault's structure pass."""
-        return load_maintenance(engine.vault.root)
+        return MaintenanceOut.of(load_maintenance(engine.vault.root))
 
-    @app.post("/api/maintenance/retry", response_model=MaintenanceState, status_code=202)
-    async def maintenance_retry() -> MaintenanceState:
+    @app.post("/api/maintenance/retry", response_model=MaintenanceOut, status_code=202)
+    async def maintenance_retry() -> MaintenanceOut:
         """Retry structure planning with the current model, without re-ingesting documents."""
         engine: Bismuth = app.state.engine
         current = load_maintenance(engine.vault.root)
@@ -224,14 +225,24 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         if (task is not None and not task.done()) or current.status in {"pending", "running"}:
             raise HTTPException(409, "Library maintenance is already running.")
 
+        had_backlog = bool(current.pending_document_ids)
+        backlog = current.pending_document_ids
+        if not backlog:
+            # A manual structure action on a pre-checkpoint vault starts from the
+            # existing card catalogue. _drain_maintenance will still process it in
+            # bounded windows rather than presenting the whole collection at once.
+            backlog = [document_id for document_id, _ in engine.catalog.iter_cards()]
         pending = current.model_copy(
             update={
                 "status": "pending",
                 "source": "manual-retry",
                 "error": "",
                 "summary": "",
-                "moved": 0,
-                "applied": False,
+                "moved": current.moved if had_backlog else 0,
+                "applied": current.applied if had_backlog else False,
+                "pending_document_ids": backlog,
+                "completed_windows": current.completed_windows if had_backlog else 0,
+                "current_window_documents": 0,
                 "finished_at": None,
             }
         )
@@ -241,7 +252,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             async with app.state.ingest_lock:
                 # Resolve the engine only after obtaining the lock. If setup replaced the
                 # model while this request was queued, the retry uses that replacement.
-                await _maintain(app.state.engine, source="manual-retry")
+                await _drain_maintenance(app.state.engine, source="manual-retry")
 
         task = asyncio.create_task(resume(), name="bismuth-maintenance-retry")
         app.state.maintenance_task = task
@@ -251,7 +262,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                 app.state.maintenance_task = None
 
         task.add_done_callback(clear)
-        return pending
+        return MaintenanceOut.of(pending)
 
     @app.get("/api/status", response_model=StatusOut)
     def status(engine: Engine) -> StatusOut:
@@ -336,13 +347,29 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
     async def upload(files: list[UploadFile], engine: Engine) -> list[IngestOut]:
         """Accept files and file them. Each is journalled into the inbox before anything clever."""
         results: list[IngestOut] = []
+        maintenance_source = f"upload:{uuid.uuid4().hex[:8]}"
+        arrivals = 0
+        blocked = load_maintenance(engine.vault.root).status == "failed"
         async with app.state.ingest_lock:
             for upload_file in files:
                 data = await upload_file.read()
                 name = Path(upload_file.filename or "untitled").name
                 rel = engine.ingest.stage(data, name)
-                results.append(await _process(engine, rel))
-            await _maintain(engine, source="upload")
+                result = await _process(engine, rel)
+                results.append(result)
+                if _is_new_arrival(result):
+                    arrivals += 1
+                    state = _enqueue_documents(
+                        engine, [result.document_id], source=maintenance_source
+                    )
+                    if not blocked and window_ready(engine.catalog, state.pending_document_ids):
+                        state = await _drain_maintenance(
+                            engine, source=maintenance_source, max_windows=1
+                        )
+                        blocked = state.status == "failed"
+            state = load_maintenance(engine.vault.root)
+            if not blocked and _tail_due(engine, arrivals, state):
+                await _drain_maintenance(engine, source=maintenance_source)
         return results
 
     async def run_batch(batch_id: str, staged: list[PurePosixPath], engine: Bismuth) -> None:
@@ -352,6 +379,8 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         try:
             async with app.state.ingest_lock:
                 batch.status = "running"
+                arrivals = 0
+                blocked = load_maintenance(engine.vault.root).status == "failed"
                 for rel in staged:
                     batch.current = rel.name
                     batch.current_stage = "received"
@@ -377,10 +406,31 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                         batch.duplicate += 1
                     elif not result.placed:
                         batch.inbox += 1
-                batch.current = ""
-                batch.current_stage = "maintenance"
-                batch.current_label = "Reviewing the completed library structure"
-                await _maintain(engine, source=f"batch:{batch_id}")
+                    if _is_new_arrival(result):
+                        arrivals += 1
+                        state = _enqueue_documents(
+                            engine, [result.document_id], source=f"batch:{batch_id}"
+                        )
+                        if not blocked and window_ready(
+                            engine.catalog, state.pending_document_ids
+                        ):
+                            batch.current = ""
+                            batch.current_stage = "maintenance"
+                            batch.current_label = (
+                                f"구조 정리 중 — {state.completed_windows + 1}번째 묶음"
+                            )
+                            state = await _drain_maintenance(
+                                engine,
+                                source=f"batch:{batch_id}",
+                                max_windows=1,
+                            )
+                            blocked = state.status == "failed"
+                state = load_maintenance(engine.vault.root)
+                if not blocked and _tail_due(engine, arrivals, state):
+                    batch.current = ""
+                    batch.current_stage = "maintenance"
+                    batch.current_label = "남은 도착 문서 구조 정리 중"
+                    await _drain_maintenance(engine, source=f"batch:{batch_id}")
             batch.status = "done"
         except asyncio.CancelledError:
             batch.status = "interrupted"
@@ -446,8 +496,26 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
     async def scan(engine: Engine) -> list[IngestOut]:
         """Read whatever is sitting unprocessed in the inbox, including hand-dropped files."""
         async with app.state.ingest_lock:
-            results = [await _process(engine, rel) for rel in engine.ingest.pending_inbox()]
-            await _maintain(engine, source="scan")
+            results: list[IngestOut] = []
+            maintenance_source = f"scan:{uuid.uuid4().hex[:8]}"
+            arrivals = 0
+            blocked = load_maintenance(engine.vault.root).status == "failed"
+            for rel in engine.ingest.pending_inbox():
+                result = await _process(engine, rel)
+                results.append(result)
+                if _is_new_arrival(result):
+                    arrivals += 1
+                    state = _enqueue_documents(
+                        engine, [result.document_id], source=maintenance_source
+                    )
+                    if not blocked and window_ready(engine.catalog, state.pending_document_ids):
+                        state = await _drain_maintenance(
+                            engine, source=maintenance_source, max_windows=1
+                        )
+                        blocked = state.status == "failed"
+            state = load_maintenance(engine.vault.root)
+            if not blocked and _tail_due(engine, arrivals, state):
+                await _drain_maintenance(engine, source=maintenance_source)
             return results
 
     @app.get("/api/progress")
@@ -475,45 +543,122 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             return IngestOut(filename=rel.name, ok=False, reason=str(exc), spend=_drain(engine))
         return _result_of(result, spend=_drain(engine))
 
-    async def _maintain(engine: Bismuth, *, source: str) -> MaintenanceState:
-        """Run autonomous maintenance once per completed arrival set.
+    def _is_new_arrival(result: IngestOut) -> bool:
+        return result.ok and result.placed and not result.duplicate and bool(result.document_id)
 
-        Filing is already durable.  Planning or validation failure therefore leaves the
-        safely ingested documents where they are and must not convert them into upload
-        failures.
-        """
+    def _enqueue_documents(
+        engine: Bismuth, document_ids: list[str], *, source: str
+    ) -> MaintenanceState:
         previous = load_maintenance(engine.vault.root)
-        running = MaintenanceState(
-            status="running",
-            source=source,
-            attempts=previous.attempts + 1,
-            started_at=time.time(),
+        backlog = list(previous.pending_document_ids)
+        if previous.status == "failed" and not backlog:
+            # A failure written by a pre-window build has no focus IDs. Seed it from
+            # durable cards so the next retry still covers the existing collection.
+            backlog = [document_id for document_id, _ in engine.catalog.iter_cards()]
+        seen = set(backlog)
+        for document_id in document_ids:
+            if document_id in seen:
+                continue
+            backlog.append(document_id)
+            seen.add(document_id)
+        new_cycle = (
+            not previous.pending_document_ids
+            and previous.status != "failed"
+            and previous.source != source
         )
-        save_maintenance(engine.vault.root, running)
-        try:
-            result = await engine.agent.reorganize()
-        except asyncio.CancelledError:
-            failed = running.model_copy(
+        waiting = previous.model_copy(
+            update={
+                "status": "failed" if previous.status == "failed" else "waiting",
+                "source": source,
+                "error": previous.error if previous.status == "failed" else "",
+                "summary": "" if new_cycle else previous.summary,
+                "moved": 0 if new_cycle else previous.moved,
+                "applied": False if new_cycle else previous.applied,
+                "pending_document_ids": backlog,
+                "completed_windows": 0 if new_cycle else previous.completed_windows,
+                "current_window_documents": 0,
+                "finished_at": None,
+            }
+        )
+        save_maintenance(engine.vault.root, waiting)
+        return waiting
+
+    def _tail_due(engine: Bismuth, arrivals: int, state: MaintenanceState) -> bool:
+        if not state.pending_document_ids:
+            return False
+        has_library_folders = any(
+            folder.parts and folder.parts[0] != INBOX.parts[0]
+            for folder in engine.vault.iter_folders()
+        )
+        # Four is not a semantic threshold: the shadow-plan validator requires two
+        # non-singleton sibling shelves, which is mathematically impossible below it.
+        return arrivals >= 4 or (not has_library_folders and len(state.pending_document_ids) >= 4)
+
+    async def _drain_maintenance(
+        engine: Bismuth,
+        *,
+        source: str,
+        max_windows: int | None = None,
+    ) -> MaintenanceState:
+        """Process queued arrivals in isolated windows, updating the tree between them."""
+        processed = 0
+        while True:
+            previous = load_maintenance(engine.vault.root)
+            if not previous.pending_document_ids:
+                return previous
+            window = next_window(engine.catalog, previous.pending_document_ids)
+            if not window:
+                return previous
+            running = previous.model_copy(
                 update={
-                    "status": "failed",
-                    "error": "The server stopped while organizing. The saved documents can be retried.",
-                    "finished_at": time.time(),
+                    "status": "running",
+                    "source": source,
+                    "error": "",
+                    "attempts": previous.attempts + 1,
+                    "current_window_documents": len(window),
+                    "started_at": time.time(),
+                    "finished_at": None,
                 }
             )
-            save_maintenance(engine.vault.root, failed)
-            raise
-        except Exception as exc:
-            logger.exception("autonomous library maintenance failed; preserving current tree")
-            failed = running.model_copy(
-                update={
-                    "status": "failed",
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "finished_at": time.time(),
-                }
+            save_maintenance(engine.vault.root, running)
+            logger.info(
+                "maintenance window started: source=%s window=%d documents=%d queued=%d",
+                source,
+                running.completed_windows + 1,
+                len(window),
+                len(running.pending_document_ids),
             )
-            save_maintenance(engine.vault.root, failed)
-            return failed
-        else:
+            try:
+                result = await engine.agent.reorganize(focus_document_ids=window)
+            except asyncio.CancelledError:
+                failed = running.model_copy(
+                    update={
+                        "status": "failed",
+                        "error": (
+                            "The server stopped while organizing. "
+                            "The saved arrival windows can be retried."
+                        ),
+                        "current_window_documents": 0,
+                        "finished_at": time.time(),
+                    }
+                )
+                save_maintenance(engine.vault.root, failed)
+                raise
+            except Exception as exc:
+                logger.exception("autonomous library maintenance failed; preserving current tree")
+                failed = running.model_copy(
+                    update={
+                        "status": "failed",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "current_window_documents": 0,
+                        "finished_at": time.time(),
+                    }
+                )
+                save_maintenance(engine.vault.root, failed)
+                return failed
+            finally:
+                _drain(engine)
+
             problems = result.proposal.problems
             if not result.applied and (problems or not result.proposal.summary.strip()):
                 detail = "; ".join(problems) or "planner returned no plan and no explanation"
@@ -522,24 +667,43 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                         "status": "failed",
                         "error": f"Structure plan was not completed: {detail}",
                         "summary": result.proposal.summary,
+                        "current_window_documents": 0,
                         "finished_at": time.time(),
                     }
                 )
                 save_maintenance(engine.vault.root, failed)
                 return failed
-            done = running.model_copy(
+
+            consumed = set(window)
+            remaining = [
+                document_id
+                for document_id in running.pending_document_ids
+                if document_id not in consumed
+            ]
+            processed += 1
+            complete = not remaining
+            state = running.model_copy(
                 update={
-                    "status": "done",
+                    "status": "done" if complete else "waiting",
                     "summary": result.proposal.summary,
-                    "moved": result.moved,
-                    "applied": result.applied,
-                    "finished_at": time.time(),
+                    "moved": running.moved + result.moved,
+                    "applied": running.applied or result.applied,
+                    "pending_document_ids": remaining,
+                    "completed_windows": running.completed_windows + 1,
+                    "current_window_documents": 0,
+                    "finished_at": time.time() if complete else None,
                 }
             )
-            save_maintenance(engine.vault.root, done)
-            return done
-        finally:
-            _drain(engine)
+            save_maintenance(engine.vault.root, state)
+            logger.info(
+                "maintenance window finished: source=%s window=%d moved=%d remaining=%d",
+                source,
+                state.completed_windows,
+                result.moved,
+                len(remaining),
+            )
+            if complete or (max_windows is not None and processed >= max_windows):
+                return state
 
     def _drain(engine: Bismuth) -> Spend:
         """Collect and reset what the models have spent. Documents are processed one at a
@@ -742,6 +906,38 @@ class BatchOut(BaseModel):
     current_label: str = ""
     created_at: float
     finished_at: float | None = None
+
+
+class MaintenanceOut(BaseModel):
+    status: str
+    source: str
+    error: str
+    summary: str
+    attempts: int
+    moved: int
+    applied: bool
+    pending_documents: int
+    completed_windows: int
+    current_window_documents: int
+    started_at: float | None
+    finished_at: float | None
+
+    @classmethod
+    def of(cls, state: MaintenanceState) -> MaintenanceOut:
+        return cls(
+            status=state.status,
+            source=state.source,
+            error=state.error,
+            summary=state.summary,
+            attempts=state.attempts,
+            moved=state.moved,
+            applied=state.applied,
+            pending_documents=len(state.pending_document_ids),
+            completed_windows=state.completed_windows,
+            current_window_documents=state.current_window_documents,
+            started_at=state.started_at,
+            finished_at=state.finished_at,
+        )
 
 
 class SetupStateOut(BaseModel):

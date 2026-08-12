@@ -32,8 +32,9 @@ judged the current root-only structure to be good.
   Plain prose or max-turn termination is incomplete maintenance.
 - A planner that stops without `submit_plan` or `finish_no_change` produces a retryable
   failed checkpoint; it can no longer become `done / moved=0`.
-- Compact inventory pages allow up to 500 cards and default to the largest page, so this
-  vault can be inspected in one tool result instead of six turns.
+- The temporary 500-card whole-vault inventory fix was removed. Maintenance now receives
+  at most 50 new arrivals (and at most 18,000 compact-card characters), then updates the
+  tree before the next window. Existing folders are inspected only in bounded local pages.
 - The verifier is a one-shot tool with its own eight-turn budget. Repeated calls are
   rejected and direct the planner to submit the plan.
 - The prompt reserves tool turns for verification and submission rather than recounting

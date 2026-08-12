@@ -143,6 +143,16 @@
   끝났는데 `done / moved=0`으로 오판한 사건과 수정은
   [`docs/troubleshooting/agent-maintenance-max-turns.md`](docs/troubleshooting/agent-maintenance-max-turns.md)에 기록했다.
 
+### 1.5 2026-08-12 증분 도착 창
+
+- 배치 전체가 끝난 뒤 장서 전체를 한 컨텍스트에 넣는 경로를 폐기했다. 새 문서는 최대 50건·카드
+  18,000자 창으로 큐잉하고, 창마다 구조를 적용한 뒤 다음 문서를 갱신된 트리에 배치한다.
+- 에이전트는 `arrivals`로 새 창 전체를 읽되 기존 장서는 트리·안정 표지판·영향받은 폴더의 bounded
+  inventory로만 읽는다. verifier만 격리하고 main planner를 무한 확장하던 문제가 제거됐다.
+- 실패하면 해당 창과 이후 도착 ID가 `.bismuth/maintenance.json`에 남는다. 같은 배치에서 실패한
+  모델을 반복 호출하지 않으며, 수동 재시도는 남은 큐를 같은 bounded 창으로 계속 처리한다.
+- 상세 결정과 비용은 ADR-0017에 기록했다.
+
 ## 2. 이번에 고친 것 — 전부 실측 근거 있음
 
 ### 세분화·배치 (트리 품질)

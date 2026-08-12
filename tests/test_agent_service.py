@@ -45,6 +45,17 @@ def test_read_tools_are_all_read_only(engine: Bismuth) -> None:
     assert all(getattr(t, "read_only", False) for t in tools)
 
 
+async def test_organizer_read_budget_is_enforced_by_tools(engine: Bismuth) -> None:
+    tools = build_read_tools(engine.vault, engine.charters, max_calls=1)
+    tree = next(tool for tool in tools if tool.name == "tree")
+    inventory = next(tool for tool in tools if tool.name == "inventory")
+
+    await tree.run(tree.params())  # type: ignore[attr-defined]
+    refused = await inventory.run(inventory.params())  # type: ignore[attr-defined]
+
+    assert "budget exhausted" in refused
+
+
 async def test_ls_surfaces_document_types(engine: Bismuth) -> None:
     # The organizer judges by real doc types (not the self-healing folder note),
     # so ls must expose each document's type.

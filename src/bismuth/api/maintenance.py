@@ -14,11 +14,11 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from bismuth.ports.vault import STATE_DIR
 
-MaintenanceStatus = Literal["idle", "pending", "running", "done", "failed"]
+MaintenanceStatus = Literal["idle", "waiting", "pending", "running", "done", "failed"]
 _FILENAME = "maintenance.json"
 
 
@@ -30,6 +30,9 @@ class MaintenanceState(BaseModel):
     attempts: int = 0
     moved: int = 0
     applied: bool = False
+    pending_document_ids: list[str] = Field(default_factory=list)
+    completed_windows: int = 0
+    current_window_documents: int = 0
     started_at: float | None = None
     finished_at: float | None = None
 

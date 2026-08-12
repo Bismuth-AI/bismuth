@@ -50,3 +50,12 @@ def test_legacy_empty_success_is_recovered_as_an_incomplete_plan(tmp_path: Path)
 
     assert recovered.status == "failed"
     assert "without submitting" in recovered.error
+
+
+def test_waiting_arrivals_survive_restart_without_becoming_a_failure(tmp_path: Path) -> None:
+    waiting = MaintenanceState(status="waiting", pending_document_ids=["a", "b"])
+    save(tmp_path, waiting)
+
+    recovered = recover_interrupted(tmp_path)
+
+    assert recovered == waiting

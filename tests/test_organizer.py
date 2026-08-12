@@ -100,6 +100,32 @@ async def test_turn_exhaustion_is_not_reported_as_a_successful_no_change(
     assert "exhausted" in " ".join(proposal.problems)
 
 
+async def test_arrival_window_exposes_only_focus_cards_with_short_handles(
+    engine: Bismuth,
+) -> None:
+    await _four_documents(engine)
+    document_ids = [document_id for document_id, _ in engine.catalog.iter_cards()]
+    model = FakeModel(
+        [
+            says("", call("arrivals", {})),
+            says(
+                "",
+                call(
+                    "finish_no_change",
+                    {"reason": "두 도착 문서만으로는 기존 경계를 바꿀 근거가 없습니다."},
+                ),
+            ),
+            says("검토를 마쳤습니다."),
+        ]
+    )
+
+    await _svc(engine, model).propose_reorg(focus_document_ids=document_ids[:2])
+
+    arrival_output = next(message.content for message in model.calls[1][1] if message.role == "tool")
+    assert arrival_output.count("ID=D") == 2
+    assert all(document_id not in arrival_output for document_id in document_ids)
+
+
 def test_completed_upload_set_applies_valid_shadow_plan_automatically(
     settings: Settings, llm: object
 ) -> None:
