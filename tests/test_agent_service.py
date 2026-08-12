@@ -5,7 +5,12 @@ from __future__ import annotations
 from agentkit.testing import FakeModel, call, says
 
 from bismuth.container import Bismuth
-from bismuth.services.agent import AgentService, build_read_tools
+from bismuth.services.agent import (
+    AgentService,
+    _boundary_parent,
+    _stored_folder,
+    build_read_tools,
+)
 from tests.test_ingest import add
 
 
@@ -43,6 +48,15 @@ def test_read_tools_are_all_read_only(engine: Bismuth) -> None:
     tools = build_read_tools(engine.vault, engine.charters)
     assert {t.name for t in tools} == {"ls", "tree", "inventory", "read", "grep", "read_note"}
     assert all(getattr(t, "read_only", False) for t in tools)
+
+
+def test_root_boundary_stays_canonical_between_validations() -> None:
+    for spelling in ("", "/", "."):
+        root = _boundary_parent(spelling)
+
+        assert root is not None
+        assert not root.parts
+        assert _stored_folder(root) == ""
 
 
 async def test_organizer_read_budget_is_enforced_by_tools(engine: Bismuth) -> None:
