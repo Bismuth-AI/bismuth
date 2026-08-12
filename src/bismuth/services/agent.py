@@ -533,6 +533,18 @@ def _strict_folder(raw: str) -> PurePosixPath | None:
     return PurePosixPath(*parts)
 
 
+def _boundary_parent(raw: str) -> PurePosixPath | None:
+    """Parse a boundary parent while accepting the three common root spellings."""
+    if raw in ("", "/", "."):
+        return PurePosixPath()
+    return _strict_folder(raw)
+
+
+def _stored_folder(path: PurePosixPath) -> str:
+    """Keep the vault root stable across validation and apply-time revalidation."""
+    return "" if not path.parts else str(path)
+
+
 def _validate_shadow_plan(
     vault: Vault,
     args: _SubmitPlanArgs,
@@ -551,9 +563,7 @@ def _validate_shadow_plan(
         return [], ["the submitted plan has no boundaries"]
 
     for boundary in args.boundaries:
-        parent = (
-            PurePosixPath() if boundary.parent in ("", "/") else _strict_folder(boundary.parent)
-        )
+        parent = _boundary_parent(boundary.parent)
         if parent is None:
             problems.append(f"invalid boundary parent: {boundary.parent!r}")
             continue
@@ -635,7 +645,7 @@ def _validate_shadow_plan(
                 problems.append(f"new shelf {target} would contain only one document")
         accepted.append(
             ProposedBoundary(
-                parent=str(parent),
+                parent=_stored_folder(parent),
                 axis=axis,
                 axis_question=question,
                 moves=[
@@ -718,7 +728,7 @@ class AgentService:
         on_event: OnEvent | None = None,
     ) -> ReorgProposal:
         """Inspect the vault and return one validated shadow plan. Never mutates."""
-        scope_path = PurePosixPath() if scope in ("", "/") else _strict_folder(scope)
+        scope_path = _boundary_parent(scope)
         if scope_path is None:
             return ReorgProposal([], [], f"Invalid scope: {scope}", [], ["invalid scope"])
         if not self._vault.is_dir(scope_path):
@@ -843,7 +853,7 @@ class AgentService:
         on_event: OnEvent | None = None,
     ) -> ReorgResult:
         """Plan against a snapshot and atomically apply only a still-valid plan."""
-        scope_path = PurePosixPath() if scope in ("", "/") else _strict_folder(scope)
+        scope_path = _boundary_parent(scope)
         if scope_path is None or not self._vault.is_dir(scope_path):
             proposal = ReorgProposal(
                 moves=[],
