@@ -29,3 +29,4 @@ decision should be revisited. Superseded records stay; they are not deleted.
 | [0014](0014-boundary-state-and-closed-membership.md) | Derive managed signs; model membership as closed per-document choices |
 | [0015](0015-agentic-shadow-planning.md) | Plan holistically with tools; validate and atomically apply the shadow plan without HITL |
 | [0016](0016-resumable-maintenance.md) | Persist maintenance failure and retry only structure planning after a model change |
+| [0017](0017-incremental-arrival-windows.md) | Update the tree between bounded arrival windows instead of reviewing the whole batch |

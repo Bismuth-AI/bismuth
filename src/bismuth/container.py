@@ -137,9 +137,9 @@ def build(
             placement=placement,
             charters=charters,
             transactor=transactor,
-            # Semantic maintenance now runs once over a completed upload batch.  The
-            # old per-document deterministic planner remains available for diagnostics,
-            # but must not reshape the live tree after every arrival.
+            # Semantic maintenance is orchestrated by the API in bounded arrival
+            # windows.  The old per-document deterministic planner remains available
+            # for diagnostics, but must not reshape the live tree after every arrival.
             subdivision=None,
             extraction_max_chars=settings.extraction_max_chars,
         ),

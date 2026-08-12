@@ -8,6 +8,7 @@ change journalled and applied as one transaction.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -47,10 +48,10 @@ You are the planning half of an AI librarian. You may inspect a real document va
 but you can only submit a SHADOW PLAN. You never mutate files yourself.
 
 Maintain one coherent mental model throughout the run:
-1. Start with `tree`, then call `inventory` with the largest useful page so the complete \
-compact collection is normally read in one turn. Follow another page only when the tool \
-says one remains. Read notes or selected sidecars only for real ambiguity; do not spend \
-turns recounting fields already present in inventory.
+1. Start with `tree`, then call `arrivals` to read the complete bounded window that \
+triggered this pass. The existing tree and folder notes are the durable memory from prior \
+windows. Use `inventory` only inside folders affected by these arrivals, one bounded page \
+at a time. Read selected sidecars only for real ambiguity; never enumerate the whole vault.
 2. Identify a navigation problem before designing a taxonomy. A large uniform folder \
 is not automatically a problem.
 3. For each parent you reorganise, choose ONE property and create at least TWO sibling \
@@ -70,7 +71,7 @@ returned problems to revise and submit a complete replacement. If no coherent \
 improvement survives inspection, call `finish_no_change` with the concrete reason. \
 Ending with prose alone is an incomplete run.
 
-Hard execution budget: finish inventory and selected evidence within 6 tool turns, call \
+Hard execution budget: finish arrivals and selected existing evidence within 6 tool turns, call \
 `verify_plan` once, and reserve the remaining turns for `submit_plan` and at most one \
 corrected replacement. Exact statistical counts are not required. A useful partial \
 boundary may omit uncertain documents.
@@ -115,11 +116,15 @@ class _TreeArgs(BaseModel):
     path: str = Field(default="", description="Folder to show under, or empty for the root.")
 
 
+class _ArrivalsArgs(BaseModel):
+    pass
+
+
 class _InventoryArgs(BaseModel):
     path: str = Field(default="", description="Folder to inventory, or empty for the root.")
     recursive: bool = Field(default=True, description="Include documents in descendants.")
     offset: int = Field(default=0, ge=0, description="First document to return (0-based).")
-    limit: int = Field(default=500, ge=1, le=500, description="Document cards per page.")
+    limit: int = Field(default=50, ge=1, le=50, description="Document cards per page.")
 
 
 class _ReadArgs(BaseModel):
@@ -183,21 +188,105 @@ def _document_handles(vault: Vault) -> dict[str, PurePosixPath]:
     return {f"D{index:06d}": path for index, path in enumerate(documents, start=1)}
 
 
+def _document_paths_by_id(vault: Vault) -> dict[str, PurePosixPath]:
+    paths: dict[str, PurePosixPath] = {}
+    for document in vault.iter_files(PurePosixPath(), recursive=True):
+        sidecar = document.parent / sidecar_name(document.name)
+        if not vault.exists(sidecar):
+            continue
+        meta = read_sidecar_meta(vault.read_text(sidecar)) or {}
+        document_id = str(meta.get("document_id", ""))
+        if document_id:
+            paths[document_id] = document
+    return paths
+
+
+def _compact_card(vault: Vault, document: PurePosixPath, handle: str) -> str:
+    meta: dict[str, object] = {}
+    sidecar = document.parent / sidecar_name(document.name)
+    if vault.exists(sidecar):
+        meta = read_sidecar_meta(vault.read_text(sidecar)) or {}
+    title = str(meta.get("title", "")).strip()[:60]
+    doc_type = str(meta.get("doc_type", "")).strip()[:20]
+    topics = meta.get("topics", [])
+    topic_text = (
+        ", ".join(str(item)[:20] for item in topics[:2]) if isinstance(topics, list) else ""
+    )
+    summary = " ".join(str(meta.get("summary", "")).split())[:60]
+    return (
+        f"ID={handle} | AT={str(document.parent)[:60]} "
+        f"| TITLE={title or document.stem[:60]} | TYPE={doc_type} "
+        f"| TOPICS={topic_text} | SUMMARY={summary}"
+    )
+
+
+def build_arrivals_tool(
+    vault: Vault,
+    *,
+    handles: dict[str, PurePosixPath],
+    document_ids: Sequence[str],
+) -> Tool:
+    """Expose only the new bounded evidence window, using deterministic D-handles."""
+    handle_by_path = {path: handle for handle, path in handles.items()}
+    path_by_id = _document_paths_by_id(vault)
+    documents = [path_by_id[document_id] for document_id in document_ids if document_id in path_by_id]
+    used = False
+
+    async def _arrivals(_: _ArrivalsArgs) -> str:
+        nonlocal used
+        if used:
+            return "Arrival window already read. Use the existing evidence and continue the plan."
+        used = True
+        rows = [
+            _compact_card(vault, document, handle_by_path.get(document, ""))
+            for document in documents
+        ]
+        return "\n".join(rows) or "(no readable arrivals in this window)"
+
+    return FunctionTool(
+        name="arrivals",
+        description=(
+            "Read every compact card in the bounded new-arrival window that triggered "
+            "this maintenance pass. Call once after tree."
+        ),
+        params=_ArrivalsArgs,
+        handler=_arrivals,
+        read_only=True,
+        concurrency_safe=True,
+    )
+
+
 def build_read_tools(
     vault: Vault,
     charters: CharterService,
     *,
     handles: dict[str, PurePosixPath] | None = None,
+    max_calls: int | None = None,
 ) -> list[Tool]:
     """The read-only tools that let an agent navigate the vault."""
 
     effective_handles = handles or _document_handles(vault)
     handle_by_path = {path: handle for handle, path in effective_handles.items()}
+    calls_left = max_calls
+
+    def _claim() -> str | None:
+        nonlocal calls_left
+        if calls_left is None:
+            return None
+        if calls_left <= 0:
+            return (
+                "Read-tool budget exhausted. Use the evidence already collected and call "
+                "verify_plan, submit_plan, or finish_no_change now."
+            )
+        calls_left -= 1
+        return None
 
     def _folder(path: str) -> PurePosixPath:
         return PurePosixPath(path) if path not in ("", "/") else PurePosixPath()
 
     async def _ls(args: _LsArgs) -> str:
+        if refused := _claim():
+            return refused
         folder = _folder(args.path)
         if not vault.is_dir(folder):
             return f"No such folder: {args.path or '/'}"
@@ -230,6 +319,8 @@ def build_read_tools(
         return "\n".join(lines) or "(empty)"
 
     async def _tree(args: _TreeArgs) -> str:
+        if refused := _claim():
+            return refused
         base = _folder(args.path)
         rows: list[str] = []
         for folder in vault.iter_folders():
@@ -242,6 +333,8 @@ def build_read_tools(
         return "\n".join(rows) or "(no folders yet)"
 
     async def _inventory(args: _InventoryArgs) -> str:
+        if refused := _claim():
+            return refused
         base = _folder(args.path)
         if not vault.is_dir(base):
             return f"No such folder: {args.path or '/'}"
@@ -254,24 +347,10 @@ def build_read_tools(
             key=lambda path: str(path).casefold(),
         )
         window = documents[args.offset : args.offset + args.limit]
-        rows: list[str] = []
-        for document in window:
-            meta: dict[str, object] = {}
-            sidecar = document.parent / sidecar_name(document.name)
-            if vault.exists(sidecar):
-                meta = read_sidecar_meta(vault.read_text(sidecar)) or {}
-            title = str(meta.get("title", "")).strip()[:60]
-            doc_type = str(meta.get("doc_type", "")).strip()[:20]
-            topics = meta.get("topics", [])
-            topic_text = (
-                ", ".join(str(item)[:20] for item in topics[:2]) if isinstance(topics, list) else ""
-            )
-            summary = " ".join(str(meta.get("summary", "")).split())[:60]
-            rows.append(
-                f"ID={handle_by_path.get(document, '')} | AT={str(document.parent)[:60]} "
-                f"| TITLE={title or document.stem[:60]} | TYPE={doc_type} "
-                f"| TOPICS={topic_text} | SUMMARY={summary}"
-            )
+        rows = [
+            _compact_card(vault, document, handle_by_path.get(document, ""))
+            for document in window
+        ]
         end = args.offset + len(window)
         if end < len(documents):
             rows.append(
@@ -283,6 +362,8 @@ def build_read_tools(
         return "\n".join(rows) or "(empty)"
 
     async def _read(args: _ReadArgs) -> str:
+        if refused := _claim():
+            return refused
         target = effective_handles.get(args.path, PurePosixPath(args.path))
         if not vault.exists(target):
             return f"No such file: {args.path}"
@@ -299,6 +380,8 @@ def build_read_tools(
         return numbered + more or "(empty file)"
 
     async def _grep(args: _GrepArgs) -> str:
+        if refused := _claim():
+            return refused
         try:
             pattern = re.compile(args.pattern)
         except re.error as exc:
@@ -324,6 +407,8 @@ def build_read_tools(
         return "\n".join(hits) or "(no matches)"
 
     async def _read_note(args: _NoteArgs) -> str:
+        if refused := _claim():
+            return refused
         folder = _folder(args.folder)
         note = folder / CHARTER_FILENAME
         if not vault.exists(note):
@@ -629,6 +714,7 @@ class AgentService:
         instruction: str = DEFAULT_ORGANIZE_INSTRUCTION,
         *,
         scope: str = "",
+        focus_document_ids: Sequence[str] = (),
         on_event: OnEvent | None = None,
     ) -> ReorgProposal:
         """Inspect the vault and return one validated shadow plan. Never mutates."""
@@ -643,7 +729,12 @@ class AgentService:
         no_change_reason: list[str] = []
         verifier = Agent(
             model=self._model,
-            tools=build_read_tools(self._vault, self._charters, handles=handles),
+            tools=build_read_tools(
+                self._vault,
+                self._charters,
+                handles=handles,
+                max_calls=4,
+            ),
             system=SYSTEM_VERIFIER,
             max_turns=8,
         )
@@ -674,7 +765,17 @@ class AgentService:
             return "No-change decision recorded. End the run now."
 
         tools = [
-            *build_read_tools(self._vault, self._charters, handles=handles),
+            *build_read_tools(
+                self._vault,
+                self._charters,
+                handles=handles,
+                max_calls=5,
+            ),
+            build_arrivals_tool(
+                self._vault,
+                handles=handles,
+                document_ids=focus_document_ids,
+            ),
             build_submit_plan_tool(
                 self._vault,
                 scope=scope_path,
@@ -712,7 +813,12 @@ class AgentService:
             max_turns=24,
             on_event=on_event,
         )
-        result = await agent.run(instruction)
+        focused_instruction = (
+            f"{instruction}\n\nThis pass was triggered by a bounded window of "
+            f"{len(focus_document_ids)} newly filed documents. Inspect them with arrivals; "
+            "treat existing folder notes and only the affected local inventories as prior memory."
+        )
+        result = await agent.run(focused_instruction)
         if not boundaries and not no_change_reason:
             problems.append(
                 "planner exhausted its tool-turn budget before submitting a plan"
@@ -733,6 +839,7 @@ class AgentService:
         instruction: str = DEFAULT_ORGANIZE_INSTRUCTION,
         *,
         scope: str = "",
+        focus_document_ids: Sequence[str] = (),
         on_event: OnEvent | None = None,
     ) -> ReorgResult:
         """Plan against a snapshot and atomically apply only a still-valid plan."""
@@ -758,6 +865,7 @@ class AgentService:
         proposal = await self.propose_reorg(
             instruction,
             scope=scope,
+            focus_document_ids=focus_document_ids,
             on_event=on_event,
         )
         if not proposal.boundaries:

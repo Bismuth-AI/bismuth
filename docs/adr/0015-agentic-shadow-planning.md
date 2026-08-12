@@ -21,8 +21,9 @@ for the coherence of the complete library. Fake-model tests proved those contrac
 therefore did not detect the quality regression.
 
 Running that pipeline after every arrival also made order effects and taxonomy churn
-part of ordinary ingest. A librarian should observe a completed arrival set before
-deciding whether the building itself needs to change.
+part of ordinary ingest. A librarian should observe a coherent arrival set before
+deciding whether the building itself needs to change. ADR-0017 later bounds a large
+arrival set into incremental windows and carries structure forward between them.
 
 ## Decision
 
@@ -59,7 +60,7 @@ breaker, not a semantic folder-name or plan-quality rule.
 
 - One component is accountable for the coherence of the entire proposed change.
 - Ingest safety no longer depends on maintenance success.
-- Taxonomy changes happen once per completed arrival set rather than once per file.
+- Taxonomy changes happen once per bounded arrival window rather than once per file.
 - Bad model text is rejected, never repaired into a different filesystem name.
 - Folder notes are generated from accepted boundary state, not unconstrained prose.
 - The agent can deliberately leave uncertain documents where they are.
