@@ -352,7 +352,7 @@ async function api(path, opts = {}) {
 // The vault root, as /api/tree names it. Documents live here until enough of them
 // arrive to show a distinction, which early on is most of them.
 const ROOT = ".";
-const UI_VERSION = "2026.08.12-incremental-maintenance-1";
+const UI_VERSION = "2026.08.12-incremental-maintenance-2";
 document.documentElement.dataset.uiVersion = UI_VERSION;
 let state = {}, tree = [], selected = ROOT, expanded = new Set();
 let rootInfo = null;   // the root's own entry: its loose documents are the common early case
@@ -379,12 +379,19 @@ async function syncMaintenance() {
       $("maintenance-detail").textContent = checkpoint.error || "모델 설정을 확인한 뒤 계속할 수 있습니다.";
       $("maintenance-retry").classList.remove("hidden");
       $("maintenance-retry").disabled = false;
+    } else if (checkpoint.status === "partial") {
+      banner.className = "maintenance-banner failed";
+      const unresolved = checkpoint.pending_documents + checkpoint.deferred_documents;
+      $("maintenance-title").textContent = `구조 정리 일부 완료 — 루트 문서 ${unresolved}개 재검토 필요`;
+      $("maintenance-detail").textContent = "두 차례의 제한된 검토 후에도 안전하게 분류하지 못한 문서입니다. 현재 구조는 보존되며 다시 구조 정리를 시도할 수 있습니다.";
+      $("maintenance-retry").classList.remove("hidden");
+      $("maintenance-retry").disabled = false;
     } else if (active) {
       banner.className = "maintenance-banner";
       const windowNo = checkpoint.completed_windows + 1;
       const queued = checkpoint.pending_documents || 0;
       const inWindow = checkpoint.current_window_documents || Math.min(queued, 50);
-      $("maintenance-title").textContent = `구조 정리 중 — ${windowNo}번째 묶음 · 문서 ${inWindow}개`;
+      $("maintenance-title").textContent = `구조 정리 중 — ${checkpoint.review_round}차 검토 · ${windowNo}번째 묶음 · 문서 ${inWindow}개`;
       $("maintenance-detail").textContent = `남은 도착 문서 ${queued}개 · 기존 트리를 갱신한 뒤 다음 묶음을 배치합니다.`;
       $("maintenance-retry").classList.add("hidden");
     } else if (checkpoint.status === "done") {

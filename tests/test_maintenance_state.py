@@ -59,3 +59,16 @@ def test_waiting_arrivals_survive_restart_without_becoming_a_failure(tmp_path: P
     recovered = recover_interrupted(tmp_path)
 
     assert recovered == waiting
+
+
+def test_partial_loose_documents_remain_retryable_after_restart(tmp_path: Path) -> None:
+    partial = MaintenanceState(
+        status="partial",
+        deferred_document_ids=["a", "b"],
+        review_round=2,
+    )
+    save(tmp_path, partial)
+
+    recovered = recover_interrupted(tmp_path)
+
+    assert recovered == partial

@@ -44,6 +44,7 @@ from bismuth.services.maintenance_windows import next_window, window_ready
 from bismuth.services.sidecar import read_sidecar_meta
 
 logger = logging.getLogger(__name__)
+MAX_MAINTENANCE_REVIEW_ROUNDS = 2
 
 STATIC = Path(__file__).parent / "static"
 
@@ -225,13 +226,19 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         if (task is not None and not task.done()) or current.status in {"pending", "running"}:
             raise HTTPException(409, "Library maintenance is already running.")
 
-        had_backlog = bool(current.pending_document_ids)
-        backlog = current.pending_document_ids
+        backlog = list(
+            dict.fromkeys(
+                [*current.pending_document_ids, *current.deferred_document_ids]
+            )
+        )
+        had_backlog = bool(backlog)
         if not backlog:
             # A manual structure action on a pre-checkpoint vault starts from the
-            # existing card catalogue. _drain_maintenance will still process it in
-            # bounded windows rather than presenting the whole collection at once.
-            backlog = [document_id for document_id, _ in engine.catalog.iter_cards()]
+            # loose root backlog first. Once the root is clear, the same action can
+            # audit established subtrees using the complete catalogue.
+            backlog = engine.agent.loose_document_ids() or [
+                document_id for document_id, _ in engine.catalog.iter_cards()
+            ]
         pending = current.model_copy(
             update={
                 "status": "pending",
@@ -241,7 +248,9 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                 "moved": current.moved if had_backlog else 0,
                 "applied": current.applied if had_backlog else False,
                 "pending_document_ids": backlog,
+                "deferred_document_ids": [],
                 "completed_windows": current.completed_windows if had_backlog else 0,
+                "review_round": 1,
                 "current_window_documents": 0,
                 "finished_at": None,
             }
@@ -550,11 +559,17 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         engine: Bismuth, document_ids: list[str], *, source: str
     ) -> MaintenanceState:
         previous = load_maintenance(engine.vault.root)
-        backlog = list(previous.pending_document_ids)
+        backlog = list(
+            dict.fromkeys(
+                [*previous.pending_document_ids, *previous.deferred_document_ids]
+            )
+        )
         if previous.status == "failed" and not backlog:
             # A failure written by a pre-window build has no focus IDs. Seed it from
             # durable cards so the next retry still covers the existing collection.
-            backlog = [document_id for document_id, _ in engine.catalog.iter_cards()]
+            backlog = engine.agent.loose_document_ids() or [
+                document_id for document_id, _ in engine.catalog.iter_cards()
+            ]
         seen = set(backlog)
         for document_id in document_ids:
             if document_id in seen:
@@ -563,6 +578,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             seen.add(document_id)
         new_cycle = (
             not previous.pending_document_ids
+            and not previous.deferred_document_ids
             and previous.status != "failed"
             and previous.source != source
         )
@@ -575,7 +591,9 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                 "moved": 0 if new_cycle else previous.moved,
                 "applied": False if new_cycle else previous.applied,
                 "pending_document_ids": backlog,
+                "deferred_document_ids": [],
                 "completed_windows": 0 if new_cycle else previous.completed_windows,
+                "review_round": 1 if new_cycle else previous.review_round,
                 "current_window_documents": 0,
                 "finished_at": None,
             }
@@ -622,8 +640,9 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             )
             save_maintenance(engine.vault.root, running)
             logger.info(
-                "maintenance window started: source=%s window=%d documents=%d queued=%d",
+                "maintenance window started: source=%s round=%d window=%d documents=%d queued=%d",
                 source,
+                running.review_round,
                 running.completed_windows + 1,
                 len(window),
                 len(running.pending_document_ids),
@@ -680,29 +699,46 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                 for document_id in running.pending_document_ids
                 if document_id not in consumed
             ]
+            unresolved = list(
+                dict.fromkeys(
+                    [*running.deferred_document_ids, *result.unresolved_document_ids]
+                )
+            )
             processed += 1
-            complete = not remaining
+            next_round = (
+                not remaining
+                and bool(unresolved)
+                and running.review_round < MAX_MAINTENANCE_REVIEW_ROUNDS
+            )
+            if next_round:
+                remaining = unresolved
+                unresolved = []
+            complete = not remaining and not unresolved
+            partial = not remaining and bool(unresolved)
             state = running.model_copy(
                 update={
-                    "status": "done" if complete else "waiting",
+                    "status": "done" if complete else "partial" if partial else "waiting",
                     "summary": result.proposal.summary,
                     "moved": running.moved + result.moved,
                     "applied": running.applied or result.applied,
                     "pending_document_ids": remaining,
+                    "deferred_document_ids": unresolved,
                     "completed_windows": running.completed_windows + 1,
+                    "review_round": running.review_round + 1 if next_round else running.review_round,
                     "current_window_documents": 0,
-                    "finished_at": time.time() if complete else None,
+                    "finished_at": time.time() if complete or partial else None,
                 }
             )
             save_maintenance(engine.vault.root, state)
             logger.info(
-                "maintenance window finished: source=%s window=%d moved=%d remaining=%d",
+                "maintenance window finished: source=%s round=%d window=%d moved=%d remaining=%d",
                 source,
+                running.review_round,
                 state.completed_windows,
                 result.moved,
-                len(remaining),
+                len(remaining) + len(unresolved),
             )
-            if complete or (max_windows is not None and processed >= max_windows):
+            if complete or partial or (max_windows is not None and processed >= max_windows):
                 return state
 
     def _drain(engine: Bismuth) -> Spend:
@@ -917,7 +953,9 @@ class MaintenanceOut(BaseModel):
     moved: int
     applied: bool
     pending_documents: int
+    deferred_documents: int
     completed_windows: int
+    review_round: int
     current_window_documents: int
     started_at: float | None
     finished_at: float | None
@@ -933,7 +971,9 @@ class MaintenanceOut(BaseModel):
             moved=state.moved,
             applied=state.applied,
             pending_documents=len(state.pending_document_ids),
+            deferred_documents=len(state.deferred_document_ids),
             completed_windows=state.completed_windows,
+            review_round=state.review_round,
             current_window_documents=state.current_window_documents,
             started_at=state.started_at,
             finished_at=state.finished_at,
