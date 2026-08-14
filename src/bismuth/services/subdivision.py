@@ -611,26 +611,27 @@ class LibraryMaintenanceService:
             audit_groups = self._existing_boundary_groups(folder, review_contents)
             audit_groups.extend(converted_groups)
 
-        audit = await self._audit_boundary(
-            folder=folder,
-            documents=audit_documents,
-            axis=axis or emerging.axis.strip(),
-            axis_question=(
-                charter.split_question
-                if charter is not None and charter.split_question
-                else emerging.axis_question
-            ),
-            groups=audit_groups,
-            complete=False,
-        )
-        if not audit.accepted:
-            log_trace(
-                "subdivide.rejected",
-                folder=str(folder),
-                reason="semantic boundary audit failed",
-                failed_checks=_failed_boundary_checks(audit),
+        with log_context(stage="subdivision.audit"):
+            audit = await self._audit_boundary(
+                folder=folder,
+                documents=audit_documents,
+                axis=axis or emerging.axis.strip(),
+                axis_question=(
+                    charter.split_question
+                    if charter is not None and charter.split_question
+                    else emerging.axis_question
+                ),
+                groups=audit_groups,
+                complete=False,
             )
-            return None
+            if not audit.accepted:
+                log_trace(
+                    "subdivide.rejected",
+                    folder=str(folder),
+                    reason="semantic boundary audit failed",
+                    failed_checks=_failed_boundary_checks(audit),
+                )
+                return None
 
         return prompts.Division(
             # The axis, not a sentence about this one extraction. It is read back on the
