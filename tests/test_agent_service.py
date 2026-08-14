@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
+
 from agentkit.testing import FakeModel, call, says
 
 from bismuth.container import Bismuth
 from bismuth.services.agent import (
     AgentService,
     _boundary_parent,
+    _document_handles,
     _stored_folder,
     build_read_tools,
 )
@@ -46,7 +49,15 @@ async def test_agent_reads_a_document(engine: Bismuth) -> None:
 
 def test_read_tools_are_all_read_only(engine: Bismuth) -> None:
     tools = build_read_tools(engine.vault, engine.charters)
-    assert {t.name for t in tools} == {"ls", "tree", "inventory", "read", "grep", "read_note"}
+    assert {t.name for t in tools} == {
+        "ls",
+        "tree",
+        "inventory",
+        "read",
+        "grep",
+        "read_note",
+        "related",
+    }
     assert all(getattr(t, "read_only", False) for t in tools)
 
 
@@ -59,15 +70,15 @@ def test_root_boundary_stays_canonical_between_validations() -> None:
         assert _stored_folder(root) == ""
 
 
-async def test_organizer_read_budget_is_enforced_by_tools(engine: Bismuth) -> None:
-    tools = build_read_tools(engine.vault, engine.charters, max_calls=1)
+async def test_read_tools_do_not_share_a_fixed_call_budget(engine: Bismuth) -> None:
+    tools = build_read_tools(engine.vault, engine.charters)
     tree = next(tool for tool in tools if tool.name == "tree")
     inventory = next(tool for tool in tools if tool.name == "inventory")
 
     await tree.run(tree.params())  # type: ignore[attr-defined]
-    refused = await inventory.run(inventory.params())  # type: ignore[attr-defined]
+    inventory_result = await inventory.run(inventory.params())  # type: ignore[attr-defined]
 
-    assert "budget exhausted" in refused
+    assert "budget exhausted" not in inventory_result
 
 
 async def test_ls_surfaces_document_types(engine: Bismuth) -> None:
@@ -80,6 +91,97 @@ async def test_ls_surfaces_document_types(engine: Bismuth) -> None:
 
     assert "contract.txt" in listing
     assert "[계약서]" in listing
+
+
+async def test_read_tools_accept_display_style_leading_slash(engine: Bismuth) -> None:
+    await add(engine, "contract.txt")
+    tools = {tool.name: tool for tool in build_read_tools(engine.vault, engine.charters)}
+
+    listing = await tools["ls"].run(tools["ls"].params(path="/아폴로/2023"))
+    tree = await tools["tree"].run(tools["tree"].params(path="/아폴로"))
+
+    assert "contract.txt" in listing
+    assert "2023/" in tree
+
+
+async def test_compact_inventory_uses_the_real_catalog_summary(engine: Bismuth) -> None:
+    await add(engine, "contract.txt")
+    inventory = next(
+        tool
+        for tool in build_read_tools(
+            engine.vault, engine.charters, catalog=engine.catalog
+        )
+        if tool.name == "inventory"
+    )
+
+    output = await inventory.run(inventory.params(path="", recursive=True))
+
+    assert "SUMMARY=대한물산과 유엔진 간" in output
+
+
+def test_focused_evidence_excludes_loose_backlog_but_keeps_committed_shelves(
+    engine: Bismuth,
+) -> None:
+    service = AgentService(
+        model=FakeModel([]),
+        vault=engine.vault,
+        charters=engine.charters,
+        catalog=engine.catalog,
+    )
+    all_handles = {
+        "D000001": PurePosixPath("new.txt"),
+        "D000002": PurePosixPath("unprocessed.txt"),
+        "D000003": PurePosixPath("금융/committed.txt"),
+    }
+
+    evidence = service._evidence_handles(
+        all_handles,
+        {"D000001": PurePosixPath("new.txt")},
+        scope=PurePosixPath(),
+        focused=True,
+    )
+
+    assert set(evidence) == {"D000001", "R000001"}
+    assert evidence["R000001"] == PurePosixPath("금융/committed.txt")
+
+
+async def test_restricted_read_tools_cannot_leak_or_open_documents_outside_window(
+    engine: Bismuth,
+) -> None:
+    await add(engine, "visible.txt", "VISIBLE-WINDOW-EVIDENCE")
+    await add(engine, "hidden.txt", "HIDDEN-BACKLOG-EVIDENCE")
+    all_handles = _document_handles(engine.vault)
+    visible_handle, visible_path = next(
+        (handle, path) for handle, path in all_handles.items() if path.name == "visible.txt"
+    )
+    hidden_handle, hidden_path = next(
+        (handle, path) for handle, path in all_handles.items() if path.name == "hidden.txt"
+    )
+    tools = {
+        tool.name: tool
+        for tool in build_read_tools(
+            engine.vault,
+            engine.charters,
+            handles={visible_handle: visible_path},
+            restrict_documents=True,
+        )
+    }
+
+    listing = await tools["ls"].run(tools["ls"].params(path=str(visible_path.parent)))
+    inventory = await tools["inventory"].run(
+        tools["inventory"].params(path=str(visible_path.parent))
+    )
+    grep = await tools["grep"].run(tools["grep"].params(pattern="HIDDEN-BACKLOG-EVIDENCE"))
+    raw_read = await tools["read"].run(tools["read"].params(path=str(hidden_path)))
+    handle_read = await tools["read"].run(tools["read"].params(path=hidden_handle))
+
+    assert "visible.txt" in listing
+    assert "hidden.txt" not in listing
+    assert visible_handle in inventory
+    assert hidden_handle not in inventory
+    assert grep == "(no matches)"
+    assert "inaccessible" in raw_read
+    assert "inaccessible" in handle_read
 
 
 def _scripted_grep() -> FakeModel:

@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
+from agentkit.testing import FakeModel, call, says
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -80,6 +81,10 @@ class ScriptedModel:
     """FakeLLM handler that returns a scripted response keyed by schema."""
 
     def __init__(self) -> None:
+        self.route_choice: object = "STAY"
+        self.rebalance_choice: object = "KEEP"
+        self.rebalance_comparison: object = "KEEP"
+        self.membership_choice: object = "BELONG"
         self.responses: dict[type[BaseModel] | None, Any] = {
             card_prompts.CardDraft: card_prompts.CardDraft(
                 title="아폴로 지원 계약서",
@@ -107,8 +112,22 @@ class ScriptedModel:
             subdivision_prompts.Emerging: subdivision_prompts.Emerging(
                 emerged=False,
             ),
+            subdivision_prompts.InitialBoundarySketch: (
+                subdivision_prompts.InitialBoundarySketch(
+                    basis="문서 종류",
+                    basis_question="이 문서의 종류는 무엇인가?",
+                    signs=[
+                        subdivision_prompts.ReplacementSign(name="자료"),
+                        subdivision_prompts.ReplacementSign(name="기록"),
+                    ],
+                )
+            ),
             subdivision_prompts.Members: subdivision_prompts.Members(
                 document_ids=[],
+            ),
+            subdivision_prompts.NormalizedSign: subdivision_prompts.NormalizedSign(
+                name="",
+                valid=False,
             ),
             subdivision_prompts.Review: subdivision_prompts.Review(
                 one_axis=True,
@@ -136,7 +155,16 @@ class ScriptedModel:
                 names_answer_question=True,
                 mutually_exclusive=True,
                 useful_for_navigation=True,
+                members_match_signs=True,
+                no_remainder_sign=True,
                 notes_are_routing_signs=True,
+            ),
+            subdivision_prompts.ClassAudit: subdivision_prompts.ClassAudit(
+                name_answers_question=True,
+                recurring_class=True,
+                useful_for_navigation=True,
+                distinct_from_contrast=True,
+                invalid_member_ids=[],
             ),
             subdivision_prompts.ReplacementAudit: subdivision_prompts.ReplacementAudit(
                 fixes_observed_failure=True,
@@ -160,9 +188,34 @@ class ScriptedModel:
         self.responses[key] = response
 
     def set_choice(self, response: object) -> None:
+        self.route_choice = response
         self.responses[None] = response
 
     def __call__(self, prompt: Prompt, schema: type[BaseModel] | None) -> BaseModel | str:
+        if schema is None and prompt.system.startswith(
+            "Review one existing top-level filing"
+        ):
+            response = self.rebalance_choice
+            return response(prompt, schema) if callable(response) else response  # type: ignore[operator]
+        if schema is None and prompt.system.startswith(
+            "Compare the current and proposed library signs"
+        ):
+            response = self.rebalance_comparison
+            return response(prompt, schema) if callable(response) else response  # type: ignore[operator]
+        if schema is None and prompt.system.startswith("Route this one loose document"):
+            response = self.route_choice
+            return response(prompt, schema) if callable(response) else response  # type: ignore[operator]
+        if schema is None and prompt.system.startswith("Verify one proposed existing-shelf"):
+            return "SHELF"
+        if schema is None and prompt.system.startswith(
+            "Verify one proposed library-shelf membership"
+        ):
+            response = self.membership_choice
+            return response(prompt, schema) if callable(response) else response  # type: ignore[operator]
+        if schema is None and prompt.system.startswith(
+            "Resolve a disputed library-shelf membership"
+        ):
+            return "BELONG"
         try:
             response = self.responses[schema]
             return response(prompt, schema) if callable(response) else response
@@ -207,7 +260,16 @@ def engine(settings: Settings, llm: FakeLLM) -> Bismuth:
 @pytest.fixture
 def client(settings: Settings, llm: FakeLLM) -> Iterator[TestClient]:
     app = create_app(settings)
-    engine = build(settings, llm=llm)
+    chat = FakeModel(
+        handler=lambda *_: says(
+            "",
+            call(
+                "finish_no_change",
+                {"reason": "테스트 장서에는 구조 변경이 필요하지 않습니다."},
+            ),
+        )
+    )
+    engine = build(settings, llm=llm, chat_model=chat)
     seed_folder(Path(engine.vault.root))
     app.state.engine = engine
     with TestClient(app) as test_client:

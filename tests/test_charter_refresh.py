@@ -35,11 +35,11 @@ def test_folder_purpose_is_collapsed_to_one_short_line() -> None:
     assert draft.purpose == "Documents that belong here."
 
 
-def test_overlong_model_prose_falls_back_to_the_validated_folder_name() -> None:
-    assert routing_purpose("x" * 221, fallback="Reports") == "Reports"
+def test_routing_purpose_does_not_treat_character_count_as_meaning() -> None:
+    assert routing_purpose("x" * 221, fallback="Reports") == "x" * 221
 
 
-async def test_a_new_sign_canonicalises_overlong_model_output_without_retrying(
+async def test_a_new_sign_preserves_normalised_model_output_without_retrying(
     engine: Bismuth, script: ScriptedModel, llm: FakeLLM
 ) -> None:
     folder = PurePosixPath("새 분류")
@@ -55,7 +55,7 @@ async def test_a_new_sign_canonicalises_overlong_model_output_without_retrying(
 
     assert len(operations) == 1
     generated = Charter.from_markdown(operations[0][1].decode("utf-8"), path=folder)
-    assert generated.purpose == folder.name
+    assert generated.purpose == "가" * 500
     assert len(_notes_for(llm, str(folder))) == 1
 
 

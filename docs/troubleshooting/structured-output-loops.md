@@ -120,9 +120,12 @@ original task without partial output or native constrained decoding.
 
 ## Diagnosis checklist
 
-1. Find the failing call in `./logs/llm.jsonl` by document ID and call number.
-2. Identify its schema, input/output tokens, duration, finish reason, stream chunk
-   count, and maximum gap between chunks.
+1. Use `scripts/inspect_run.py logs` to identify the failing `call_id` by run,
+   maintenance window, stage, and document ID. `./logs/llm.jsonl` is only a compact
+   current-run index.
+2. Run `scripts/inspect_run.py logs --call <call_id>` and inspect the exact request
+   and reconstructed response artifacts. Identify its schema, effective generation
+   parameters, input/output tokens, duration, finish reason, and stream chunk count.
 3. Distinguish inactivity from continuous output. A small maximum chunk gap plus
    a huge output count is a generation loop, not an idle timeout.
 4. Inspect `reasoning_content` separately. This incident repeated in ordinary
@@ -131,9 +134,10 @@ original task without partial output or native constrained decoding.
    unbounded 65k-token stream casually.
 6. Confirm whether the failure depends on native JSON-schema decoding by comparing
    the same prompt without `response_format`.
-7. Preserve the complete raw application-visible stream in the diagnostic log.
-   Bound only the fragment copied into a repair prompt; logging and repair context
-   are different concerns.
+7. Inspect `streams/<call_id>.jsonl.gz` only when chunk timing or provider-level
+   repetition matters. The complete application-visible stream is preserved there;
+   bound only the fragment copied into a repair prompt because logging and repair
+   context are different concerns.
 
 ## Safe operating rule
 

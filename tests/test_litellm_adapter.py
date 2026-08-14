@@ -6,9 +6,11 @@ import asyncio
 from typing import Any
 
 import pytest
+from agentkit import ToolSpec
 from pydantic import BaseModel
 
-from bismuth.adapters.llm import litellm_adapter
+from bismuth.adapters.llm import chat, litellm_adapter
+from bismuth.adapters.llm.chat import LiteLLMChatModel
 from bismuth.adapters.llm.litellm_adapter import LiteLLMAdapter, _parse_json
 from bismuth.domain.errors import ModelRequestError, StructuredOutputError
 from bismuth.ports.llm import Prompt
@@ -29,9 +31,9 @@ class FakeUsage:
 
 
 class FakeResponse:
-    def __init__(self, content: str) -> None:
+    def __init__(self, content: str, *, finish_reason: str = "stop") -> None:
         message = type("M", (), {"content": content})()
-        self.choices = [type("C", (), {"message": message})()]
+        self.choices = [type("C", (), {"message": message, "finish_reason": finish_reason})()]
         self.usage = FakeUsage()
 
 
@@ -152,7 +154,18 @@ class StubLiteLLM:
     def stream_chunk_builder(
         self, chunks: list[FakeChunk], messages: list[dict[str, Any]] | None = None
     ) -> FakeResponse:
-        return FakeResponse("".join(chunk.choices[0].delta.content for chunk in chunks))
+        finish_reason = next(
+            (
+                chunk.choices[0].finish_reason
+                for chunk in reversed(chunks)
+                if chunk.choices[0].finish_reason
+            ),
+            "stop",
+        )
+        return FakeResponse(
+            "".join(chunk.choices[0].delta.content for chunk in chunks),
+            finish_reason=finish_reason,
+        )
 
     def supports_response_schema(self, model: str) -> bool:
         return self._native
@@ -179,11 +192,167 @@ def adapter(**kwargs: Any) -> LiteLLMAdapter:
     return LiteLLMAdapter(**{**defaults, **kwargs})  # type: ignore[arg-type]
 
 
+async def test_agent_chat_uses_the_claude_code_style_32k_default(stub: Any) -> None:
+    fake = stub(["done"])
+
+    reply = await LiteLLMChatModel(model="openai/model").complete(
+        system="organize",
+        messages=[],
+        tools=[],
+    )
+
+    assert reply.text == "done"
+    assert reply.call_id.startswith("llm_")
+    assert fake.calls[0]["max_tokens"] == 32000
+
+
+async def test_agent_chat_reserves_output_from_the_actual_input_size(stub: Any) -> None:
+    fake = stub(["done"])
+
+    await LiteLLMChatModel(
+        model="openai/model",
+        context_window_tokens=65_536,
+        context_safety_tokens=1_024,
+    ).complete(system="가" * 40_000, messages=[], tools=[])
+
+    reserved = fake.calls[0]["max_tokens"]
+    assert 0 < reserved < 32_000
+    assert reserved + 40_000 + 1_024 <= 65_536
+
+
+async def test_agent_chat_escalates_a_length_limited_default_to_64k(stub: Any) -> None:
+    fake = stub(["partial", "done"])
+
+    async def capped_then_done(**kwargs: Any) -> FakeStream:
+        fake.calls.append(kwargs)
+        return FakeStream(
+            "partial" if len(fake.calls) == 1 else "done",
+            finish_reason="length" if len(fake.calls) == 1 else "stop",
+        )
+
+    fake.acompletion = capped_then_done  # type: ignore[method-assign]
+    reply = await LiteLLMChatModel(model="openai/model").complete(
+        system="organize", messages=[], tools=[]
+    )
+
+    assert reply.text == "done"
+    assert [request["max_tokens"] for request in fake.calls] == [32000, 64000]
+
+
+async def test_agent_chat_forwards_required_tool_choice(stub: Any) -> None:
+    fake = stub(["done"])
+
+    await LiteLLMChatModel(model="openai/model").complete(
+        system="conclude",
+        messages=[],
+        tools=[ToolSpec("submit", "submit", {"type": "object"})],
+        tool_choice="required",
+    )
+
+    assert fake.calls[0]["tool_choice"] == "required"
+
+
+async def test_agent_chat_aborts_an_exact_text_loop(
+    stub: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stub(["}]}" * 1000])
+    records: list[dict[str, Any]] = []
+    monkeypatch.setattr(chat, "log_llm_call", records.append)
+
+    reply = await LiteLLMChatModel(model="openai/model").complete(
+        system="organize", messages=[], tools=[]
+    )
+
+    stream = records[-1]["stream"]
+    assert reply.text
+    assert stream["abort"]["kind"] == "repetition"
+    assert stream["abort"]["after_chars"] < 3000
+    assert stream["content"]
+
+
+async def test_agent_chat_aborts_whitespace_only_progress(
+    stub: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = stub(["unused"])
+
+    async def whitespace_loop(**kwargs: Any) -> WhitespaceLoopStream:
+        fake.calls.append(kwargs)
+        return WhitespaceLoopStream()
+
+    fake.acompletion = whitespace_loop  # type: ignore[method-assign]
+    records: list[dict[str, Any]] = []
+    monkeypatch.setattr(chat, "log_llm_call", records.append)
+
+    await LiteLLMChatModel(model="openai/model").complete(system="organize", messages=[], tools=[])
+
+    abort = records[-1]["stream"]["abort"]
+    assert abort["pattern"] == "<whitespace>"
+    assert abort["after_chars"] < 1000
+
+
+async def test_agent_chat_normalizes_provider_repetition_errors(
+    stub: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = stub(["unused"])
+
+    async def provider_loop(**kwargs: Any) -> ProviderRepetitionStream:
+        fake.calls.append(kwargs)
+        return ProviderRepetitionStream()
+
+    fake.acompletion = provider_loop  # type: ignore[method-assign]
+    records: list[dict[str, Any]] = []
+    monkeypatch.setattr(chat, "log_llm_call", records.append)
+
+    await LiteLLMChatModel(model="openai/model").complete(system="organize", messages=[], tools=[])
+
+    stream = records[-1]["stream"]
+    assert stream["abort"]["pattern"] == "<provider repeated stream chunk>"
+    assert stream["content"] == '{"name": "partial'
+
+
+async def test_agent_chat_aborts_a_long_recurring_prose_frame(
+    stub: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    phrase = "Actually I think the key insight is that this needs another approach. "
+    stub([phrase * 40])
+    records: list[dict[str, Any]] = []
+    monkeypatch.setattr(chat, "log_llm_call", records.append)
+
+    reply = await LiteLLMChatModel(model="openai/model").complete(
+        system="organize", messages=[], tools=[]
+    )
+
+    stream = records[-1]["stream"]
+    assert reply.text
+    assert stream["abort"]["mode"] == "repeated_word_sequence"
+    assert stream["finish_reason"] == "repetition_guard"
+
+
 class TestStructured:
     async def test_returns_a_validated_instance(self, stub: Any) -> None:
         stub(['{"name": "Apollo", "year": 2023}'])
         result = await adapter().structured(Prompt(system="s", user="u"), schema=Answer)
         assert result == Answer(name="Apollo", year=2023)
+
+    async def test_long_semantic_repetition_is_diagnosed_before_token_exhaustion(
+        self, stub: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        phrase = (
+            "기본계획 및 시행계획 수립 시 관계 행정기관 자료 제출 요청에 필요한 "
+            "사항은 누구에게 정하는가 "
+        )
+        stub(['{"name":"' + phrase * 80])
+        records: list[dict[str, Any]] = []
+        monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
+
+        with pytest.raises(StructuredOutputError):
+            await adapter(max_schema_retries=0).structured(
+                Prompt(system="s", user="u"), schema=Answer
+            )
+
+        abort = records[-1]["attempts"][0]["stream"]["abort"]
+        assert abort["mode"] == "repeated_word_sequence"
+        assert abort["after_chars"] < len(phrase * 80)
 
     async def test_usage_is_recorded_without_mutating_a_frozen_model(self, stub: Any) -> None:
         stub(['{"name": "Apollo", "year": 2023}'])
@@ -394,7 +563,7 @@ class TestRepair:
 
         assert len(fake.calls) == 1
 
-    async def test_litellm_wrapped_repetition_gets_a_clean_non_native_retry(
+    async def test_litellm_wrapped_repetition_keeps_the_native_contract_on_retry(
         self, stub: Any
     ) -> None:
         fake = stub(['{"name": "Apollo", "year": 2023}'])
@@ -412,7 +581,7 @@ class TestRepair:
 
         assert result.year == 2023
         assert "response_format" in fake.calls[0]
-        assert "response_format" not in fake.calls[1]
+        assert "response_format" in fake.calls[1]
         assert len(fake.calls[1]["messages"]) == 2
         assert "partial" not in str(fake.calls[1]["messages"])
 

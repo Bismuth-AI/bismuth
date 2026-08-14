@@ -33,12 +33,15 @@ judged the current root-only structure to be good.
 - A planner that stops without `submit_plan` or `finish_no_change` produces a retryable
   failed checkpoint; it can no longer become `done / moved=0`.
 - The temporary 500-card whole-vault inventory fix was removed. Maintenance now receives
-  at most 50 new arrivals (and at most 18,000 compact-card characters), then updates the
+  at most 30 new arrivals (and at most 18,000 compact-card characters), then updates the
   tree before the next window. Existing folders are inspected only in bounded local pages.
 - The verifier is a one-shot tool with its own eight-turn budget. Repeated calls are
   rejected and direct the planner to submit the plan.
 - The prompt reserves tool turns for verification and submission rather than recounting
   card fields.
+- ADR-0018 subsequently removed the five/four shared read-call counters. Agent Kit now
+  archives old observations by short ID, detects identical calls, and hides exploration
+  tools during a protected conclusion phase.
 - Older empty-success checkpoints are migrated to retryable failure on server startup.
 - The UI now shows both completed moves and explicit no-change outcomes instead of
   disappearing silently.

@@ -238,18 +238,10 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
   <div class="spacer"></div>
   <span class="hstat"><b id="hs-docs">0</b> 문서 · <b id="hs-folders">0</b> 폴더<span id="hs-inbox"></span></span>
   <span class="hstat spend hidden" id="hs-spend" title="이 볼트에 지금까지 쓴 양 (.bismuth/spend.jsonl)"></span>
-  <button class="ghost" id="btn-organize">구조 정리</button>
   <button class="ghost" id="btn-history">기록</button>
   <button class="ghost" id="btn-settings">설정</button>
 </header>
 
-<div id="maintenance-banner" class="maintenance-banner hidden">
-  <div class="maintenance-copy">
-    <div class="maintenance-title" id="maintenance-title"></div>
-    <div class="maintenance-detail" id="maintenance-detail"></div>
-  </div>
-  <button class="primary" id="maintenance-retry">구조 정리 계속</button>
-</div>
 
 <div id="explorer">
   <aside id="sidebar">
@@ -349,10 +341,10 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
-// The vault root, as /api/tree names it. Documents live here until enough of them
-// arrive to show a distinction, which early on is most of them.
+// The vault root, as /api/tree names it. Incremental placement may deliberately keep
+// a document here when no current child is a positive fit.
 const ROOT = ".";
-const UI_VERSION = "2026.08.12-incremental-maintenance-2";
+const UI_VERSION = "2026.08.14-incremental-agent-placement-1";
 document.documentElement.dataset.uiVersion = UI_VERSION;
 let state = {}, tree = [], selected = ROOT, expanded = new Set();
 let rootInfo = null;   // the root's own entry: its loose documents are the common early case
@@ -361,75 +353,7 @@ let sel = new Set(), selAnchor = null, viewDocs = [], moveTargets = [];
 // action bar offers 이동 for documents only, and a mixed selection would have to grey
 // half of itself out. Picking one kind clears the other.
 let fsel = new Set(), fselAnchor = null;
-let maintenancePollTimer = null;
-let maintenanceSyncing = false;
-let previousMaintenanceStatus = "";
-
-async function syncMaintenance() {
-  if (maintenanceSyncing || !state.configured) return;
-  maintenanceSyncing = true;
-  try {
-    const checkpoint = await api("/maintenance");
-    const banner = $("maintenance-banner");
-    const active = checkpoint.status === "pending" || checkpoint.status === "running";
-    $("btn-organize").disabled = active;
-    if (checkpoint.status === "failed") {
-      banner.className = "maintenance-banner failed";
-      $("maintenance-title").textContent = "문서 처리는 끝났지만 구조 정리가 중단됐습니다.";
-      $("maintenance-detail").textContent = checkpoint.error || "모델 설정을 확인한 뒤 계속할 수 있습니다.";
-      $("maintenance-retry").classList.remove("hidden");
-      $("maintenance-retry").disabled = false;
-    } else if (checkpoint.status === "partial") {
-      banner.className = "maintenance-banner failed";
-      const unresolved = checkpoint.pending_documents + checkpoint.deferred_documents;
-      $("maintenance-title").textContent = `구조 정리 일부 완료 — 루트 문서 ${unresolved}개 재검토 필요`;
-      $("maintenance-detail").textContent = "두 차례의 제한된 검토 후에도 안전하게 분류하지 못한 문서입니다. 현재 구조는 보존되며 다시 구조 정리를 시도할 수 있습니다.";
-      $("maintenance-retry").classList.remove("hidden");
-      $("maintenance-retry").disabled = false;
-    } else if (active) {
-      banner.className = "maintenance-banner";
-      const windowNo = checkpoint.completed_windows + 1;
-      const queued = checkpoint.pending_documents || 0;
-      const inWindow = checkpoint.current_window_documents || Math.min(queued, 50);
-      $("maintenance-title").textContent = `구조 정리 중 — ${checkpoint.review_round}차 검토 · ${windowNo}번째 묶음 · 문서 ${inWindow}개`;
-      $("maintenance-detail").textContent = `남은 도착 문서 ${queued}개 · 기존 트리를 갱신한 뒤 다음 묶음을 배치합니다.`;
-      $("maintenance-retry").classList.add("hidden");
-    } else if (checkpoint.status === "done") {
-      banner.className = "maintenance-banner";
-      $("maintenance-title").textContent = checkpoint.applied
-        ? `구조 정리 완료 — 문서 ${checkpoint.moved}개 이동`
-        : "구조 검토 완료 — 적용할 변경 없음";
-      $("maintenance-detail").textContent = checkpoint.summary || "모델이 구조 변경을 제안하지 않았습니다.";
-      $("maintenance-retry").classList.add("hidden");
-      if (previousMaintenanceStatus && previousMaintenanceStatus !== "done") await refresh();
-    } else {
-      banner.className = "maintenance-banner hidden";
-    }
-    previousMaintenanceStatus = checkpoint.status;
-    if (active && maintenancePollTimer === null) {
-      maintenancePollTimer = setInterval(syncMaintenance, 1200);
-    } else if (!active && maintenancePollTimer !== null) {
-      clearInterval(maintenancePollTimer);
-      maintenancePollTimer = null;
-    }
-  } catch (err) {
-    console.warn("maintenance status refresh failed", err);
-  } finally {
-    maintenanceSyncing = false;
-  }
-}
-
-$("maintenance-retry").addEventListener("click", async () => {
-  const btn = $("maintenance-retry");
-  btn.disabled = true;
-  try {
-    await api("/maintenance/retry", { method: "POST" });
-    await syncMaintenance();
-  } catch (err) {
-    $("maintenance-detail").textContent = err.message;
-    btn.disabled = false;
-  }
-});
+async function syncMaintenance() { /* retired: placement now evolves the tree per document */ }
 
 /* ---------------- explorer ---------------- */
 
@@ -950,7 +874,7 @@ function compactBatch(filenames, container) {
   const batch = {
     id: "", el, box: container.closest(".up"), filenames: names, total: names.length,
     completed: 0, failed: 0, duplicate: 0, inbox: 0, current: "",
-    currentLabel: "", currentProgress: 0, status: "uploading", cleanup: null,
+    currentLabel: "", error: "", currentProgress: 0, status: "uploading", cleanup: null,
   };
   for (const filename of names) {
     settledCompactJobs.delete(filename);
@@ -974,7 +898,10 @@ function drawCompactBatch(batch, progress = null) {
   } else if (stopped) {
     current.textContent = "작업이 중단되었습니다";
   } else if (batch.completed === batch.total) {
-    current.textContent = batch.failed ? `완료 · ${batch.failed}개 실패` : "모든 파일 정리 완료";
+    current.textContent = batch.failed
+      ? `완료 · ${batch.failed}개 실패${batch.error ? ` — ${batch.error}` : ""}`
+      : "모든 파일 정리 완료";
+    current.title = current.textContent;
   } else if (batch.status === "queued") {
     current.textContent = "서버 처리 순서를 기다리는 중";
   } else {
@@ -1014,6 +941,7 @@ function applyBatchState(batch, state) {
   batch.status = state.status;
   batch.current = state.current;
   batch.currentLabel = state.current_label;
+  batch.error = state.error || "";
   if (previousCurrent !== batch.current || previousCompleted !== batch.completed) batch.currentProgress = 0;
   const active = state.status === "queued" || state.status === "running";
   if (active) {
@@ -1291,20 +1219,6 @@ document.addEventListener("keydown", (e) => {
   if ((e.key === "Delete" || e.key === "Backspace") && !typing) {
     if (sel.size) { e.preventDefault(); bulkDelete([...sel]); }
     else if (fsel.size) { e.preventDefault(); deleteFolders([...fsel]); }
-  }
-});
-
-/* ---------------- organize ---------------- */
-
-$("btn-organize").addEventListener("click", async () => {
-  const btn = $("btn-organize");
-  btn.disabled = true;
-  try {
-    await api("/maintenance/retry", { method: "POST" });
-    await syncMaintenance();
-  } catch (err) {
-    alert(err.message);
-    btn.disabled = false;
   }
 });
 

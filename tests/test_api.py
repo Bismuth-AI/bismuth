@@ -7,6 +7,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from bismuth.api.app import _upload_name
+
 
 class TestIndex:
     def test_ui_shell_is_not_cached_across_server_upgrades(self, client: TestClient) -> None:
@@ -63,6 +65,11 @@ class TestOpenFile:
 
 
 class TestUpload:
+    def test_mime_encoded_unicode_filename_is_decoded_before_staging(self) -> None:
+        encoded = "=?utf-8?b?6riI7Jyo7JyE7JuQ7ZqMIOyEpOy5mCDsi5ztlonroLkuUERG?="
+
+        assert _upload_name(encoded) == "금율위원회 설치 시행령.PDF"
+
     def test_upload_files_a_document(self, client: TestClient) -> None:
         response = client.post(
             "/api/documents",

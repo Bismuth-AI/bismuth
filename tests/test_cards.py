@@ -178,6 +178,25 @@ class TestLabelHygiene:
     """A real run put a whole bibliography into `topics`; that lands in the sidecar and in
     every later placement prompt, so it is filtered at the source rather than in the UI."""
 
+    def test_card_draft_schema_bounds_each_generated_string(self) -> None:
+        schema = card_prompts.CardDraft.model_json_schema()
+        properties = schema["properties"]
+
+        assert properties["summary"]["maxLength"] == 1_200
+        assert properties["topics"]["items"]["maxLength"] == 300
+        assert properties["answers_questions"]["items"]["maxLength"] == 300
+
+    def test_card_update_is_a_small_delta_not_an_open_ended_inventory(self) -> None:
+        schema = card_prompts.CardUpdate.model_json_schema()
+        properties = schema["properties"]
+
+        assert properties["new_topics"]["maxItems"] == 4
+        assert properties["new_topics"]["items"]["maxLength"] == 80
+        assert properties["new_entities"]["maxItems"] == 8
+        assert properties["new_keywords"]["maxItems"] == 8
+        assert properties["new_questions"]["maxItems"] == 4
+        assert "never repeat a phrase" in card_prompts._UPDATE_SYSTEM
+
     async def test_an_entry_too_long_to_be_a_label_is_dropped(self, script: ScriptedModel) -> None:
         script.set(
             card_prompts.CardDraft,

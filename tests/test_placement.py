@@ -5,12 +5,14 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 import pytest
+from agentkit.testing import FakeModel, call, says
 
 from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.domain.document import DocumentCard
 from bismuth.domain.paths import sanitize_segment
 from bismuth.domain.placement import Verdict
 from bismuth.prompts import placement as placement_prompts
+from bismuth.prompts import subdivision as subdivision_prompts
 from bismuth.services.placement import PlacementService, _safe_path
 
 
@@ -164,3 +166,94 @@ class TestPlacementService:
     def test_a_dot_is_normalised_to_stay_here(self) -> None:
         decision = placement_prompts.PlacementDecision(folder_id="./", confidence=0.9)
         assert decision.folder_id == ""
+
+
+class TestIncrementalAgentPlacement:
+    async def test_agent_keeps_a_first_document_at_root_instead_of_inventing_a_shelf(
+        self, settings, llm
+    ) -> None:
+        from bismuth.container import build
+
+        chat = FakeModel(
+            [
+                says(
+                    "",
+                    call(
+                        "finish_placement",
+                        {
+                            "action": "keep_here",
+                            "folder_id": "FROOT",
+                        },
+                    ),
+                )
+            ]
+        )
+        engine = build(settings, llm=llm, chat_model=chat)
+        rel = engine.ingest.stage(b"agentic placement", "agent.txt")
+
+        result = await engine.ingest.process(rel)
+
+        assert result.destination == PurePosixPath()
+        assert result.placement.created_folder is False
+        assert (engine.vault.root / "agent.txt").is_file()
+        assert not (engine.vault.root / "프로젝트").exists()
+
+    async def test_harness_grows_a_local_shelf_only_after_multiple_documents_supply_evidence(
+        self, settings, llm, script
+    ) -> None:
+        from bismuth.container import build
+
+        script.set(
+            subdivision_prompts.Emerging,
+            subdivision_prompts.Emerging(
+                axis="업무 영역",
+                axis_question="이 문서가 다루는 업무 영역은 무엇인가?",
+                name="아폴로",
+                emerged=True,
+            ),
+        )
+        script.set(
+            subdivision_prompts.Members,
+            lambda prompt, schema: subdivision_prompts.Members(
+                document_ids=["D0001", "D0002"]
+            ),
+        )
+        script.set(
+            subdivision_prompts.NormalizedSign,
+            subdivision_prompts.NormalizedSign(name="아폴로", valid=True),
+        )
+        chat = FakeModel(
+            [
+                says(
+                    "",
+                    call("finish_placement", {"action": "keep_here", "folder_id": "FROOT"}),
+                ),
+                says(
+                    "",
+                    call("finish_placement", {"action": "keep_here", "folder_id": "FROOT"}),
+                ),
+                says(
+                    "",
+                    call("finish_placement", {"action": "keep_here", "folder_id": "FROOT"}),
+                ),
+                says(
+                    "",
+                    call("finish_placement", {"action": "keep_here", "folder_id": "FROOT"}),
+                ),
+            ]
+        )
+        engine = build(settings, llm=llm, chat_model=chat)
+        first = engine.ingest.stage(b"first project document", "first.txt")
+        second = engine.ingest.stage(b"second project document", "second.txt")
+        third = engine.ingest.stage(b"first other project document", "third.txt")
+        fourth = engine.ingest.stage(b"second other project document", "fourth.txt")
+
+        await engine.ingest.process(first)
+        await engine.ingest.process(second)
+        await engine.ingest.process(third)
+        result = await engine.ingest.process(fourth)
+
+        assert result.destination == PurePosixPath()
+        assert len(list((engine.vault.root / "아폴로").glob("*.txt"))) == 2
+        assert not (engine.vault.root / "제우스").exists()
+        assert sum((engine.vault.root / name).is_file() for name in ("first.txt", "second.txt", "third.txt", "fourth.txt")) == 2

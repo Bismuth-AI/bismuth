@@ -10,9 +10,10 @@ from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.container import Bismuth
 from bismuth.domain.errors import StructuredOutputError
 from bismuth.domain.placement import Verdict
+from bismuth.prompts import cards as card_prompts
 from bismuth.prompts import placement as placement_prompts
 from bismuth.services.sidecar import read_sidecar_meta
-from tests.conftest import ScriptedModel, placement_to
+from tests.conftest import ScriptedModel, placement_to, seed_folder
 
 
 async def add(engine: Bismuth, name: str, body: str = "아폴로 지원 계약서, 2023.") -> object:
@@ -55,6 +56,25 @@ class TestPlacement:
 
         assert engine.ingest.pending_inbox() == []
 
+    def test_pending_inbox_tolerates_a_transient_windows_read_lock(
+        self, engine: Bismuth, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine.ingest.stage(b"locked", "locked.txt")
+        original_read = engine.vault.read_bytes
+        attempts = 0
+
+        def locked_twice(path: PurePosixPath) -> bytes:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError(13, "temporarily locked")
+            return original_read(path)
+
+        monkeypatch.setattr(engine.vault, "read_bytes", locked_twice)
+
+        assert [path.name for path in engine.ingest.pending_inbox()] == ["locked.txt"]
+        assert attempts == 3
+
     async def test_a_document_goes_into_a_folder_that_exists(self, engine: Bismuth) -> None:
         result = await add(engine, "contract.txt")
 
@@ -62,6 +82,125 @@ class TestPlacement:
         assert result.destination == PurePosixPath("아폴로/2023")
         assert result.placement.created_folder is False  # it was already there
         assert (engine.vault.root / "아폴로/2023/contract.txt").is_file()
+
+    async def test_exact_title_editions_follow_the_existing_family_shelf(
+        self,
+        engine: Bismuth,
+        script: ScriptedModel,
+    ) -> None:
+        seed_folder(Path(engine.vault.root), PurePosixPath("과학기술/전략기술"))
+        script.set(
+            card_prompts.CardDraft,
+            card_prompts.CardDraft(
+                title="방송통신발전 기본법",
+                summary="방송통신 발전 정책과 기반을 규정한다.",
+                doc_type="법률",
+                language="ko",
+                topics=["방송통신"],
+            ),
+        )
+        script.set(
+            placement_prompts.PlacementDecision,
+            place_at("과학기술/전략기술"),
+        )
+        first = await add(engine, "방송통신발전 기본법 2025.txt", "첫 번째 판본")
+        assert first.destination == PurePosixPath("과학기술/전략기술")
+
+        # A contradictory model answer is never requested: the exact-title family lock
+        # follows the current filesystem location of the first edition.
+        script.set(placement_prompts.PlacementDecision, place_at("과학기술"))
+        second = await add(engine, "방송통신발전 기본법 2026.txt", "두 번째 판본")
+
+        assert second.destination == PurePosixPath("과학기술/전략기술")
+        assert second.placement.rationale == "kept with an existing document family"
+
+    async def test_subordinate_instrument_follows_the_existing_base_document_shelf(
+        self,
+        engine: Bismuth,
+        script: ScriptedModel,
+    ) -> None:
+        seed_folder(Path(engine.vault.root), PurePosixPath("Science/Institutions"))
+        script.set(
+            card_prompts.CardDraft,
+            card_prompts.CardDraft(
+                title="Science Museum Establishment Act",
+                summary="Establishes and operates science museums.",
+                doc_type="act",
+                language="en",
+                topics=["science museums"],
+            ),
+        )
+        script.set(placement_prompts.PlacementDecision, place_at("Science/Institutions"))
+        first = await add(
+            engine,
+            "Science Museum Establishment Act 2025.txt",
+            "first base act",
+        )
+        assert first.destination == PurePosixPath("Science/Institutions")
+
+        script.set(
+            card_prompts.CardDraft,
+            card_prompts.CardDraft(
+                title="Science Museum Establishment Act Enforcement Rule",
+                summary="Implements the science museum establishment act.",
+                doc_type="rule",
+                language="en",
+                topics=["science museums"],
+            ),
+        )
+        script.set(placement_prompts.PlacementDecision, place_at("Science"))
+        subordinate = await add(
+            engine,
+            "Science Museum Establishment Act Enforcement Rule 2026.txt",
+            "later subordinate rule",
+        )
+
+        assert subordinate.destination == PurePosixPath("Science/Institutions")
+        assert subordinate.placement.rationale == "kept with an existing document family"
+
+    async def test_a_family_waiting_at_root_is_promoted_together_by_later_placement(
+        self,
+        engine: Bismuth,
+        script: ScriptedModel,
+    ) -> None:
+        script.set(
+            card_prompts.CardDraft,
+            card_prompts.CardDraft(
+                title="농림수산업자 신용보증법 시행령",
+                summary="농림수산업자 신용보증법의 시행 사항을 규정한다.",
+                doc_type="대통령령",
+                language="ko",
+                topics=["농림수산업자 신용보증법"],
+            ),
+        )
+        script.set(placement_prompts.PlacementDecision, place_at(""))
+        first = await add(engine, "농림수산업자 신용보증법 시행령.txt", "시행령")
+        assert first.destination == PurePosixPath()
+
+        script.set(
+            card_prompts.CardDraft,
+            card_prompts.CardDraft(
+                title="농림수산업자 신용보증법 시행규칙",
+                summary="같은 법의 세부 시행 절차를 규정한다.",
+                doc_type="시행규칙",
+                language="ko",
+                topics=["농림수산업자 신용보증법"],
+            ),
+        )
+        script.set(placement_prompts.PlacementDecision, place_at("아폴로/2023"))
+        subordinate = await add(
+            engine,
+            "농림수산업자 신용보증법 시행규칙.txt",
+            "시행규칙",
+        )
+
+        assert subordinate.destination == PurePosixPath("아폴로/2023")
+        assert subordinate.placement.companion_document_ids == (first.document_id,)
+        assert not (engine.vault.root / "농림수산업자 신용보증법 시행령.txt").exists()
+        assert (
+            engine.vault.root
+            / "아폴로/2023/농림수산업자 신용보증법 시행령.txt"
+        ).is_file()
 
     async def test_a_folder_that_does_not_exist_is_read_as_the_root(
         self, engine: Bismuth, script: ScriptedModel

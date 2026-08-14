@@ -36,6 +36,7 @@ class MaintenanceState(BaseModel):
     deferred_document_ids: list[str] = Field(default_factory=list)
     completed_windows: int = 0
     review_round: int = 1
+    reviewed_scope_fingerprints: dict[str, str] = Field(default_factory=dict)
     current_window_documents: int = 0
     started_at: float | None = None
     finished_at: float | None = None
