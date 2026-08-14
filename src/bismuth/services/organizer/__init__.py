@@ -1,24 +1,26 @@
-"""Compatibility facade for the autonomous organizer package."""
+"""Autonomous organizer package split by prompt, tool, validation, and orchestration roles."""
 
-# ruff: noqa: F401 -- private exports preserve the established test/embedder API
+# ruff: noqa: F401 -- private exports preserve the established compatibility facade
 
-from bismuth.services.organizer import (
-    DEFAULT_ORGANIZE_INSTRUCTION,
-    AgentService,
+from bismuth.services.organizer.planning import (
     ProposedBoundary,
     ProposedMove,
     ProposedRename,
     ReorgProposal,
     ReorgResult,
     _boundary_parent,
-    _document_handles,
     _finding_signature,
     _stored_folder,
-    _SubmitPlanArgs,
     _validate_shadow_plan,
+    build_submit_plan_tool,
+)
+from bismuth.services.organizer.prompts import DEFAULT_ORGANIZE_INSTRUCTION
+from bismuth.services.organizer.service import AgentService
+from bismuth.services.organizer.tools import (
+    _document_handles,
+    _SubmitPlanArgs,
     build_arrivals_tool,
     build_read_tools,
-    build_submit_plan_tool,
 )
 
 __all__ = [

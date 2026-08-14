@@ -14,30 +14,25 @@ from bismuth.domain.maintenance import is_axis_label
 
 #: Filename of a folder's note; sorts to the top of a listing.
 CHARTER_FILENAME = "_folder.md"
-CHARTER_SCHEMA_VERSION = 6
-MAX_PURPOSE_CHARS = 220
+CHARTER_SCHEMA_VERSION = 7
 
 _GENERATED_BODY_NOTICE = "<!-- generated from frontmatter -->"
 
 
 def routing_purpose(value: str, *, fallback: str) -> str:
-    """Return a bounded, one-line routing sign without trusting model obedience.
+    """Return a single-line sign; transport limits bound generation separately.
 
-    A folder purpose is a stable boundary contract, not an inventory paragraph.  Prompts
-    ask for a short sign, but provider output is untrusted: rejecting an overlong sign
-    caused schema-repair calls and could make an already-filed document look failed.
-    Existing callers therefore keep a known sign, while a newly-created boundary falls
-    back to its already validated class name.  The fallback is capped only as a final
-    filesystem-safe guard; model prose is never blindly truncated into a broken sentence.
+    Character count is not a semantic validity rule. Boundary-created notes avoid free
+    prose entirely, while legacy/missing-note drafting keeps the complete normalized sign.
     """
     normalised = " ".join(value.split()).strip()
-    if normalised and len(normalised) <= MAX_PURPOSE_CHARS:
+    if normalised:
         return normalised
     safe = " ".join(fallback.split()).strip()
-    return safe[:MAX_PURPOSE_CHARS] or "?"
+    return safe or "?"
 
 
-def boundary_purpose(axis: str, class_name: str) -> str:
+def boundary_purpose(axis: str, class_name: str, *, question: str = "") -> str:
     """Derive a durable child sign from machine-owned boundary state.
 
     The model chooses the axis and the class name.  It does not also get to write an
@@ -48,8 +43,11 @@ def boundary_purpose(axis: str, class_name: str) -> str:
     """
     clean_axis = " ".join(axis.split()).strip()
     clean_name = " ".join(class_name.split()).strip()
+    clean_question = " ".join(question.split()).strip()
+    if clean_question and clean_name:
+        return f"{clean_question} → {clean_name}"
     if clean_axis and clean_name:
-        return f"{clean_axis}: {clean_name}"
+        return f"{clean_axis} → {clean_name}"
     return clean_name or clean_axis or "?"
 
 
@@ -61,6 +59,18 @@ class Charter(BaseModel):
     path: PurePosixPath = Field(description="Vault-relative folder path. Empty path is the root.")
     title: str
     purpose: str = Field(description="One line: what this folder holds. The routing hint.")
+    boundary_basis: str = Field(
+        default="",
+        description="The parent boundary's classification property for this child.",
+    )
+    boundary_question: str = Field(
+        default="",
+        description="The parent question this folder answers among its siblings.",
+    )
+    boundary_answer: str = Field(
+        default="",
+        description="This folder's stable answer to its parent boundary question.",
+    )
     holds: tuple[str, ...] = Field(
         default=(),
         description="A few concrete examples of what belongs here, to steer future filing.",
@@ -167,6 +177,12 @@ class Charter(BaseModel):
             "title": self.title,
             "purpose": self.purpose,
         }
+        if self.boundary_basis:
+            meta["boundary_basis"] = self.boundary_basis
+        if self.boundary_question:
+            meta["boundary_question"] = self.boundary_question
+        if self.boundary_answer:
+            meta["boundary_answer"] = self.boundary_answer
         if self.divided:
             meta["split_basis"] = self.split_basis
             meta["split_question"] = self.split_question
@@ -182,6 +198,25 @@ class Charter(BaseModel):
 
     def _render_body(self) -> str:
         lines: list[str] = [_GENERATED_BODY_NOTICE, "", f"# {self.title}", "", self.purpose, ""]
+        if self.boundary_question or self.boundary_basis:
+            lines.extend(["## 분류 경계", ""])
+            if self.boundary_basis:
+                lines.append(f"- 기준: {self.boundary_basis}")
+            if self.boundary_question:
+                lines.append(f"- 질문: {self.boundary_question}")
+            if self.boundary_answer:
+                lines.append(f"- 이 폴더의 답: {self.boundary_answer}")
+            lines.append("")
+        if self.divided:
+            lines.extend(
+                [
+                    "## 하위 폴더 경계",
+                    "",
+                    f"- 기준: {self.split_basis}",
+                    f"- 질문: {self.split_question}",
+                    "",
+                ]
+            )
         return "\n".join(lines).rstrip() + "\n"
 
     @classmethod
@@ -214,6 +249,9 @@ class Charter(BaseModel):
                 path=path,
                 title=str(meta.get("title") or (path.name if path.name else "Vault root")),
                 purpose=str(meta.get("purpose") or ""),
+                boundary_basis=str(meta.get("boundary_basis") or ""),
+                boundary_question=str(meta.get("boundary_question") or ""),
+                boundary_answer=str(meta.get("boundary_answer") or ""),
                 holds=tuple(str(x) for x in meta.get("holds") or ()),
                 answers=tuple(str(x) for x in meta.get("answers") or ()),
                 managed=bool(meta.get("managed", True)),
@@ -222,7 +260,7 @@ class Charter(BaseModel):
                 split_at_documents=int(meta.get("split_at_documents") or 0),
                 boundary_review_required=bool(
                     meta.get("boundary_review_required", False)
-                    or (version < CHARTER_SCHEMA_VERSION and legacy_basis)
+                    or (version < 6 and legacy_basis)
                 ),
                 last_review_at_documents=int(meta.get("last_review_at_documents") or 0),
                 repair_pending=bool(meta.get("repair_pending", False)),

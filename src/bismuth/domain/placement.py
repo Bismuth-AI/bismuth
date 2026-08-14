@@ -37,6 +37,20 @@ class Placement(BaseModel):
             "does not generate placement prose."
         ),
     )
+    folder_purpose: str = Field(
+        default="",
+        description=(
+            "Stable routing sign supplied by the placement agent when it creates a folder. "
+            "Empty for existing destinations."
+        ),
+    )
+    companion_document_ids: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Previously filed related documents at the same boundary parent that move "
+            "with this placement. Catalog IDs, never model-facing handles."
+        ),
+    )
 
     @property
     def is_placed(self) -> bool:

@@ -148,6 +148,25 @@ class CharterService:
             charter.to_markdown().encode("utf-8"),
         )
 
+    def for_agent_created_folder(self, folder: PurePosixPath, *, purpose: str) -> Charter:
+        """Build the stable sign already chosen by the placement agent, without another LLM call."""
+
+        parent = None
+        if folder.parent.parts:
+            try:
+                parent = self.load(folder.parent)
+            except BismuthError:
+                parent = None
+        return Charter(
+            path=folder,
+            title=folder.name,
+            purpose=routing_purpose(purpose, fallback=folder.name),
+            boundary_basis=parent.split_basis if parent is not None else "",
+            boundary_question=parent.split_question if parent is not None else "",
+            boundary_answer=folder.name if parent is not None and parent.divided else "",
+            managed=True,
+        )
+
     async def refresh_operations(
         self, folders: list[PurePosixPath]
     ) -> list[tuple[Operation, bytes]]:

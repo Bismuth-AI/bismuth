@@ -30,3 +30,22 @@ decision should be revisited. Superseded records stay; they are not deleted.
 | [0015](0015-agentic-shadow-planning.md) | Plan holistically with tools; validate and atomically apply the shadow plan without HITL |
 | [0016](0016-resumable-maintenance.md) | Persist maintenance failure and retry only structure planning after a model change |
 | [0017](0017-incremental-arrival-windows.md) | Update the tree between bounded arrival windows instead of reviewing the whole batch |
+| [0018](0018-addressable-agent-context.md) | Bound active context, archive exact tool observations, and reserve plan submission turns |
+| [0019](0019-exact-candidate-semantic-review.md) | Separate structural rights and semantically review the exact validated candidate |
+| [0020](0020-repair-routing-and-sticky-findings.md) | Repair existing sibling misroutes and keep blocking findings sticky across one revision |
+| [0021](0021-language-and-family-invariants.md) | Derive writing-system and document-family invariants from archive evidence |
+| [0022](0022-run-scoped-diagnostics.md) | Keep compact run timelines over exact diagnostic artifacts |
+| [0023](0023-family-cohesive-retry-windows.md) | Keep retry windows family-cohesive and review exact plans |
+| [0024](0024-symmetric-window-evidence-and-progressive-acceptance.md) | Give planner and critics symmetric evidence; preserve uncontested progress |
+| [0025](0025-family-visible-repairable-incremental-windows.md) | Make families visible and repairable across incremental windows |
+| [0026](0026-staged-atomic-agent-planning.md) | Stage exploration/conclusion and make family assignment atomic |
+| [0027](0027-capability-scoped-incremental-plans.md) | Separate reference evidence from bounded action capabilities |
+| [0028](0028-terminal-phases-and-dynamic-model-slots.md) | Make evidence phases terminal and reserve model input/output slots dynamically |
+| [0029](0029-incremental-agentic-placement.md) | Pivot automatic ingestion from arrival windows to one-document agentic placement |
+| [0030](0030-hybrid-agentic-placement-structured-growth.md) | Keep agentic evidence-seeking placement, but let only the multi-document harness create structure |
+| [0031](0031-contrastive-first-boundaries.md) | Establish a new axis with sibling contrast, immutable questions and finite placement evidence |
+| [0032](0032-retry-declined-boundaries-on-evidence-growth.md) | Retry declined first boundaries only after materially new evidence |
+| [0033](0033-final-contrast-recovery.md) | Recover incremental blind spots once, against the completed sibling contrast |
+
+Comparative experiment results and the 2026-08-14 corpus-neutrality audit are recorded in
+[`docs/troubleshooting/2026-08-14-classification-approach-retrospective.md`](../troubleshooting/2026-08-14-classification-approach-retrospective.md).

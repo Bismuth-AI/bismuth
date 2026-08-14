@@ -97,6 +97,8 @@ def build(
         timeout=settings.llm_timeout_seconds,
         absolute_timeout=settings.llm_absolute_timeout_seconds,
         max_concurrency=settings.llm_max_concurrency,
+        context_window_tokens=settings.llm_context_window_tokens,
+        context_safety_tokens=settings.llm_context_safety_tokens,
         headers=settings.api_headers,
         body=settings.api_body,
     )
@@ -108,7 +110,17 @@ def build(
         max_windows=settings.card_max_windows,
     )
     charters = CharterService(vault, model, catalog)
-    placement = PlacementService(model)
+    # Production placement is the incremental tool agent. Injected protocol-test LLMs
+    # keep the closed-choice compatibility path unless a chat model is explicitly paired
+    # with them; this prevents offline unit fixtures from opening a network connection.
+    placement_model = chat if llm is None or chat_model is not None else None
+    placement = PlacementService(
+        model,
+        model=placement_model,
+        vault=vault,
+        catalog=catalog,
+        charters=charters,
+    )
     move = MoveService(vault=vault, transactor=transactor, charters=charters)
     maintenance = LibraryMaintenanceService(
         vault=vault, catalog=catalog, charters=charters, transactor=transactor, llm=model
@@ -137,10 +149,10 @@ def build(
             placement=placement,
             charters=charters,
             transactor=transactor,
-            # Semantic maintenance is orchestrated by the API in bounded arrival
-            # windows.  The old per-document deterministic planner remains available
-            # for diagnostics, but must not reshape the live tree after every arrival.
-            subdivision=None,
+            # Placement explores only the tree that already exists. Structure growth is
+            # a separate multi-document harness: it draws one evidenced class out of the
+            # local parent after filing and fails independently of the committed document.
+            subdivision=maintenance,
             extraction_max_chars=settings.extraction_max_chars,
         ),
         deletion=DeletionService(
@@ -152,5 +164,6 @@ def build(
             vault=vault,
             charters=charters,
             transactor=transactor,
+            catalog=catalog,
         ),
     )

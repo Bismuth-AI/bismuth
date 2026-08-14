@@ -10,7 +10,12 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+NonEmptyStr = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)
+]
+SummaryStr = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1_200)
+]
 
 
 def sidecar_name(document_filename: str) -> str:
@@ -201,7 +206,7 @@ class DocumentCard(BaseModel):
     title: NonEmptyStr = Field(
         description="The document's own title, taken from its content rather than its filename."
     )
-    summary: NonEmptyStr = Field(
+    summary: SummaryStr = Field(
         description="Two or three sentences. What it is, not how it reads."
     )
     doc_type: NonEmptyStr = Field(

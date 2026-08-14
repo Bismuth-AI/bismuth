@@ -1,6 +1,8 @@
 # 0011 — Stable routing signs; bounded complete maintenance
 
 **Status:** accepted
+**Sign length and agent execution budget amended by:**
+[0018](0018-addressable-agent-context.md)
 **Amends:** [0010](0010-corpus-neutral-complete-boundaries.md)
 **Further amended by:** [0014](0014-boundary-state-and-closed-membership.md) — managed
 child signs are now derived, and membership uses closed per-document choices rather

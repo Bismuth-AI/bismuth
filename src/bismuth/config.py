@@ -77,7 +77,9 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         json_file=CONFIG_FILE,
-        json_file_encoding="utf-8",
+        # utf-8-sig accepts both ordinary UTF-8 and files written with a BOM by
+        # Windows editors/PowerShell. The writer still emits plain UTF-8.
+        json_file_encoding="utf-8-sig",
         extra="ignore",
     )
 
@@ -141,6 +143,21 @@ class Settings(BaseSettings):
     )
     llm_max_schema_retries: int = Field(default=2, ge=0)
     llm_max_concurrency: int = Field(default=4, ge=1)
+    llm_context_window_tokens: int = Field(
+        default=65_536,
+        ge=4_096,
+        description=(
+            "Maximum input plus output tokens accepted by the configured endpoint. "
+            "Agent output reservations are reduced dynamically to stay below it."
+        ),
+    )
+    llm_context_safety_tokens: int = Field(
+        default=1_024,
+        ge=128,
+        description=(
+            "Tokenizer/ChatML safety margin retained when reserving agent output slots."
+        ),
+    )
     extraction_max_chars: int = Field(default=200_000, ge=1_000)
     card_context_chars: int = Field(
         default=12_000,

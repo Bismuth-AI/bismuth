@@ -24,16 +24,12 @@ pending, running, done, or failed status; attempt count; source; timestamps; the
 exception message; and the last result summary. Ingest success remains independent of
 this state.
 
-The API exposes the checkpoint and a retry operation. Retry acquires the same lock as
-ingest, resolves the currently configured engine after acquiring it, and calls only the
-agentic plan/validate/apply cycle. It reads the existing tree and compact document cards;
-it does not parse source documents, regenerate cards, or rerun per-document placement.
-
-Pending or running state found after a server restart becomes a retryable failed state.
-The UI polls active maintenance, restores a failure banner after refresh, and offers
-`구조 정리 계속`. The ordinary `구조 정리` action invokes the same autonomous retry,
-which also provides a migration path for vaults whose failure predates this checkpoint.
-No user approval of the shadow plan is introduced.
+The API exposes the checkpoint for observability but no longer exposes a retry operation.
+The former `구조 정리 계속` and ordinary `구조 정리` retry actions were removed. Pending or
+running state found after a server restart becomes a failed state, and the UI restores that
+failure banner without an action button. A later upload archives the failed window as
+deferred and starts only its own new arrivals; it never replays the failed window. No user
+approval of the shadow plan is introduced.
 
 Completion is also explicit. A validated `submit_plan` means a proposed change, while
 `finish_no_change` records a reasoned no-op. Reaching the Agent Kit turn limit, returning

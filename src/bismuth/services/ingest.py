@@ -14,7 +14,7 @@ from bismuth.domain.charter import CHARTER_FILENAME
 from bismuth.domain.document import DocumentCard, Extraction, SourceRef, sidecar_name
 from bismuth.domain.errors import BismuthError
 from bismuth.domain.journal import Actor, JournalEntry, Operation, OperationKind
-from bismuth.domain.placement import Placement
+from bismuth.domain.placement import Placement, Verdict
 from bismuth.domain.progress import Progress, ProgressSink, Stage, report
 from bismuth.logging_setup import log_trace
 from bismuth.ports.catalog import Catalog
@@ -23,6 +23,7 @@ from bismuth.ports.parser import ParserRegistry
 from bismuth.ports.vault import INBOX, Vault
 from bismuth.services.cards import CardService
 from bismuth.services.charters import ROOT_NOTE, CharterService
+from bismuth.services.families import grounded_family_keys, key_sets_overlap
 from bismuth.services.placement import PlacementService
 from bismuth.services.sidecar import read_sidecar_meta, render_sidecar
 from bismuth.services.subdivision import LibraryMaintenanceService
@@ -45,6 +46,14 @@ class Prepared:
     extraction: Extraction | None = None
     duplicate_of: str = ""
     """Set when these bytes were already in the catalog; then nothing was read."""
+
+
+@dataclass(frozen=True, slots=True)
+class _FamilyLocation:
+    """Current colocated evidence for a grounded source-document family."""
+
+    destination: PurePosixPath
+    document_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,12 +224,47 @@ class IngestService:
         clock = _Clock()
         folders = self._charters.folder_views()
         say(Stage.PLACING, steps=len(folders))
-        placement = await self._placement.decide(
-            document_id=source.document_id,
-            card=card,
-            folders=folders,
-            existing_paths=frozenset(str(f) for f in self._vault.iter_folders() if f.parts),
-        )
+        family = self._existing_family_location(card, source=source)
+        # Root is provisional, not a semantic shelf. Locking every later family member
+        # to it made an early undecided edition permanently immune to the placement
+        # agent even after a suitable shelf existed. Re-evaluate a root family against
+        # the current signs and move its already-filed companions atomically if it fits.
+        if family is None or not family.destination.parts:
+            placement = await self._placement.decide(
+                document_id=source.document_id,
+                card=card,
+                folders=folders,
+                existing_paths=frozenset(str(f) for f in self._vault.iter_folders() if f.parts),
+            )
+            if (
+                family is not None
+                and placement.target is not None
+                and placement.target.parts
+            ):
+                placement = placement.model_copy(
+                    update={"companion_document_ids": family.document_ids}
+                )
+                log_trace(
+                    "place.family_promoted",
+                    document_id=source.document_id,
+                    title=card.title,
+                    from_folder=".",
+                    chose=str(placement.target),
+                    companions=list(family.document_ids),
+                )
+        else:
+            placement = Placement(
+                document_id=source.document_id,
+                verdict=Verdict.PLACED,
+                target=family.destination,
+                rationale="kept with an existing document family",
+            )
+            log_trace(
+                "place.family_locked",
+                document_id=source.document_id,
+                title=card.title,
+                chose=str(family.destination),
+            )
 
         clock.mark("place")
         destination = placement.target if placement.is_placed else INBOX
@@ -326,16 +370,37 @@ class IngestService:
         """Files in the inbox with no card yet -- including any dropped in by hand."""
         pending: list[PurePosixPath] = []
         for rel in self._vault.iter_files(INBOX, recursive=True):
-            try:
-                digest = SourceRef.hash_bytes(self._vault.read_bytes(rel))
-            except BismuthError:
-                # `/api/status` can enumerate the inbox at the exact moment the batch
-                # worker commits a move out of it. A vanished entry is successful
-                # progress, not a corrupt vault or a reason for the status endpoint to
-                # fail. Real read errors for files that still exist remain visible.
-                if not self._vault.exists(rel):
-                    continue
-                raise
+            digest: str | None = None
+            for attempt in range(3):
+                try:
+                    digest = SourceRef.hash_bytes(self._vault.read_bytes(rel))
+                    break
+                except BismuthError:
+                    # `/api/status` can enumerate the inbox at the exact moment the
+                    # batch worker commits a move out of it. A vanished entry is
+                    # successful progress, not a corrupt vault.
+                    if not self._vault.exists(rel):
+                        break
+                    raise
+                except PermissionError as exc:
+                    # Windows briefly denies a read while an upload/move handle is
+                    # being closed. Status is observational and must not turn that
+                    # transient race into a 500 response. Retry for at most 40 ms,
+                    # then report the item as temporarily unavailable in diagnostics.
+                    if not self._vault.exists(rel):
+                        break
+                    if attempt < 2:
+                        time.sleep(0.02)
+                        continue
+                    logger.warning("status skipped temporarily locked inbox file %s", rel)
+                    log_trace(
+                        "inbox.status_read_deferred",
+                        path=str(rel),
+                        attempts=attempt + 1,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+            if digest is None:
+                continue
             if self._catalog.find_by_hash(digest) is None:
                 pending.append(rel)
         return pending
@@ -389,10 +454,42 @@ class IngestService:
         if not self._vault.exists(destination):
             operations.append(Operation(kind=OperationKind.MKDIR, target=destination))
 
+        reserved_targets: set[str] = set()
+        for companion_id in placement.companion_document_ids:
+            companion = self._current_document_path(companion_id)
+            if companion is None or companion.parent == destination:
+                continue
+            companion_target = self._planned_unique_target(
+                destination, companion.name, reserved=reserved_targets
+            )
+            operations.append(
+                Operation(
+                    kind=OperationKind.MOVE,
+                    source=companion,
+                    target=companion_target,
+                    note=f"local companion for {source.filename}",
+                )
+            )
+            reserved_targets.add(str(companion_target).casefold())
+            old_sidecar = companion.parent / sidecar_name(companion.name)
+            if self._vault.exists(old_sidecar):
+                new_sidecar = companion_target.parent / sidecar_name(companion_target.name)
+                operations.append(
+                    Operation(
+                        kind=OperationKind.MOVE,
+                        source=old_sidecar,
+                        target=new_sidecar,
+                        note="move companion sidecar",
+                    )
+                )
+                reserved_targets.add(str(new_sidecar).casefold())
+
         if PurePosixPath(rel).parent == destination:
             final = rel
         else:
-            final = self._vault.unique_target(destination, source.filename)
+            final = self._planned_unique_target(
+                destination, source.filename, reserved=reserved_targets
+            )
             operations.append(
                 Operation(
                     kind=OperationKind.MOVE, source=rel, target=final, note=placement.rationale
@@ -409,11 +506,14 @@ class IngestService:
             # The root is not a class and must not be described as one: its note is fixed
             # (see charters.ROOT_NOTE), or the first document becomes what the vault is
             # "about" for good.
-            charter = (
-                ROOT_NOTE
-                if not destination.parts
-                else await self._charters.draft(destination, cards=[card], total_count=1)
-            )
+            if not destination.parts:
+                charter = ROOT_NOTE
+            elif placement.created_folder and placement.folder_purpose:
+                charter = self._charters.for_agent_created_folder(
+                    destination, purpose=placement.folder_purpose
+                )
+            else:
+                charter = await self._charters.draft(destination, cards=[card], total_count=1)
             operation, payload = self._charters.write_operation(charter)
             operations.append(operation)
             payloads[operation.target] = payload
@@ -449,14 +549,85 @@ class IngestService:
         to move any document afterwards, so using the original placement as current
         state produces stale API results and duplicate locations.
         """
+        if document := self._current_document_path(document_id):
+            return document.parent
+        return fallback
+
+    def _current_document_path(self, document_id: str) -> PurePosixPath | None:
+        """Resolve a catalog ID through the sidecar colocated with the current file."""
+
         for document in self._vault.iter_files(PurePosixPath(), recursive=True):
             sidecar = document.parent / sidecar_name(document.name)
             if not self._vault.exists(sidecar):
                 continue
             meta = read_sidecar_meta(self._vault.read_text(sidecar))
             if meta is not None and meta.get("document_id") == document_id:
-                return document.parent
-        return fallback
+                return document
+        return None
+
+    def _planned_unique_target(
+        self,
+        folder: PurePosixPath,
+        filename: str,
+        *,
+        reserved: set[str],
+    ) -> PurePosixPath:
+        """Choose a collision-free target including moves planned in this transaction."""
+
+        source_name = PurePosixPath(filename)
+        stem, suffix = source_name.stem, source_name.suffix
+        candidate = folder / source_name.name
+        number = 2
+        while self._vault.exists(candidate) or str(candidate).casefold() in reserved:
+            candidate = folder / f"{stem} ({number}){suffix}"
+            number += 1
+        return candidate
+
+    def _existing_family_location(
+        self,
+        card: DocumentCard,
+        *,
+        source: SourceRef,
+    ) -> _FamilyLocation | None:
+        """Reuse the current shelf of editions and subordinate instruments.
+
+        The title must also be grounded at the start of each source filename. This
+        prevents a generic or hallucinated card title from coupling unrelated files.
+        When earlier editions are already split, their lowest common ancestor is the
+        only shelf consistent with every precedent.
+        """
+
+        keys = grounded_family_keys(card, source.filename)
+        if not keys:
+            return None
+        matches: list[tuple[str, PurePosixPath]] = []
+        for document_id, existing_card in self._catalog.iter_cards():
+            existing_source = self._catalog.load_source(document_id)
+            if existing_source is None:
+                continue
+            existing_keys = grounded_family_keys(existing_card, existing_source.filename)
+            if not key_sets_overlap(keys, existing_keys):
+                continue
+            prior = self._catalog.load_placement(document_id)
+            fallback = (
+                prior.target
+                if prior is not None and prior.is_placed and prior.target is not None
+                else PurePosixPath()
+            )
+            destination = self._current_destination(document_id, fallback=fallback)
+            if destination.parts and not self._vault.is_dir(destination):
+                continue
+            matches.append((document_id, destination))
+        if not matches:
+            return None
+        destination = _common_ancestor([item[1] for item in matches])
+        # Root is a valid provisional family location. Keeping later instruments beside
+        # the first one lets the multi-document structure harness move the whole family
+        # together instead of letting placement split it before that evidence gathers.
+        return _FamilyLocation(
+            destination=destination,
+            document_ids=tuple(document_id for document_id, _ in matches),
+        )
 
 
 class _Clock:
@@ -496,3 +667,23 @@ def _ancestors(path: PurePosixPath) -> list[PurePosixPath]:
         result.append(parent)
         parent = parent.parent
     return result
+
+
+def _common_ancestor(paths: list[PurePosixPath]) -> PurePosixPath:
+    """Deepest folder shared by every prior edition."""
+
+    if not paths:
+        return PurePosixPath()
+    common = list(paths[0].parts)
+    for path in paths[1:]:
+        common = common[: _common_prefix_length(tuple(common), path.parts)]
+    return PurePosixPath(*common)
+
+
+def _common_prefix_length(left: tuple[str, ...], right: tuple[str, ...]) -> int:
+    length = 0
+    for left_part, right_part in zip(left, right, strict=False):
+        if left_part != right_part:
+            break
+        length += 1
+    return length
