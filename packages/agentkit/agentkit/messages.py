@@ -21,6 +21,7 @@ class AssistantMessage:
 
     text: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
+    call_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)

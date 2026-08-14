@@ -6,10 +6,10 @@ The shape of each question is the point, and the shape is not "divide this".
 a heterogeneous pile cannot honestly be accounted for without inventing a remainder
 class. Forbidding remainder names does not work, because the partition demands one.
 
-So instead one class is drawn out at a time (docs/spec/subdivision.md 2, "새 범주 추가").
-*Emerging* names a single class and nothing else; *Members* says who belongs to that one
-class. Neither reply has a slot the leftovers could go in, and the leftovers stay in the
-folder they are already in, which is what SPEC.md 3.4 says should happen to them.
+So a first boundary proposes at least two sibling signs together, while leaving unrelated
+documents at the parent. Once that axis exists, *Emerging* names one additional answer and
+*Members* says who belongs to it. Neither flow needs a remainder class; leftovers stay in
+the folder they are already in, which is what SPEC.md 3.4 says should happen to them.
 
 Asking this repeatedly is safe in a way that asking "how would you divide this" is not:
 it can add one sibling or route a loose document behind an existing sign, but it cannot
@@ -27,7 +27,10 @@ first and request-local document handles are assigned in separate bounded packet
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+import re
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from bismuth.domain.maintenance import is_axis_label
 from bismuth.ports.llm import Prompt
@@ -60,13 +63,14 @@ _EMERGING_SYSTEM = f"""\
 These documents have not been sorted, and this folder has no sub-folders yet. You are \
 deciding TWO things, and the first one outlives this answer.
 
-**First, the AXIS.** Every sub-folder this folder ever gets will be one answer to a \
-single question, and you are choosing that question now. Consider two or three candidate \
-axes before choosing. Prefer the one that lets a reader rule out the most documents, \
-keeps answers mutually exclusive, avoids repeating the same split under every child, and \
-is likely to remain meaningful as the collection grows. Return the name of ONE property, \
-not a comparison between candidate properties and not an explanation. Do not use any \
-domain rule that is not evidenced by the documents.
+**First, the AXIS.** This first boundary is a subject catalogue: the property is the \
+documents' primary subject domain, and every sub-folder must be one specific answer to \
+"What primary subject domain is this document about?". Organisations, publishers, \
+responsible authorities, document/form types, dates, languages, and source field labels \
+are evidence or metadata, never the axis and never a folder name. Do not copy labels such \
+as SUBJECT_TOPICS, KEYWORDS, SUBJECT_DOMAIN, or ORGANIZATIONS. Return a short axis label \
+for primary subject domain and that one question. Derive the concrete domain answers only \
+from recurring document evidence; no preferred taxonomy or example domain is supplied.
 
 **Then, the first CLASS on it** -- the one value of that axis that has gathered enough \
 documents to be worth a shelf.
@@ -100,6 +104,11 @@ a later look at a different level can take it.
 
 Whatever you do not name stays exactly where it is, and most of it staying is normal.
 
+An existing shelf is not an emerging class. Never return, paraphrase, broaden, or narrow
+an answer already listed under CHILDREN. Search the documents still sitting directly in
+this folder for a DIFFERENT recurring answer. If none exists, return emerged=false and an
+empty name; do not echo the closest existing sign.
+
 `emerged` is false when nothing new has gathered along this axis. That is the common \
 answer and the safe one. Leave `axis` empty; this folder already has one.\
 """
@@ -116,7 +125,9 @@ Leaving most of the list unclaimed is normal and expected.
 A document belongs here when someone looking for it would read this sign and stop. If \
 you find yourself reasoning that it fits better here than anywhere else, it does not \
 belong: there is no anywhere else, there is only this shelf and the folder it is \
-already in.\
+already in. An organization name containing the sign is not membership: a document whose \
+primary subject is that organization's own structure, staffing, offices, jurisdiction, \
+establishment, or supervision stays outside the policy/industry subject it administers.\
 """
 
 _REVIEW_SYSTEM = f"""\
@@ -179,7 +190,7 @@ class Emerging(BaseModel):
     axis: str = Field(
         default="",
         description=(
-            "The name of the ONE property the sub-folders tell apart. It is not a "
+            "The short label for the documents' primary subject domain. It is not a "
             "comparison of candidate properties and not an explanation. Asked only the first time; "
             "after that the folder already has one and you are held to it."
         ),
@@ -187,8 +198,8 @@ class Emerging(BaseModel):
     axis_question: str = Field(
         default="",
         description=(
-            "One question about one property. Every child folder name must be a direct "
-            "answer to it. Asked only the first time."
+            "The question asking what primary subject domain the document is about. Every "
+            "child folder name must be a direct answer to it. Asked only the first time."
         ),
     )
     name: str = Field(default="", description="Folder name for that class, one level. Not a path.")
@@ -211,6 +222,18 @@ class Members(BaseModel):
     document_ids: list[str] = Field(
         default_factory=list,
         description="Only the documents that belong under this sign. The rest stay where they are.",
+    )
+
+
+class NormalizedSign(BaseModel):
+    """One umbrella subject sign replacing a joined root candidate, when one exists."""
+
+    name: str = Field(
+        default="",
+        description="Shortest subject-domain noun phrase in the evidence language; no conjunction.",
+    )
+    valid: bool = Field(
+        description="True only when one honest umbrella domain covers the joined candidate."
     )
 
 
@@ -304,7 +327,23 @@ class Replacement(BaseModel):
 class ReplacementSign(BaseModel):
     """One sign in a context-bounded replacement sketch; membership comes later."""
 
-    name: str = Field(max_length=120, description="Folder name, one level. Not a path.")
+    name: str = Field(
+        max_length=40,
+        description=(
+            "Short folder label, one level. Not a path, definition, explanation, or "
+            "bilingual restatement."
+        ),
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_a_filesystem_sign(cls, value: str) -> str:
+        value = " ".join(value.split()).strip()
+        if re.search(r"\bD\d{4}\b", value, flags=re.IGNORECASE) or any(
+            marker in value for marker in "[]/\\"
+        ):
+            raise ValueError("folder sign must not contain document handles or path syntax")
+        return value
 
 
 class ReplacementSketch(BaseModel):
@@ -329,15 +368,24 @@ class ReplacementSketch(BaseModel):
         return value
 
 
+class InitialBoundarySketch(ReplacementSketch):
+    """Two or more sibling signs that establish a new folder's axis together."""
+
+
 class ReplacementAssignment(BaseModel):
     """Membership for one displayed replacement-sign handle."""
 
-    folder_id: str = Field(description="One shown G### sign ID, copied exactly.")
+    folder_id: str = Field(
+        pattern=r"^G\d{3}$",
+        description="One shown G### sign ID, copied exactly. No other handle is valid.",
+    )
     document_ids: list[str] = Field(default_factory=list)
 
-    @field_validator("folder_id")
+    @field_validator("folder_id", mode="before")
     @classmethod
-    def _normalise_folder_id(cls, value: str) -> str:
+    def _normalise_folder_id(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
         return value.strip().rstrip("/\\").strip().strip("[]").strip().upper()
 
 
@@ -366,17 +414,99 @@ class BoundaryAudit(BaseModel):
     useful_for_navigation: bool = Field(
         description="The signs materially narrow the search instead of restating the documents."
     )
+    members_match_signs: bool = Field(
+        description="Every assigned document actually matches the sign it is assigned under."
+    )
+    no_remainder_sign: bool = Field(
+        description="No sign is a miscellaneous, other, remainder, or everything-else bucket."
+    )
+    violations: list[
+        Literal[
+            "candidate_comparison",
+            "mixed_axis",
+            "name_not_answer",
+            "overlap",
+            "document_title_sign",
+            "weak_navigation",
+            "family_incompatible",
+            "membership_mismatch",
+            "remainder_sign",
+        ]
+    ] = Field(
+        default_factory=list,
+        max_length=8,
+        description=(
+            "Blocking violation codes only; never explain them in prose. Allowed codes: "
+            "candidate_comparison, mixed_axis, name_not_answer, overlap, "
+            "document_title_sign, weak_navigation, family_incompatible, "
+            "membership_mismatch, remainder_sign."
+        ),
+    )
 
     @property
     def accepted(self) -> bool:
-        return all(
+        return not self.violations and all(
             (
                 self.one_property,
                 self.names_answer_question,
                 self.mutually_exclusive,
                 self.useful_for_navigation,
+                self.members_match_signs,
+                self.no_remainder_sign,
             )
         )
+
+    @model_validator(mode="after")
+    def _violations_must_match_checks(self) -> BoundaryAudit:
+        checks = {
+            "candidate_comparison": self.one_property,
+            "mixed_axis": self.one_property,
+            "name_not_answer": self.names_answer_question,
+            "overlap": self.mutually_exclusive,
+            "family_incompatible": self.mutually_exclusive,
+            "document_title_sign": self.useful_for_navigation,
+            "weak_navigation": self.useful_for_navigation,
+            "membership_mismatch": self.members_match_signs,
+            "remainder_sign": self.no_remainder_sign,
+        }
+        contradictions = [code for code in self.violations if checks[code]]
+        if contradictions:
+            raise ValueError(
+                "violation codes contradict true checks: " + ", ".join(contradictions)
+            )
+        return self
+
+
+class ClassAudit(BaseModel):
+    """Semantic check for one additive shelf, not for a complete boundary.
+
+    A first shelf deliberately leaves unrelated documents loose.  Reusing
+    ``BoundaryAudit`` here was contradictory because that schema judges two or more
+    siblings and therefore treats a valid unary extraction as an incomplete boundary.
+    """
+
+    name_answers_question: bool = Field(
+        description="The sign is a specific answer to the primary-subject question."
+    )
+    recurring_class: bool = Field(
+        description="The sign names a reusable subject class, not one title or a vague umbrella."
+    )
+    useful_for_navigation: bool = Field(
+        description="The sign and its valid members materially narrow the loose document list."
+    )
+    distinct_from_contrast: bool = Field(
+        description=(
+            "The sign does not also naturally describe the supplied unclaimed contrast "
+            "documents or collapse existing sibling distinctions."
+        )
+    )
+    invalid_member_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Only shown D#### handles assigned to the sign that do not actually have that "
+            "primary subject. An empty list means every shown member fits."
+        ),
+    )
 
 
 class ReplacementAudit(BaseModel):
@@ -440,7 +570,9 @@ def build_emerging(
     documents: list[tuple[str, str]],
     children: list[tuple[str, str]],
     axis: str = "",
+    axis_question: str = "",
     spent: list[str] | None = None,
+    recently_rejected: list[str] | None = None,
 ) -> Prompt:
     """Step one: has any one class grown thick enough to come out?
 
@@ -449,6 +581,29 @@ def build_emerging(
     every sub-folder this folder ever gets is held to it.
     """
     user = _listing(path, purpose, documents, children)
+    if recently_rejected:
+        user += (
+            "\n\nRECENTLY TESTED CANDIDATES THAT DID NOT FORM A VALID RECURRING CLASS "
+            "AT COMPARABLE EVIDENCE: "
+            + ", ".join(recently_rejected)
+            + "\nDo not repeat or paraphrase these candidates in this pass. Look for a "
+            "different evidence-backed recurring class; otherwise return emerged=false."
+        )
+    hangul_documents = sum(bool(re.search(r"[가-힣]", description)) for _, description in documents)
+    if documents and hangul_documents * 2 >= len(documents):
+        user += (
+            "\n\nOUTPUT LANGUAGE CONTRACT: The evidence is Korean. Write axis, axis_question, "
+            "and name in Korean Hangul. The name must be a short subject noun phrase, not an "
+            "English translation and not a phrase meaning law, regulation, framework, or documents."
+        )
+    if not path:
+        user += (
+            "\nROOT SIGN CONTRACT: Name exactly one broad subject domain with the shortest "
+            "established noun phrase supported by the evidence. Do not join domains with 및, "
+            "and, &, a slash, or a comparison. Omit generic legal-action words meaning law, "
+            "regulation, framework, system, policy, documents, or protection when the subject "
+            "domain itself remains clear."
+        )
     if not axis:
         if spent:
             user += (
@@ -456,7 +611,50 @@ def build_emerging(
                 + "\n  ".join(spent)
             )
         return Prompt(system=_EMERGING_SYSTEM, user=user)
-    return Prompt(system=_EMERGING_ALONG_SYSTEM, user=f"{user}\n\nTHE AXIS HERE: {axis}")
+    return Prompt(
+        system=_EMERGING_ALONG_SYSTEM,
+        user=(
+            f"{user}\n\nTHE RECORDED AXIS (copy, do not reinterpret): {axis}"
+            f"\nTHE RECORDED QUESTION (answer exactly this question): {axis_question}"
+        ),
+    )
+
+
+def build_initial_boundary_sketch(
+    *,
+    path: str,
+    purpose: str,
+    documents: list[tuple[str, str]],
+    spent: list[str] | None = None,
+) -> Prompt:
+    """Design a first boundary from multiple sibling classes at once."""
+    spent_text = (
+        "\n\nPROPERTIES ALREADY USED ABOVE (do not reuse):\n  " + "\n  ".join(spent)
+        if spent
+        else ""
+    )
+    return Prompt(
+        system=(
+            "This folder has no child folders. A boundary cannot be established by one "
+            "class. Return TWO OR MORE sibling signs that are direct, mutually exclusive "
+            "answers to one stable semantic subject, purpose, or responsible-domain question. "
+            "Document type, legal/formal hierarchy, file format, language, and date are metadata "
+            "facets, not folder axes; NEVER use them as the basis or signs. Leave unrelated "
+            "documents at the "
+            "parent; never invent a remainder sign. The axis names one property, not a "
+            "comparison of documents or candidate classes, and its question must remain "
+            "meaningful for future documents. Each sign describes a recurring class rather "
+            "than echoing one document. Documents sharing one ATOMIC_MEMBERS list are indivisible: "
+            "choose an axis under which every such unit can stay in one sign or remain together "
+            "at the parent. Sign names are short labels in the "
+            "documents' own language: never include D#### handles, examples, translations, "
+            "parentheses explaining the label, or prose definitions. Return no explanation."
+        ),
+        user=(
+            f"FOLDER: {path or '(root)'}\nPURPOSE: {purpose or '(none)'}\n"
+            f"DOCUMENTS:\n{_render_documents(documents)}{spent_text}"
+        ),
+    )
 
 
 def build_members(
@@ -473,11 +671,47 @@ def build_members(
     return Prompt(system=_MEMBERS_SYSTEM, user=f"{user}\n\nTHE SHELF: {name} — {note}")
 
 
+def build_normalized_root_sign(
+    *, candidate: str, documents: list[tuple[str, str]] | None = None
+) -> Prompt:
+    """Reduce every root candidate to one honest top-level subject domain."""
+    return Prompt(
+        system=(
+            "루트 폴더 후보 표지 하나를 검토한다. 루트 형제는 서로 겹치지 않는 최상위 "
+            "주제 분야여야 한다. 후보를 문서 언어의 가장 짧고 확립된 주제 명사구로 "
+            "정규화한다. 아래 증거에서 후보를 실제로 지지하는 반복 문서들을 찾고, 무관한 "
+            "문서는 대비 자료로만 쓴다. 세부 대상·행위·정책을 붙인 하위 분야라면 그 "
+            "반복 문서들의 의미를 정직하게 "
+            "포괄하는 상위 주제 분야로 올린다. 법, 규제, 제도, 정책, 문서, 지원, 보호처럼 "
+            "자료 전반에 흔한 행위·형식 단어는 분야를 구별하지 못하면 뺀다. 이미 하나의 "
+            "짧은 통용 분야명이면 그 표준 어순을 그대로 둔다. 행위의 상태나 정책 목표를 "
+            "설명하는 말은 분야명이 아니다. 문서 여러 개에 같은 소관·발행·감독 기관이 "
+            "반복된다는 이유로 그 기관이나 '그 기관 소관 문서/법령'을 주제 분야로 삼지 "
+            "않는다. 문서들이 실제로 규율하는 대상과 활동에 하나의 공통 분야가 없고 공통점이 "
+            "책임 기관이나 법적 형식뿐이면 valid=false로 판단한다. name은 후보를 새 말로 "
+            "재서술한 표현이 아니라 "
+            "최소 두 개의 서로 다른 증거 행에 주제어로 실제 반복 등장하는 명사구에 "
+            "근거해야 한다. 단어를 재배열하거나 유사어를 만들어내지 않는다. 두 분야 중 "
+            "하나를 임의로 선택하거나 새 분류 "
+            "체계를 만들지 않는다. 구체적인 탐색 범위를 주지 못하는 일반어이거나 하나의 "
+            "포괄 분야가 없으면 valid=false와 빈 name을 반환한다. name에는 및, and, &, "
+            "슬래시, 비교 표현을 쓰지 않는다. 입력 후보가 한글이면 name도 반드시 한글로 "
+            "쓴다. 번역하지 말고 설명하지 않는다."
+        ),
+        user=(
+            f"현재 후보 표지: {candidate}\n\n"
+            "후보를 만들 때 사용한 문서 주제 증거:\n"
+            f"{_render_documents(documents or []) or '  (없음)'}"
+        ),
+    )
+
+
 def build_emerging_reduce(
     *,
     path: str,
     purpose: str,
     axis: str,
+    axis_question: str = "",
     children: list[tuple[str, str]],
     candidates: list[Emerging],
 ) -> Prompt:
@@ -490,7 +724,8 @@ def build_emerging_reduce(
     )
     existing = _render_children(children) or "  (none)"
     axis_rule = (
-        f"The existing axis is {axis!r}; the selected candidate must stay on it."
+        f"The recorded axis is {axis!r} and its immutable question is "
+        f"{axis_question!r}; the selected candidate must answer that exact question."
         if axis
         else "Select one property shared by every future sibling."
     )
@@ -564,16 +799,27 @@ def build_replacement_sketch(
     )
 
 
-def build_replacement_reduce(*, path: str, sketches: list[ReplacementSketch]) -> Prompt:
+def build_replacement_reduce(
+    *, path: str, sketches: list[ReplacementSketch], initial: bool = False
+) -> Prompt:
     """Reduce several isolated packet sketches into one coherent boundary design."""
     rendered = "\n\n".join(
         f"CANDIDATE {index}:\n  AXIS: {sketch.basis}\n  QUESTION: {sketch.basis_question}\n"
         + "\n".join(f"  - {sign.name}/" for sign in sketch.signs)
         for index, sketch in enumerate(sketches, start=1)
     )
+    initial_rule = (
+        "This establishes an initial folder axis: keep only semantic subject, purpose, or "
+        "responsible-domain axes. Never select or reconstruct a document-type, legal/formal "
+        "hierarchy, file-format, language, or date axis. "
+        if initial
+        else ""
+    )
     return Prompt(
         system=(
             "Consolidate candidate library boundaries produced from separate evidence packets. "
+            + initial_rule
+            +
             "Return one boundary on one property whose signs can cover the classes evidenced "
             "across all candidates. Resolve synonyms and competing axes; do not mix axes or add "
             "a remainder class. Use the archive's own language. Return no document IDs and "
@@ -598,7 +844,10 @@ def build_replacement_assignments(
             "Assign every shown document to exactly one proposed library sign. Copy only G### "
             "handles and D#### document handles exactly. Do not rename or create signs. If a "
             "document genuinely fits no sign, put its ID in unassigned_document_ids; never force "
-            "the nearest fit. Return no explanation."
+            "the nearest fit. ATOMIC_MEMBERS is a constraint, not a destination: all listed "
+            "documents must choose the same G### sign or all remain unassigned. Never return a "
+            "path, dot, family/unit label, or anything except a shown G### as folder_id. Return "
+            "no explanation."
         ),
         user=(
             f"FOLDER: {path or '(root)'}\nAXIS: {sketch.basis}\n"
@@ -623,8 +872,12 @@ def build_existing_choice(
     return Prompt(
         system=(
             "Route this one loose document only when an existing sign positively describes it. "
-            "Reply with exactly one shown F### handle or STAY. STAY is normal when no sign is a "
-            "clear fit. Do not explain, rename, or create a sign."
+            "Reply with exactly one shown F### handle or NEW_SIBLING. NEW_SIBLING is normal when "
+            "a more accurate natural top-level subject is not shown; never select the closest "
+            "merely related sign. An organization's own structure, staffing, offices, jurisdiction, "
+            "establishment, or supervision is institutional administration, not the policy or "
+            "industry subject embedded in the organization's name. Do not explain, rename, or "
+            "create a sign."
         ),
         user=(
             f"FOLDER: {path or '(root)'}\nAXIS: {axis}\nQUESTION: {axis_question}\n"
@@ -682,6 +935,8 @@ def build_boundary_audit(
     rendered_groups = "\n".join(
         f"  {group.name}/ — {group.note} — ids: {', '.join(group.document_ids)}" for group in groups
     )
+
+
     mode = (
         "This replaces the whole boundary, so every document must be represented."
         if complete
@@ -689,18 +944,181 @@ def build_boundary_audit(
     )
     return Prompt(
         system=(
-            "You are the independent verifier for a proposed library boundary. Judge only "
+            "You are the adversarial verifier for a proposed library boundary. First try to "
+            "falsify it and record every concrete blocking issue in `violations`. Judge only "
             "from the supplied documents and proposal. Do not introduce a preferred domain "
             "taxonomy. The axis must name one property, its question must ask only that "
             "property, and every sibling name must be an answer to that question. Reject "
             "candidate comparisons, mixed axes, overlapping siblings, document-title shelves, "
-            "and distinctions that do not help a reader rule alternatives out. Folder notes "
+            "miscellaneous/remainder signs, assigned documents that do not actually match their "
+            "sign, and distinctions that do not help a reader rule alternatives out. Do not mark "
+            "membership valid merely because related documents were kept together: each member "
+            "must still truthfully satisfy the chosen sign. A new boundary "
+            "with fewer than two sibling signs cannot establish an axis. Folder notes "
             "are derived by the application and are not part of this judgement."
         ),
         user=(
             f"FOLDER: {path or '(root)'}\nMODE: {mode}\nAXIS: {axis}\n"
             f"QUESTION: {axis_question}\nGROUPS:\n{rendered_groups}\n\n"
             f"DOCUMENTS:\n{_render_documents(documents)}"
+        ),
+    )
+
+
+def build_rebalance_choice(
+    *,
+    path: str,
+    current: str,
+    document: tuple[str, str],
+    axis: str,
+    axis_question: str,
+    children: list[tuple[str, str]],
+) -> Prompt:
+    """Review one existing filing against the now-complete sibling contrast."""
+    signs = "\n".join(
+        f"  [F{index:03d}] {name}/" for index, (name, _) in enumerate(children, start=1)
+    )
+    return Prompt(
+        system=(
+            "Review one existing top-level filing after more sibling signs became available. "
+            "Reply with exactly one shown F### handle or KEEP. KEEP is the conservative default. "
+            "Choose another handle only when it is a clearly more accurate natural parent for the "
+            "document's primary subject, not merely another related subject, regulator, beneficiary, "
+            "technology, payment mechanism, or secondary effect. If the best natural subject is not "
+            "shown, reply KEEP. Do not explain, rename, or create a sign."
+        ),
+        user=(
+            f"FOLDER: {path or '(root)'}\nAXIS: {axis}\nQUESTION: {axis_question}\n"
+            f"CURRENT SIGN: {current}/\nSIGNS:\n{signs}\n\n"
+            f"DOCUMENT:\n  [{document[0]}] {document[1]}"
+        ),
+    )
+
+
+def build_rebalance_comparison(
+    *, current: str, proposed: str, document: tuple[str, str]
+) -> Prompt:
+    """Require an explicit departure judgement before moving an existing filing."""
+    return Prompt(
+        system=(
+            "Compare the current and proposed library signs for one document's PRIMARY SUBJECT. "
+            "Reply MOVE only when the proposed sign is clearly more accurate and the current sign "
+            "is materially misleading. Relatedness or a small improvement is not enough. Reply KEEP "
+            "when either sign is defensible, when the distinction is ambiguous, or when an unshown "
+            "third sign would be better. Reply exactly MOVE or KEEP with no explanation."
+        ),
+        user=(
+            f"CURRENT SIGN: {current}/\nPROPOSED SIGN: {proposed}/\n\n"
+            f"DOCUMENT:\n  [{document[0]}] {document[1]}"
+        ),
+    )
+
+
+def build_class_audit(
+    *,
+    path: str,
+    axis: str,
+    axis_question: str,
+    name: str,
+    total_loose_documents: int,
+    total_claimed_members: int,
+    members: list[tuple[str, str]],
+    contrast: list[tuple[str, str]],
+    siblings: list[tuple[str, str]],
+) -> Prompt:
+    """Audit one additive class and identify only its false-positive members."""
+    return Prompt(
+        system=(
+            "Audit ONE additive library shelf. This is intentionally not a complete boundary: "
+            "unclaimed documents remain loose, and no second sibling is required. Judge the sign "
+            "as an answer to the stated primary-subject question. It must name a recurring, "
+            "specific subject class and materially narrow navigation. For membership, return only "
+            "shown D#### handles whose PRIMARY SUBJECT does not match the sign. Relatedness, a "
+            "mentioned authority, or a secondary consumer/finance aspect is not enough. When the "
+            "question asks for a subject or domain, a responsible, issuing, supervising, or owning "
+            "organization is not itself the subject class, and a collection such as 'documents or "
+            "laws under that organization' is invalid unless the documents independently share the "
+            "named regulated subject. Mark as invalid any member whose primary subject is the "
+            "organization's own structure, staffing, offices, jurisdiction, establishment, or "
+            "supervision merely because the organization's name contains the proposed sign. Do not "
+            "reject the whole class merely because some members are invalid; identify those IDs. "
+            "Separately reject broad umbrellas that also naturally describe the unclaimed contrast "
+            "documents or erase the distinction made by an existing sibling sign. Do not audit the "
+            "old siblings' document membership; their names are context only."
+        ),
+        user=(
+            f"FOLDER: {path or '(root)'}\nAXIS: {axis}\nQUESTION: {axis_question}\n"
+            f"ONE PROPOSED SIGN: {name}/\nTOTAL LOOSE DOCUMENTS: {total_loose_documents}\n"
+            f"TOTAL CLAIMED MEMBERS: {total_claimed_members}\n\n"
+            f"EXISTING SIBLING SIGNS:\n{_render_children(siblings) or '  (none)'}\n\n"
+            f"CLAIMED MEMBERS IN THIS PACKET:\n{_render_documents(members)}\n\n"
+            f"UNCLAIMED CONTRAST DOCUMENTS (must stay outside this sign):\n"
+            f"{_render_documents(contrast) or '  (none)'}"
+        ),
+    )
+
+
+def build_member_fit_audit(
+    *,
+    path: str,
+    axis: str,
+    axis_question: str,
+    name: str,
+    document: tuple[str, str],
+) -> Prompt:
+    """Verify one claimed member in isolation before the harness moves it."""
+    return Prompt(
+        system=(
+            "Verify one proposed library-shelf membership in isolation. Reply BELONG only "
+            "when the sign is an accurate natural parent category for the document's PRIMARY "
+            "SUBJECT; a more specific subtype does not need to repeat the sign's wording. "
+            "Interpret the entire sign, including every meaningful modifier. Shared words, a "
+            "regulator, consumer implications, financing, or another secondary aspect are not "
+            "sufficient. When the axis asks for subject or domain, being issued, owned, or supervised "
+            "by the organization named in the sign is not membership. A document about that "
+            "organization's own structure, staffing, offices, jurisdiction, establishment, or "
+            "supervision is institutional administration, not the policy/industry domain embedded "
+            "in its name. For statutes and regulations, "
+            "the subject named in the title and the "
+            "explicit purpose are the strongest evidence. Do not reclassify a law by an affected "
+            "or beneficiary population when its named regulated activity is different. Reply "
+            "STAY when the document's primary subject belongs to a neighboring future class. "
+            "Reply exactly BELONG or STAY with no explanation."
+        ),
+        user=(
+            f"FOLDER: {path or '(root)'}\nAXIS: {axis}\nQUESTION: {axis_question}\n"
+            f"PROPOSED SIGN: {name}/\n\nONE CLAIMED DOCUMENT:\n"
+            f"  [{document[0]}] {document[1]}"
+        ),
+    )
+
+
+def build_member_dispute_audit(
+    *,
+    path: str,
+    axis: str,
+    axis_question: str,
+    name: str,
+    document: tuple[str, str],
+) -> Prompt:
+    """Resolve only a disagreement between the aggregate and isolated reviewers."""
+    return Prompt(
+        system=(
+            "Resolve a disputed library-shelf membership. One reviewer accepted this "
+            "document and another identified it as a false positive. Recheck conservatively. "
+            "Reply BELONG only when the sign names the document's primary regulated subject "
+            "or its natural parent domain. Similar words such as protection, support, fairness, "
+            "finance, or administration do not make different protected populations, regulated "
+            "activities, or industries the same class. For statutes, the title and explicit "
+            "purpose outrank beneficiaries, agencies, sanctions, and incidental topics. Internal "
+            "organization, staffing, offices, jurisdiction, establishment, or supervision is not "
+            "the organization's named policy domain. If a "
+            "more honest future sibling can be named, reply STAY. Reply exactly BELONG or STAY."
+        ),
+        user=(
+            f"FOLDER: {path or '(root)'}\nAXIS: {axis}\nQUESTION: {axis_question}\n"
+            f"DISPUTED SIGN: {name}/\n\nONE DISPUTED DOCUMENT:\n"
+            f"  [{document[0]}] {document[1]}"
         ),
     )
 

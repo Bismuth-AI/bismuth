@@ -188,6 +188,7 @@ _SCHEMA_MAX_TOKENS: dict[str, int] = {
     "DensifiedSummary": 512,
     "Members": 512,
     "ReplacementSketch": 2048,
+    "InitialBoundarySketch": 2048,
     "Replacement": 4096,
     "ReplacementAssignments": 1024,
     "CardDraft": 2048,
@@ -302,12 +303,13 @@ class LiteLLMAdapter:
                 )
                 if attempt == self._max_retries:
                     break
-                # A native constrained decoder can itself be the source of a loop: JSON
-                # whitespace remains legal forever when it cannot choose the next field.
-                # Retry from the original task, without poisoned partial output, using
-                # prompt-embedded JSON instead of the same decoder path.
-                native = False
-                messages = self._build_messages(prompt, schema=schema, native=False)
+                # JSON whitespace remains legal forever and can indicate a constrained
+                # decoder dead-end.  Semantic prose repetition inside a string is a
+                # model-generation failure, however, not evidence that native schema is
+                # broken.  Keep the stronger native contract for that clean retry.
+                if exc.pattern == "<whitespace>":
+                    native = False
+                messages = self._build_messages(prompt, schema=schema, native=native)
                 continue
             except Exception as exc:
                 elapsed_ms = round((time.monotonic() - started) * 1000)
@@ -609,6 +611,23 @@ class LiteLLMAdapter:
         attempt_log["max_tokens"] = kwargs["max_tokens"]
         if schema is not None:
             kwargs["response_format"] = schema
+        attempt_log["request_parameters"] = {
+            key: (
+                f"json_schema:{value.__name__}"
+                if key == "response_format" and isinstance(value, type)
+                else value
+            )
+            for key, value in kwargs.items()
+            if key
+            not in {
+                "api_key",
+                "api_base",
+                "extra_headers",
+                "messages",
+                "tools",
+                "shared_session",
+            }
+        }
 
         stream_log: dict[str, Any] = {
             "chunks": [],
@@ -637,6 +656,7 @@ class LiteLLMAdapter:
                     repeat_tail = ""
                     generated_chars = 0
                     whitespace_tail_chars = 0
+                    next_long_repeat_check = 1_024
                     while True:
                         try:
                             chunk = await asyncio.wait_for(
@@ -691,6 +711,17 @@ class LiteLLMAdapter:
                                     "kind": "repetition",
                                     "pattern": pattern,
                                     "after_chars": generated_chars,
+                                }
+                                raise _RepetitionDetectedError(pattern)
+                        if generated_chars >= next_long_repeat_check:
+                            next_long_repeat_check = generated_chars + 256
+                            pattern = _repeated_word_sequence("".join(content_parts))
+                            if pattern is not None:
+                                stream_log["abort"] = {
+                                    "kind": "repetition",
+                                    "pattern": pattern,
+                                    "after_chars": generated_chars,
+                                    "mode": "repeated_word_sequence",
                                 }
                                 raise _RepetitionDetectedError(pattern)
             except TimeoutError as exc:
@@ -759,6 +790,29 @@ def _repeated_suffix(text: str, *, count: int = 6, maximum_pattern: int = 40) ->
         pattern = text[-size:]
         if pattern.strip() and text.endswith(pattern * count):
             return pattern
+    return None
+
+
+def _repeated_word_sequence(
+    text: str, *, words: int = 8, count: int = 4, maximum_tokens: int = 500
+) -> str | None:
+    """Find a longer recurring prose loop without fuzzy semantic matching.
+
+    Exact short suffixes catch malformed JSON. Agent prose tends to repeat a sentence
+    frame with different paragraphs between occurrences, so use an exact, normalized
+    eight-word sequence and require four occurrences. Tool-call arguments are not part
+    of ``content`` and therefore cannot trigger this guard.
+    """
+
+    tokens = re.findall(r"[^\W_]+", text.casefold())[-maximum_tokens:]
+    if len(tokens) < words * count:
+        return None
+    seen: dict[tuple[str, ...], int] = {}
+    for index in range(len(tokens) - words + 1):
+        phrase = tuple(tokens[index : index + words])
+        seen[phrase] = seen.get(phrase, 0) + 1
+        if seen[phrase] >= count:
+            return " ".join(phrase)
     return None
 
 

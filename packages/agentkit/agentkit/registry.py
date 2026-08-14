@@ -24,8 +24,13 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         return self._by_name.get(name)
 
-    def specs(self) -> list[ToolSpec]:
-        return [tool_spec(t) for t in self._by_name.values()]
+    def specs(self, names: set[str] | None = None) -> list[ToolSpec]:
+        """Model-facing specs, optionally restricted during a conclusion phase."""
+        return [
+            tool_spec(tool)
+            for name, tool in self._by_name.items()
+            if names is None or name in names
+        ]
 
     def __len__(self) -> int:
         return len(self._by_name)

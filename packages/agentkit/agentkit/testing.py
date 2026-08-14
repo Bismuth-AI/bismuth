@@ -25,8 +25,14 @@ class FakeModel:
         self.calls: list[tuple[str, list[Message], list[ToolSpec]]] = []
 
     async def complete(
-        self, *, system: str, messages: Sequence[Message], tools: Sequence[ToolSpec]
+        self,
+        *,
+        system: str,
+        messages: Sequence[Message],
+        tools: Sequence[ToolSpec],
+        tool_choice: str | None = None,
     ) -> AssistantMessage:
+        del tool_choice
         self.calls.append((system, list(messages), list(tools)))
         if self._handler is not None:
             return self._handler(system, list(messages), list(tools))

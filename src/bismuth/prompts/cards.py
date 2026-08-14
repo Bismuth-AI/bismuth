@@ -7,7 +7,9 @@ assumes the document has headings, a table of contents, or any structure at all.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Annotated
+
+from pydantic import BaseModel, Field, StringConstraints
 
 from bismuth.domain.document import DocumentCard, Entity, Window
 from bismuth.ports.llm import Prompt
@@ -67,6 +69,10 @@ replaced. Nothing is ever removed, so add only what you are sure of. Each entry 
 a short label of a few words, one thing per entry: a page of references or a list \
 of headings is not a topic and not an entity. When a part is nothing but \
 bibliography, boilerplate or contact details, add nothing.
+Return at most 4 new topics, 8 new entities, 8 new keywords, and 4 new questions. \
+Every label must be at most 80 characters. If the part contains more candidates, \
+keep only the most important; never join many provisions, names, or concepts into \
+one label and never repeat a phrase to fill a list.
 4. `title` and `doc_type` are usually already right. Set them ONLY if this part \
 shows the earlier guess was wrong -- for instance the real title appears after a \
 cover page. Leave them null otherwise.
@@ -128,43 +134,62 @@ _FIRST_OF_MANY_NOTICE = (
 )
 
 
+TitleText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
+SummaryText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1_200)
+]
+LabelText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
+QuestionText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)
+]
+UpdateLabelText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)
+]
+UpdateQuestionText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
+]
+LanguageText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32)
+]
+
+
 class CardDraft(BaseModel):
     """What the model returns for one document."""
 
-    title: str = Field(description="The document's own title, in its own language.")
-    summary: str = Field(description="Two or three sentences. What it is and what it is for.")
-    doc_type: str = Field(description="Short noun phrase for the genre.")
-    language: str = Field(description="Language code of the document, e.g. 'ko', 'en'.")
-    topics: list[str] = Field(
+    title: TitleText = Field(description="The document's own title, in its own language.")
+    summary: SummaryText = Field(description="Two or three sentences. What it is and what it is for.")
+    doc_type: LabelText = Field(description="Short noun phrase for the genre.")
+    language: LanguageText = Field(description="Language code of the document, e.g. 'ko', 'en'.")
+    topics: list[LabelText] = Field(
         default_factory=list,
         max_length=6,
         description="The few things this document is about, in its own words.",
     )
     entities: list[Entity] = Field(default_factory=list, max_length=20)
-    keywords: list[str] = Field(default_factory=list, max_length=12)
-    answers_questions: list[str] = Field(default_factory=list, max_length=6)
+    keywords: list[LabelText] = Field(default_factory=list, max_length=12)
+    answers_questions: list[QuestionText] = Field(default_factory=list, max_length=6)
 
 
 class CardUpdate(BaseModel):
     """What one further part of a document changes about the card."""
 
-    summary: str = Field(description="The whole document so far, rewritten. Not an append.")
-    title: str | None = Field(
+    summary: SummaryText = Field(description="The whole document so far, rewritten. Not an append.")
+    title: TitleText | None = Field(
         default=None, description="Only when the earlier title turned out to be wrong."
     )
-    doc_type: str | None = Field(
+    doc_type: LabelText | None = Field(
         default=None, description="Only when the earlier genre turned out to be wrong."
     )
-    new_topics: list[str] = Field(default_factory=list, max_length=6)
-    new_entities: list[Entity] = Field(default_factory=list, max_length=20)
-    new_keywords: list[str] = Field(default_factory=list, max_length=12)
-    new_questions: list[str] = Field(default_factory=list, max_length=6)
+    new_topics: list[UpdateLabelText] = Field(default_factory=list, max_length=4)
+    new_entities: list[Entity] = Field(default_factory=list, max_length=8)
+    new_keywords: list[UpdateLabelText] = Field(default_factory=list, max_length=8)
+    new_questions: list[UpdateQuestionText] = Field(default_factory=list, max_length=4)
 
 
 class DensifiedSummary(BaseModel):
     """A summary rewritten to carry the facts that matter, at unchanged length."""
 
-    summary: str
+    summary: SummaryText
 
 
 def build(*, filename: str, window: Window, truncated: bool) -> Prompt:

@@ -33,7 +33,11 @@ def make_delete(recorder: list[str]) -> FunctionTool:
         return f"deleted {args.path}"
 
     return FunctionTool(
-        name="delete", description="Delete a path.", params=PathArgs, handler=_delete, read_only=False
+        name="delete",
+        description="Delete a path.",
+        params=PathArgs,
+        handler=_delete,
+        read_only=False,
     )
 
 
@@ -57,6 +61,77 @@ class TestLoop:
 
         assert result.stopped == "max_turns"
         assert result.turns == 3
+
+    async def test_required_conclusion_tool_recovers_from_an_early_prose_final(self) -> None:
+        model = FakeModel(
+            [
+                says("I have decided what to do."),
+                says("", call("echo", {"text": "submitted"})),
+                says("done"),
+            ]
+        )
+        result = await Agent(
+            model=model,
+            tools=[echo],
+            system="s",
+            max_turns=4,
+            conclusion_tools={"echo"},
+        ).run("go")
+
+        assert result.stopped == "final"
+        assert "echo: submitted" in _tool_messages(result)
+        assert any(event.kind == "conclusion_required" for event in result.events)
+
+    async def test_prose_without_required_tool_uses_the_high_turn_fuse(self) -> None:
+        model = FakeModel(handler=lambda *_: says("still no tool"))
+        result = await Agent(
+            model=model,
+            tools=[echo],
+            system="s",
+            max_turns=4,
+            conclusion_tools={"echo"},
+        ).run("go")
+
+        assert result.stopped == "max_turns"
+        assert result.turns == 4
+
+    async def test_accepted_conclusion_tool_stops_without_an_extra_model_turn(self) -> None:
+        model = FakeModel([says("decision", call("echo", {"text": "accepted"}))])
+        result = await Agent(
+            model=model,
+            tools=[echo],
+            system="s",
+            conclusion_tools={"echo"},
+            conclusion_accepted=lambda call, content, kind: (
+                call.name == "echo" and content == "echo: accepted" and kind == "tool_result"
+            ),
+        ).run("go")
+
+        assert result.stopped == "conclusion"
+        assert result.turns == 1
+        assert len(model.calls) == 1
+
+    async def test_rejected_conclusion_tool_does_not_suppress_the_required_retry(self) -> None:
+        model = FakeModel(
+            [
+                says("", call("echo", {"text": "rejected"})),
+                says("I am still deciding."),
+                says("", call("echo", {"text": "accepted"})),
+            ]
+        )
+        result = await Agent(
+            model=model,
+            tools=[echo],
+            system="s",
+            conclusion_tools={"echo"},
+            conclusion_accepted=lambda call, content, kind: (
+                call.name == "echo" and content == "echo: accepted" and kind == "tool_result"
+            ),
+        ).run("go")
+
+        assert result.stopped == "conclusion"
+        assert result.turns == 3
+        assert any(event.kind == "conclusion_required" for event in result.events)
 
 
 class TestDispatch:
@@ -104,9 +179,7 @@ class TestPermission:
             return Permission.ALLOW
 
         model = FakeModel([says("", call("delete", {"path": "a"})), says("ok")])
-        agent = Agent(
-            model=model, tools=[make_delete(recorder)], system="s", on_ask=approve
-        )
+        agent = Agent(model=model, tools=[make_delete(recorder)], system="s", on_ask=approve)
         result = await agent.run("go")
 
         assert recorder == ["a"]
@@ -116,15 +189,26 @@ class TestPermission:
 class TestObservability:
     async def test_events_trace_the_run(self) -> None:
         seen: list[agentkit.AgentEvent] = []
-        model = FakeModel([says("", call("echo", {"text": "hi"})), says("done")])
-        result = await Agent(
-            model=model, tools=[echo], system="s", on_event=seen.append
-        ).run("go")
+        model = FakeModel(
+            [
+                agentkit.AssistantMessage(
+                    tool_calls=(call("echo", {"text": "hi"}),), call_id="llm-call-1"
+                ),
+                says("done"),
+            ]
+        )
+        result = await Agent(model=model, tools=[echo], system="s", on_event=seen.append).run("go")
 
         kinds = [e.kind for e in result.events]
         assert kinds[:1] == ["turn"]
         for expected in ("tool_call", "tool_result", "stop"):
             assert expected in kinds
+        turn = next(event for event in result.events if event.kind == "turn")
+        tool_call = next(event for event in result.events if event.kind == "tool_call")
+        tool_result = next(event for event in result.events if event.kind == "tool_result")
+        assert turn.data["call_id"] == "llm-call-1"
+        assert tool_call.data["llm_call_id"] == "llm-call-1"
+        assert tool_result.data["llm_call_id"] == "llm-call-1"
         assert seen == result.events  # callback and result agree
 
 
@@ -155,7 +239,9 @@ class TestSubAgent:
     async def test_task_delegates_and_returns_only_the_final_text(self) -> None:
         from agentkit import subagent_tool
 
-        finder = Agent(model=FakeModel([says("found: the answer is 42")]), tools=[echo], system="sub")
+        finder = Agent(
+            model=FakeModel([says("found: the answer is 42")]), tools=[echo], system="sub"
+        )
         task = subagent_tool({"finder": finder})
         main_model = FakeModel(
             [
@@ -209,7 +295,10 @@ class TestSubAgent:
         task = subagent_tool({"finder": sub}, on_event=seen.append)
         main = Agent(
             model=FakeModel(
-                [says("", call("task", {"description": "go", "subagent_type": "finder"})), says("ok")]
+                [
+                    says("", call("task", {"description": "go", "subagent_type": "finder"})),
+                    says("ok"),
+                ]
             ),
             tools=[task],
             system="main",

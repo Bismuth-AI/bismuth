@@ -23,4 +23,5 @@ class ChatModel(Protocol):
         system: str,
         messages: Sequence[Message],
         tools: Sequence[ToolSpec],
+        tool_choice: str | None = None,
     ) -> AssistantMessage: ...

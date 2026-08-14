@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -11,7 +12,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT = 15.0
+# Catalogue lookup is a one-time setup operation. On the measured Windows host an
+# unauthenticated OpenAI request returned its expected 401 after 19.8 seconds, so the
+# former 15-second limit rejected a healthy endpoint before its first byte arrived.
+# Keep the schema capability probe short; it targets an already-working custom endpoint.
+_CATALOG_TIMEOUT = 45.0
+_PROBE_TIMEOUT = 15.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,14 +137,14 @@ def supports_response_schema(
 
 def _get(url: str, headers: dict[str, str]) -> dict[str, Any]:
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+    with urllib.request.urlopen(request, timeout=_CATALOG_TIMEOUT) as response:
         return json.loads(response.read())  # type: ignore[no-any-return]
 
 
 def _post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+    with urllib.request.urlopen(request, timeout=_PROBE_TIMEOUT) as response:
         return json.loads(response.read())  # type: ignore[no-any-return]
 
 
@@ -165,6 +171,15 @@ def _explain(exc: Exception) -> str:
         if exc.code == 404:
             return f"404 — 이 주소에 그런 경로가 없습니다. {said}".strip()
         return f"HTTP {exc.code}. {said}".strip()
+
+    if isinstance(exc, (TimeoutError, socket.timeout)) or (
+        isinstance(exc, urllib.error.URLError)
+        and isinstance(exc.reason, (TimeoutError, socket.timeout))
+    ):
+        return (
+            f"모델 목록 응답을 {_CATALOG_TIMEOUT:g}초 동안 기다렸지만 받지 못했습니다. "
+            "키 오류라면 보통 401이 즉시 반환되므로 네트워크·프록시·방화벽을 확인해 주세요."
+        )
 
     if isinstance(exc, urllib.error.URLError):
         return (

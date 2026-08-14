@@ -9,6 +9,7 @@ Standalone by design -- it must never import its host application.
 
 from __future__ import annotations
 
+from agentkit.context import ContextPolicy
 from agentkit.loop import Agent, AgentEvent, RunResult
 from agentkit.messages import AssistantMessage, Message, ToolCall, ToolSpec
 from agentkit.model import ChatModel
@@ -21,6 +22,7 @@ __all__ = [
     "AgentEvent",
     "AssistantMessage",
     "ChatModel",
+    "ContextPolicy",
     "FunctionTool",
     "Message",
     "Permission",
