@@ -66,6 +66,36 @@ class TestJoinable:
         assert len(traced) == 1 and "" not in traced
 
 
+class TestStages:
+    async def test_a_decision_carries_the_stage_that_produced_it(
+        self, engine: Bismuth, logs: Path
+    ) -> None:
+        """A context that covers only the model call leaves the decision untagged, so
+        filtering by stage returns the calls and not what they decided."""
+        await add(engine, "contract.txt")
+
+        staged = {
+            line["event"]: line.get("stage")
+            for line in _lines(logs / "trace.jsonl")
+            if line.get("stage")
+        }
+
+        assert staged["place.decided"] == "placement"
+        assert staged["subdivide.emerging"] == "subdivision.emerging"
+        assert staged["card.window"].startswith("card.")
+
+    async def test_each_card_window_is_its_own_window_id(
+        self, engine: Bismuth, logs: Path
+    ) -> None:
+        await add(engine, "contract.txt")
+
+        windows = {
+            line["window_id"] for line in _lines(logs / "trace.jsonl") if line.get("window_id")
+        }
+
+        assert any(window.endswith(":window-001") for window in windows)
+
+
 class TestPlacement:
     async def test_where_a_document_went_is_in_the_trace(self, engine: Bismuth, logs: Path) -> None:
         """It was only ever in llm.jsonl, as a prompt and a reply to read by hand --
