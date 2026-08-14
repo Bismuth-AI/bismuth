@@ -147,6 +147,37 @@ def apply_body(kwargs: dict[str, Any], body: dict[str, Any]) -> None:
         kwargs["extra_body"] = extra
 
 
+def _loggable_parameters(
+    kwargs: dict[str, Any], *, schema: type[BaseModel] | None
+) -> dict[str, Any]:
+    """The generation settings this attempt actually ran with, minus the credentials.
+
+    An allowlist, not a blocklist: ``kwargs`` carries the api key and gateway headers,
+    and a diagnostic file is the last place either should be able to reach. Recorded
+    per attempt because a retry can change the cap and drop native schema enforcement,
+    and because a repetition cannot be blamed on or cleared of sampling without knowing
+    what the sampling was.
+    """
+    logged: dict[str, Any] = {
+        name: kwargs[name]
+        for name in (
+            "model",
+            "temperature",
+            "max_tokens",
+            "top_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "seed",
+            "stream",
+        )
+        if name in kwargs
+    }
+    if extra := kwargs.get("extra_body"):
+        logged["extra_body"] = extra
+    logged["native_schema"] = schema is not None
+    return logged
+
+
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
@@ -609,6 +640,7 @@ class LiteLLMAdapter:
         attempt_log["max_tokens"] = kwargs["max_tokens"]
         if schema is not None:
             kwargs["response_format"] = schema
+        attempt_log["request_parameters"] = _loggable_parameters(kwargs, schema=schema)
 
         stream_log: dict[str, Any] = {
             "chunks": [],
