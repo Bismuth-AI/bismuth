@@ -38,3 +38,9 @@ Thumbs.db
 
 # Debug logs (per-run, regenerated)
 /logs/
+
+# Local agent handoff and one-off experiment process artifacts
+/NEXT_AGENT_HANDOFF.md
+/.codex-*.err
+/.codex-*.out
+/.codex-*.json
