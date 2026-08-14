@@ -69,7 +69,12 @@ def test_the_server_logs_once_it_is_serving(tmp_path: Path, monkeypatch) -> None
 
     logs = tmp_path / "logs"
     assert "serving" in (logs / "bismuth.log").read_text(encoding="utf-8")
-    assert json.loads((logs / "trace.jsonl").read_text(encoding="utf-8").strip())["event"] == (
-        "card.done"
-    )
+    # The call index is mirrored into the timeline, so the trace is no longer one line.
+    events = [
+        json.loads(line)
+        for line in (logs / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert events[0]["event"] == "card.done"
+    assert events[1]["event"] == "llm.call"
     assert (logs / "llm.jsonl").read_text(encoding="utf-8").strip()

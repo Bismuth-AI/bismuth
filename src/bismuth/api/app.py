@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import anyio
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile
@@ -31,7 +31,7 @@ from bismuth.container import Bismuth, build
 from bismuth.domain.document import sidecar_name
 from bismuth.domain.errors import BismuthError
 from bismuth.domain.progress import Progress, Stage
-from bismuth.logging_setup import configure_logging
+from bismuth.logging_setup import configure_logging, finish_run_manifest, update_run_manifest
 from bismuth.ports.llm import Spend
 from bismuth.ports.vault import INBOX
 from bismuth.services.agent import DEFAULT_ORGANIZE_INSTRUCTION
@@ -41,6 +41,46 @@ from bismuth.services.sidecar import read_sidecar_meta
 logger = logging.getLogger(__name__)
 
 STATIC = Path(__file__).parent / "static"
+
+
+def _diagnostic_settings(settings: Settings) -> dict[str, Any]:
+    """Manifest-safe runtime settings; credentials and URL userinfo/query never enter logs."""
+    parsed = urlsplit(settings.api_base or "")
+    endpoint = ""
+    if parsed.hostname:
+        endpoint = f"{parsed.scheme}://{parsed.hostname}"
+        if parsed.port:
+            endpoint += f":{parsed.port}"
+    generation = {
+        key: value
+        for key, value in settings.api_body.items()
+        if key
+        in {
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "max_tokens",
+            "max_completion_tokens",
+            "chat_template_kwargs",
+        }
+    }
+    return {
+        "vault_path": str(settings.vault_path),
+        "provider_id": settings.provider_id,
+        "api_endpoint": endpoint,
+        "model": settings.model,
+        "native_schema": settings.native_schema,
+        "llm_timeout_seconds": settings.llm_timeout_seconds,
+        "llm_absolute_timeout_seconds": settings.llm_absolute_timeout_seconds,
+        "llm_max_schema_retries": settings.llm_max_schema_retries,
+        "llm_max_concurrency": settings.llm_max_concurrency,
+        "card_context_chars": settings.card_context_chars,
+        "card_max_windows": settings.card_max_windows,
+        "generation": generation,
+    }
 
 
 def _preload(engine: Bismuth) -> None:
@@ -84,7 +124,8 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         # nothing was written: a server that ingested thirty-three documents left two
         # lines in bismuth.log and empty trace and llm files. Startup runs after that,
         # so what is opened here survives.
-        configure_logging(verbose=verbose)
+        configure_logging(verbose=verbose, continue_active_run=True)
+        update_run_manifest(**_diagnostic_settings(settings))
         _preload(engine)
         if recovered := engine.recover():
             logger.warning("rolled back %d interrupted change(s) from a previous run", recovered)
@@ -97,6 +138,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
             await litellm_adapter.close_clients()
+            finish_run_manifest()
 
     app = FastAPI(title="Bismuth", version=__version__, lifespan=lifespan)
     app.state.engine = engine
@@ -191,6 +233,9 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
 
         save_user_config(updated)
         app.state.settings = updated
+        # Settings can change mid-run; a manifest that still names the old model makes
+        # every later conclusion about it unverifiable.
+        update_run_manifest(**_diagnostic_settings(updated))
         app.state.engine = build(updated)
         # The wizard swaps the engine in a live process; the replacement has to be as
         # warm as the one created at startup, or the first upload after setup pays for it.
@@ -293,6 +338,11 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         """Process already-safe inbox files independently of the browser connection."""
         batch: BatchOut = app.state.batches[batch_id]
         batch.status = "queued"
+        update_run_manifest(
+            status="running",
+            activity_status="processing",
+            active_batch={"id": batch_id, "documents": len(staged), "status": "queued"},
+        )
         try:
             async with app.state.ingest_lock:
                 batch.status = "running"
@@ -330,6 +380,19 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             logger.exception("batch %s stopped unexpectedly", batch_id)
         finally:
             batch.finished_at = time.time()
+            update_run_manifest(
+                status="idle" if batch.status == "done" else batch.status,
+                activity_status="idle",
+                active_batch=None,
+                last_batch={
+                    "id": batch_id,
+                    "documents": len(staged),
+                    "status": batch.status,
+                    "completed": batch.completed,
+                    "failed": batch.failed,
+                    "finished_at": batch.finished_at,
+                },
+            )
             if batch.status == "done":
                 batch.current = ""
                 batch.current_stage = "done"
