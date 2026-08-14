@@ -46,83 +46,89 @@ class PlacementService:
         current = ROOT
         steps: list[dict[str, object]] = []
         asked_once = False
-        while True:
-            direct = sorted(
-                ((path, purpose) for path, purpose in purposes.items() if path.parent == current),
-                key=lambda item: (item[0].name.casefold(), str(item[0]).casefold()),
-            )
-            # Once a chosen child is a leaf, there is no decision left to outsource.
-            if asked_once and not direct:
-                break
-            handles = {f"F{index:03d}": path for index, (path, _) in enumerate(direct, start=1)}
-            prompt_children = [
-                (folder_id, path.name, purpose)
-                for folder_id, (path, purpose) in zip(handles, direct, strict=True)
-            ]
-            offered = [*handles, "STAY", "UNREADABLE"]
-            # Placement walks the tree one level at a time, so a call is only
-            # interpretable next to the level it was asked at.
-            with log_context(stage="placement", window_id=f"placement:{len(steps) + 1:02d}"):
-                raw_choice = await self._llm.choose(
-                    placement_prompts.build(
-                        current=str(current),
-                        children=prompt_children,
-                        title=card.title,
-                        doc_type=card.doc_type,
-                        topics=list(card.topics),
-                        summary=card.summary,
-                        entities=[entity.name for entity in card.entities],
+        # The descent and the decision it produces belong to one stage; each level gets
+        # its own window, because a call is only interpretable next to the level it was
+        # asked at.
+        with log_context(stage="placement"):
+            while True:
+                direct = sorted(
+                    (
+                        (path, purpose)
+                        for path, purpose in purposes.items()
+                        if path.parent == current
                     ),
-                    choices=offered,
-                    max_tokens=32,
-                    temperature=0.0,
+                    key=lambda item: (item[0].name.casefold(), str(item[0]).casefold()),
                 )
-            asked_once = True
-            if raw_choice == "UNREADABLE":
-                log_trace(
-                    "place.decided",
-                    document_id=document_id,
-                    title=card.title,
-                    current=str(current),
-                    folders_offered=len(direct),
-                    chose=None,
-                    verdict=Verdict.INBOX.value,
-                )
-                return Placement.to_inbox(
-                    document_id,
-                    reason="document could not be read",
-                )
+                # Once a chosen child is a leaf, there is no decision left to outsource.
+                if asked_once and not direct:
+                    break
+                handles = {f"F{index:03d}": path for index, (path, _) in enumerate(direct, start=1)}
+                prompt_children = [
+                    (folder_id, path.name, purpose)
+                    for folder_id, (path, purpose) in zip(handles, direct, strict=True)
+                ]
+                offered = [*handles, "STAY", "UNREADABLE"]
+                with log_context(window_id=f"placement:{len(steps) + 1:02d}"):
+                    raw_choice = await self._llm.choose(
+                        placement_prompts.build(
+                            current=str(current),
+                            children=prompt_children,
+                            title=card.title,
+                            doc_type=card.doc_type,
+                            topics=list(card.topics),
+                            summary=card.summary,
+                            entities=[entity.name for entity in card.entities],
+                        ),
+                        choices=offered,
+                        max_tokens=32,
+                        temperature=0.0,
+                    )
+                asked_once = True
+                if raw_choice == "UNREADABLE":
+                    log_trace(
+                        "place.decided",
+                        document_id=document_id,
+                        title=card.title,
+                        current=str(current),
+                        folders_offered=len(direct),
+                        chose=None,
+                        verdict=Verdict.INBOX.value,
+                    )
+                    return Placement.to_inbox(
+                        document_id,
+                        reason="document could not be read",
+                    )
 
-            choice = raw_choice.strip().upper()
-            if choice == "STAY":
-                steps.append({"at": str(current), "choice": "stay"})
-                break
-            target = handles.get(choice)
-            if target is None:
-                # An unknown handle cannot name or escape to any folder. Staying at the
-                # current level is the safe interpretation.
-                log_trace(
-                    "place.invalid_handle",
-                    document_id=document_id,
-                    current=str(current),
-                    asked_for=raw_choice,
-                    offered=list(handles),
-                )
-                steps.append({"at": str(current), "choice": "invalid"})
-                break
-            steps.append({"at": str(current), "choice": choice, "to": str(target)})
-            current = target
+                choice = raw_choice.strip().upper()
+                if choice == "STAY":
+                    steps.append({"at": str(current), "choice": "stay"})
+                    break
+                target = handles.get(choice)
+                if target is None:
+                    # An unknown handle cannot name or escape to any folder. Staying at
+                    # the current level is the safe interpretation.
+                    log_trace(
+                        "place.invalid_handle",
+                        document_id=document_id,
+                        current=str(current),
+                        asked_for=raw_choice,
+                        offered=list(handles),
+                    )
+                    steps.append({"at": str(current), "choice": "invalid"})
+                    break
+                steps.append({"at": str(current), "choice": choice, "to": str(target)})
+                current = target
 
-        log_trace(
-            "place.decided",
-            document_id=document_id,
-            title=card.title,
-            folders_offered=len(purposes),
-            chose=str(current),
-            root=not current.parts,
-            created_folder=False,
-            steps=steps,
-        )
+            log_trace(
+                "place.decided",
+                document_id=document_id,
+                title=card.title,
+                folders_offered=len(purposes),
+                chose=str(current),
+                root=not current.parts,
+                created_folder=False,
+                steps=steps,
+            )
         return Placement(
             document_id=document_id,
             verdict=Verdict.PLACED,

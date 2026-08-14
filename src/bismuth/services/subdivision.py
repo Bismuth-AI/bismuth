@@ -265,17 +265,17 @@ class LibraryMaintenanceService:
                     documents=review_contents.lines,
                     children=direct_signs,
                 )
-            log_trace(
-                "subdivide.review",
-                folder=str(folder),
-                basis=charter.split_basis,
-                before=charter.split_at_documents,
-                now=total,
-                holds=review.holds,
-                one_axis=review.one_axis,
-                coherent_membership=review.coherent_membership,
-                useful_navigation=review.useful_navigation,
-            )
+                log_trace(
+                    "subdivide.review",
+                    folder=str(folder),
+                    basis=charter.split_basis,
+                    before=charter.split_at_documents,
+                    now=total,
+                    holds=review.holds,
+                    one_axis=review.one_axis,
+                    coherent_membership=review.coherent_membership,
+                    useful_navigation=review.useful_navigation,
+                )
             # Schema upgrades force one complete semantic audit of every learned
             # boundary. Previously a failed legacy audit simply returned, leaving the
             # known-bad tree in place forever. A failed audit is evidence that the
@@ -301,14 +301,14 @@ class LibraryMaintenanceService:
                         groups=current_groups,
                         complete=True,
                     )
+                    log_trace(
+                        "subdivide.current_boundary_audit",
+                        folder=str(folder),
+                        accepted=current_audit.accepted,
+                        failed_checks=_failed_boundary_checks(current_audit),
+                    )
                 current_boundary_holds = current_boundary_holds and current_audit.accepted
                 observed_failures.extend(_failed_boundary_checks(current_audit))
-                log_trace(
-                    "subdivide.current_boundary_audit",
-                    folder=str(folder),
-                    accepted=current_audit.accepted,
-                    failed_checks=_failed_boundary_checks(current_audit),
-                )
 
             if not current_boundary_holds:
                 with log_context(stage="subdivision.replacement"):
@@ -368,12 +368,12 @@ class LibraryMaintenanceService:
                 assignments = await self._existing_assignments(
                     folder=folder, contents=contents, charter=charter
                 )
-            log_trace(
-                "subdivide.existing_assignments",
-                folder=str(folder),
-                groups=[group.folder_id for group in assignments.groups],
-                claimed=sum(len(group.document_ids) for group in assignments.groups),
-            )
+                log_trace(
+                    "subdivide.existing_assignments",
+                    folder=str(folder),
+                    groups=[group.folder_id for group in assignments.groups],
+                    claimed=sum(len(group.document_ids) for group in assignments.groups),
+                )
             if assignments.groups:
                 child_handles = {
                     f"F{index:03d}": (name, note)
@@ -477,16 +477,16 @@ class LibraryMaintenanceService:
                 axis=axis,
                 spent=spent,
             )
-        log_trace(
-            "subdivide.emerging",
-            folder=str(folder),
-            documents=len(contents.documents),
-            subtree=total,
-            axis=axis or emerging.axis,
-            axis_is_new=not axis,
-            emerged=emerging.emerged,
-            name=emerging.name,
-        )
+            log_trace(
+                "subdivide.emerging",
+                folder=str(folder),
+                documents=len(contents.documents),
+                subtree=total,
+                axis=axis or emerging.axis,
+                axis_is_new=not axis,
+                emerged=emerging.emerged,
+                name=emerging.name,
+            )
         if not emerging.emerged or not emerging.name.strip():
             return None
 
@@ -522,13 +522,13 @@ class LibraryMaintenanceService:
                 documents=contents.lines,
                 name=emerging.name,
             )
-        log_trace(
-            "subdivide.members",
-            folder=str(folder),
-            name=emerging.name,
-            claimed=len(members.document_ids),
-            of=len(contents.documents),
-        )
+            log_trace(
+                "subdivide.members",
+                folder=str(folder),
+                name=emerging.name,
+                claimed=len(members.document_ids),
+                of=len(contents.documents),
+            )
         if not members.document_ids:
             return None
 
