@@ -27,3 +27,8 @@ decision should be revisited. Superseded records stay; they are not deleted.
 | [0012](0012-one-model.md) | Use one configured model for every task |
 | [0013](0013-bounded-llm-output-and-plain-placement.md) | Use a plain choice for placement; bound every LLM generation |
 | [0014](0014-boundary-state-and-closed-membership.md) | Derive managed signs; model membership as closed per-document choices |
+| [0015](0015-run-scoped-diagnostics.md) | Keep run-scoped joinable diagnostics; a compact timeline over exact artifacts |
+
+An abandoned line of work — a global planner agent, then a per-document placement agent —
+is preserved in [`archive/`](archive/README.md). Those records are superseded in full and
+do not govern this branch; they are kept as evidence of what was measured and rejected.
