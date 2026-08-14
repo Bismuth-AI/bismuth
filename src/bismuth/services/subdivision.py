@@ -29,7 +29,7 @@ from bismuth.domain.journal import Actor, JournalEntry, Operation, OperationKind
 from bismuth.domain.maintenance import ProposedClass, normalise_label, validate_plan
 from bismuth.domain.paths import sanitize_segment
 from bismuth.domain.progress import Progress, ProgressSink, Stage, report
-from bismuth.logging_setup import log_trace
+from bismuth.logging_setup import log_context, log_trace
 from bismuth.ports.catalog import Catalog
 from bismuth.ports.llm import LLM, Prompt
 from bismuth.ports.vault import INBOX, STATE_DIR, Vault
@@ -166,26 +166,29 @@ class LibraryMaintenanceService:
             log_trace("subdivide.skipped", folder=str(folder), reason="folder note is not managed")
             return []
 
-        plan = await self._judge(
-            folder,
-            contents,
-            charter,
-            filename=filename,
-            on_progress=on_progress,
-            allow_emerging=allow_emerging,
-        )
-        if plan is None or not plan.groups:
-            return []
-
-        divided = (
-            self._replace_boundary(folder, plan, charter)
-            if plan.replace_existing
-            else (
-                self._route_existing(folder, contents, plan, charter)
-                if plan.reuse_existing
-                else self._apply(folder, contents, plan, charter)
+        # Which folder is being judged is the first thing anyone reading these lines
+        # needs, and it is not derivable from the document that triggered the call.
+        with log_context(folder=str(folder) or "/"):
+            plan = await self._judge(
+                folder,
+                contents,
+                charter,
+                filename=filename,
+                on_progress=on_progress,
+                allow_emerging=allow_emerging,
             )
-        )
+            if plan is None or not plan.groups:
+                return []
+
+            divided = (
+                self._replace_boundary(folder, plan, charter)
+                if plan.replace_existing
+                else (
+                    self._route_existing(folder, contents, plan, charter)
+                    if plan.reuse_existing
+                    else self._apply(folder, contents, plan, charter)
+                )
+            )
         if not divided.happened:
             return []
 
@@ -253,14 +256,15 @@ class LibraryMaintenanceService:
             )
             current_groups = self._existing_boundary_groups(folder, review_contents)
             direct_signs = [(group.name, group.note) for group in current_groups]
-            review = await self._review_boundary(
-                folder=folder,
-                purpose=purpose,
-                charter=charter,
-                total=total,
-                documents=review_contents.lines,
-                children=direct_signs,
-            )
+            with log_context(stage="subdivision.review"):
+                review = await self._review_boundary(
+                    folder=folder,
+                    purpose=purpose,
+                    charter=charter,
+                    total=total,
+                    documents=review_contents.lines,
+                    children=direct_signs,
+                )
             log_trace(
                 "subdivide.review",
                 folder=str(folder),
@@ -288,14 +292,15 @@ class LibraryMaintenanceService:
                 if not passed
             ]
             if charter.boundary_review_required:
-                current_audit = await self._audit_boundary(
-                    folder=folder,
-                    documents=review_contents.lines,
-                    axis=charter.split_basis,
-                    axis_question=charter.split_question,
-                    groups=current_groups,
-                    complete=True,
-                )
+                with log_context(stage="subdivision.audit.current"):
+                    current_audit = await self._audit_boundary(
+                        folder=folder,
+                        documents=review_contents.lines,
+                        axis=charter.split_basis,
+                        axis_question=charter.split_question,
+                        groups=current_groups,
+                        complete=True,
+                    )
                 current_boundary_holds = current_boundary_holds and current_audit.accepted
                 observed_failures.extend(_failed_boundary_checks(current_audit))
                 log_trace(
@@ -306,16 +311,17 @@ class LibraryMaintenanceService:
                 )
 
             if not current_boundary_holds:
-                replacement_plan = await self._attempt_boundary_replacement(
-                    folder=folder,
-                    purpose=purpose,
-                    charter=charter,
-                    total=total,
-                    documents=review_contents.lines,
-                    current_groups=current_groups,
-                    observed_failures=observed_failures,
-                    children=direct_signs,
-                )
+                with log_context(stage="subdivision.replacement"):
+                    replacement_plan = await self._attempt_boundary_replacement(
+                        folder=folder,
+                        purpose=purpose,
+                        charter=charter,
+                        total=total,
+                        documents=review_contents.lines,
+                        current_groups=current_groups,
+                        observed_failures=observed_failures,
+                        children=direct_signs,
+                    )
                 if replacement_plan is not None:
                     return replacement_plan
                 # A failed repair is state, not a reason to starve ordinary filing.
@@ -358,9 +364,10 @@ class LibraryMaintenanceService:
             and charter.split_question
             and contents.children
         ):
-            assignments = await self._existing_assignments(
-                folder=folder, contents=contents, charter=charter
-            )
+            with log_context(stage="subdivision.routing"):
+                assignments = await self._existing_assignments(
+                    folder=folder, contents=contents, charter=charter
+                )
             log_trace(
                 "subdivide.existing_assignments",
                 folder=str(folder),
@@ -412,13 +419,14 @@ class LibraryMaintenanceService:
                     allow_no_division=True,
                 )
                 if preview.accepted:
-                    routing_audit = await self._audit_routing(
-                        folder=folder,
-                        documents=contents.lines,
-                        charter=charter,
-                        groups=resolved_groups,
-                        children=contents.children,
-                    )
+                    with log_context(stage="subdivision.routing.audit"):
+                        routing_audit = await self._audit_routing(
+                            folder=folder,
+                            documents=contents.lines,
+                            charter=charter,
+                            groups=resolved_groups,
+                            children=contents.children,
+                        )
                     if routing_audit.accepted:
                         return prompts.Division(
                             basis=charter.split_basis,
@@ -460,14 +468,15 @@ class LibraryMaintenanceService:
         axis = charter.split_basis if charter is not None else ""
         spent = self._axes_above(folder)
 
-        emerging = await self._find_emerging(
-            folder=folder,
-            purpose=purpose,
-            documents=contents.lines,
-            children=contents.children,
-            axis=axis,
-            spent=spent,
-        )
+        with log_context(stage="subdivision.emerging"):
+            emerging = await self._find_emerging(
+                folder=folder,
+                purpose=purpose,
+                documents=contents.lines,
+                children=contents.children,
+                axis=axis,
+                spent=spent,
+            )
         log_trace(
             "subdivide.emerging",
             folder=str(folder),
@@ -506,12 +515,13 @@ class LibraryMaintenanceService:
             )
             return None
 
-        members = await self._find_members(
-            folder=folder,
-            purpose=purpose,
-            documents=contents.lines,
-            name=emerging.name,
-        )
+        with log_context(stage="subdivision.members"):
+            members = await self._find_members(
+                folder=folder,
+                purpose=purpose,
+                documents=contents.lines,
+                name=emerging.name,
+            )
         log_trace(
             "subdivide.members",
             folder=str(folder),
@@ -834,11 +844,17 @@ class LibraryMaintenanceService:
         else:
             document_packets = _document_packets(documents, build)
 
-        for signs in sign_packets:
-            checks.append(await self._llm.structured(build([], signs), schema=prompts.Review))
+        for position, signs in enumerate(sign_packets, start=1):
+            with log_context(window_id=f"review:signs-{position:03d}"):
+                checks.append(await self._llm.structured(build([], signs), schema=prompts.Review))
         for index, packet in enumerate(document_packets, start=1):
             signs = _relevant_children(packet, children) if sign_packets else children
-            checks.append(await self._llm.structured(build(packet, signs), schema=prompts.Review))
+            # A boolean merged fail-closed from many packets is unreadable unless each
+            # packet's own answer can be found.
+            with log_context(window_id=f"review:docs-{index:03d}"):
+                checks.append(
+                    await self._llm.structured(build(packet, signs), schema=prompts.Review)
+                )
             log_trace(
                 "subdivide.review_packet",
                 folder=str(folder),
@@ -978,18 +994,22 @@ class LibraryMaintenanceService:
         else:
             document_packets = _document_packets(documents, build_sketch)
         sketches: list[prompts.ReplacementSketch] = []
-        for signs in sign_packets:
-            sketch = await self._llm.structured(
-                build_sketch([], signs),
-                schema=prompts.ReplacementSketch,
-            )
+        for position, signs in enumerate(sign_packets, start=1):
+            with log_context(window_id=f"sketch:signs-{position:03d}"):
+                sketch = await self._llm.structured(
+                    build_sketch([], signs),
+                    schema=prompts.ReplacementSketch,
+                )
             sketches.append(_normalise_sketch(sketch))
         for index, packet in enumerate(document_packets, start=1):
             signs = _relevant_children(packet, children) if sign_packets else children
-            sketch = await self._llm.structured(
-                build_sketch(packet, signs),
-                schema=prompts.ReplacementSketch,
-            )
+            # Reduction is lossy, so the pre-reduce sketch of each packet has to survive
+            # somewhere readable.
+            with log_context(window_id=f"sketch:docs-{index:03d}"):
+                sketch = await self._llm.structured(
+                    build_sketch(packet, signs),
+                    schema=prompts.ReplacementSketch,
+                )
             sketches.append(_normalise_sketch(sketch))
             log_trace(
                 "subdivide.replacement_sketch",
@@ -1010,14 +1030,15 @@ class LibraryMaintenanceService:
                 )
                 return None
             reduced: list[prompts.ReplacementSketch] = []
-            for batch in batches:
+            for position, batch in enumerate(batches, start=1):
                 if len(batch) == 1:
                     reduced.extend(batch)
                     continue
-                result = await self._llm.structured(
-                    prompts.build_replacement_reduce(path=str(folder), sketches=batch),
-                    schema=prompts.ReplacementSketch,
-                )
+                with log_context(window_id=f"sketch:reduce-{len(sketches):03d}-{position:03d}"):
+                    result = await self._llm.structured(
+                        prompts.build_replacement_reduce(path=str(folder), sketches=batch),
+                        schema=prompts.ReplacementSketch,
+                    )
                 reduced.append(_normalise_sketch(result))
             sketches = reduced
 

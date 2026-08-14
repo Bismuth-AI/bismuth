@@ -8,7 +8,7 @@ from pathlib import PurePosixPath
 from bismuth.domain.document import DocumentCard
 from bismuth.domain.paths import sanitize_segment
 from bismuth.domain.placement import Placement, Verdict
-from bismuth.logging_setup import log_trace
+from bismuth.logging_setup import log_context, log_trace
 from bismuth.ports.llm import LLM
 from bismuth.prompts import placement as placement_prompts
 
@@ -60,20 +60,23 @@ class PlacementService:
                 for folder_id, (path, purpose) in zip(handles, direct, strict=True)
             ]
             offered = [*handles, "STAY", "UNREADABLE"]
-            raw_choice = await self._llm.choose(
-                placement_prompts.build(
-                    current=str(current),
-                    children=prompt_children,
-                    title=card.title,
-                    doc_type=card.doc_type,
-                    topics=list(card.topics),
-                    summary=card.summary,
-                    entities=[entity.name for entity in card.entities],
-                ),
-                choices=offered,
-                max_tokens=32,
-                temperature=0.0,
-            )
+            # Placement walks the tree one level at a time, so a call is only
+            # interpretable next to the level it was asked at.
+            with log_context(stage="placement", window_id=f"placement:{len(steps) + 1:02d}"):
+                raw_choice = await self._llm.choose(
+                    placement_prompts.build(
+                        current=str(current),
+                        children=prompt_children,
+                        title=card.title,
+                        doc_type=card.doc_type,
+                        topics=list(card.topics),
+                        summary=card.summary,
+                        entities=[entity.name for entity in card.entities],
+                    ),
+                    choices=offered,
+                    max_tokens=32,
+                    temperature=0.0,
+                )
             asked_once = True
             if raw_choice == "UNREADABLE":
                 log_trace(

@@ -18,7 +18,7 @@ from typing import TypeVar
 from bismuth.domain.document import Coverage, DocumentCard, Entity, Extraction, Window
 from bismuth.domain.errors import StructuredOutputError
 from bismuth.domain.progress import Progress, ProgressSink, Stage, report
-from bismuth.logging_setup import log_trace
+from bismuth.logging_setup import log_context, log_trace
 from bismuth.ports.llm import LLM
 from bismuth.prompts import cards as card_prompts
 
@@ -191,20 +191,24 @@ class CardService:
             )
 
         step(1)
-        card = await self._first(
-            selected[0],
-            filename=filename,
-            document_id=document_id,
-            truncated=extraction.truncated,
-        )
+        # Each window is its own scope: a window that loops or fails has to be findable
+        # without inferring which call it was from line order.
+        with log_context(stage="card.first", window_id=f"{document_id}:window-001"):
+            card = await self._first(
+                selected[0],
+                filename=filename,
+                document_id=document_id,
+                truncated=extraction.truncated,
+            )
         contributed = 1  # the window the card was built from, by definition
         failed = 0
 
         for position, window in enumerate(selected[1:], start=2):
             step(position)
-            folded = await self._fold(
-                window, card=card, filename=filename, document_id=document_id, read=position
-            )
+            with log_context(stage="card.update", window_id=f"{document_id}:window-{position:03d}"):
+                folded = await self._fold(
+                    window, card=card, filename=filename, document_id=document_id, read=position
+                )
             card = folded.card
             contributed += int(folded.contributed)
             failed += int(folded.failed)
@@ -234,7 +238,8 @@ class CardService:
                     steps=len(selected),
                 ),
             )
-            card = await self._densify(card, filename=filename, document_id=document_id)
+            with log_context(stage="card.densify", window_id=f"{document_id}:densify"):
+                card = await self._densify(card, filename=filename, document_id=document_id)
 
         card = card.model_copy(update={"coverage": coverage})
         log_trace(
