@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
@@ -279,6 +280,58 @@ class TestExplicitKey:
             Prompt(system="s", user="u"), schema=Answer
         )
         assert fake.calls[0]["api_base"] == "http://localhost:11434"
+
+    async def test_the_key_and_gateway_headers_never_reach_the_log(
+        self, stub: Any, monkeypatch: Any
+    ) -> None:
+        """The parameters are logged from the call kwargs, which is where the key lives."""
+        stub(['{"name": "a", "year": 1}'])
+        records: list[dict[str, Any]] = []
+        monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
+
+        await adapter(api_key="sk-ours", headers={"Cookie": "session=secret"}).structured(
+            Prompt(system="s", user="u"), schema=Answer
+        )
+
+        written = json.dumps(records[-1], default=str)
+        assert "sk-ours" not in written
+        assert "session=secret" not in written
+
+
+class TestRecordedParameters:
+    """Sampling cannot be ruled in or out of a failure that never recorded it."""
+
+    async def test_an_attempt_records_the_settings_it_ran_with(
+        self, stub: Any, monkeypatch: Any
+    ) -> None:
+        stub(['{"name": "a", "year": 1}'])
+        records: list[dict[str, Any]] = []
+        monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
+
+        await adapter(body={"temperature": 0.7, "top_k": 20}).structured(
+            Prompt(system="s", user="u"), schema=Answer
+        )
+
+        parameters = records[-1]["attempts"][0]["request_parameters"]
+        assert parameters["temperature"] == 0.7
+        assert parameters["extra_body"]["top_k"] == 20  # smuggled past drop_params
+        assert parameters["max_tokens"]
+
+    async def test_a_repair_turn_records_its_own_settings(
+        self, stub: Any, monkeypatch: Any
+    ) -> None:
+        """A retry can change the cap and drop native enforcement; per-call is not enough."""
+        stub(["not json at all", '{"name": "a", "year": 1}'])
+        records: list[dict[str, Any]] = []
+        monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
+
+        await adapter().structured(Prompt(system="s", user="u"), schema=Answer)
+
+        attempts = records[-1]["attempts"]
+        assert len(attempts) == 2
+        assert all("request_parameters" in attempt for attempt in attempts)
+        # The repair turn is a different input, and the log has to show which.
+        assert attempts[1]["messages"] != attempts[0]["messages"]
 
 
 class TestClientCleanup:
