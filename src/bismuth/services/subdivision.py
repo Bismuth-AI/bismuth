@@ -2129,12 +2129,32 @@ class LibraryMaintenanceService:
         of 7 and grew a corridor six levels deep, each level one more thin class drawn
         off the same undivided pile. Redrawing the whole boundary is what that needs.
         """
-        if not contents.children:
+        # The inbox is a staging area, not a shelf, and counting it as one made every
+        # folder beside it look like an established two-way boundary.
+        counts = [
+            count
+            for name, _ in contents.children
+            if name != INBOX.parts[0]
+            # An empty shelf is evidence of nothing either way. Counting one made a
+            # folder with a single real child look like an established two-way boundary.
+            and (count := self._count_documents(folder / name, recursive=True))
+        ]
+        if not counts:
             return False
-        largest = max(
-            self._count_documents(folder / name, recursive=True) for name, _ in contents.children
-        )
-        return len(contents.documents) > largest
+        loose = len(contents.documents)
+        largest = max(counts)
+        if loose > largest:
+            return True
+        # The same failure from the other side: one name holds more than everything else
+        # here put together, so the reader who rules it out has ruled out less than half
+        # and the reader who does not has gained nothing. Measured on 300 documents as a
+        # root split two ways, 213 behind one sign, with the whole tree then growing
+        # downward from it -- six levels deep because the first choice never narrowed.
+        #
+        # Only once a second class exists. Straight after the first draw a folder is
+        # lopsided by construction -- one class at a time is the design (SPEC.md 3.4) --
+        # and calling that a failure would redraw every boundary the moment it was made.
+        return len(counts) >= 2 and largest > sum(counts) - largest + loose
 
     def _count_documents(self, folder: PurePosixPath, *, recursive: bool) -> int:
         return sum(
