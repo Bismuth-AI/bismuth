@@ -910,6 +910,50 @@ stayed flat at thirty documents: the answer was tracking the last condition read
 the same recency this repository already handles by generating a verdict field last."""
 
 
+_AXIS_CHECK_SYSTEM = """\
+A library folder is about to be divided, and you are checking ONE thing: whether the \
+property it is being divided on is a good one to divide on HERE. Answer with exactly \
+FAILS or HOLDS and nothing else.
+
+Some properties are known for nearly every document -- what kind of document it is, what \
+form it takes, who issued it, when it was issued, what language it is in. Sorting by one \
+of those produces a tidy tree and a useless one: a reader who arrives wanting a subject \
+finds that every subject has been spread evenly across every folder, so they must open \
+all of them. The tree looks organised and narrows nothing.
+
+Sorting by what the documents are ABOUT does the opposite. A reader who wants one \
+subject opens one folder.
+
+FAILS if this folder is the root, or has no boundary yet, and the property is one of \
+those always-present ones -- the kind of document, its form, its issuer, its date, its \
+language.
+
+HOLDS if the property is about what the documents are about. HOLDS also when this \
+folder has already been narrowed by subject and the property is a sensible way to split \
+what remains, because by then the subject is fixed and the reader is already inside it.\
+"""
+
+
+def build_axis_check(*, path: str, axis: str, axis_question: str, names: list[str]) -> Prompt:
+    """One closed question about the property a boundary is being drawn on.
+
+    Separated from the rest of the audit deliberately. Asked as one of six booleans in a
+    single reply, this check approved 문서의 성격, 주관 부처 and 법령의 성격 -- every axis
+    it exists to reject. Asked on its own it has one thing to weigh. Splitting all six
+    was measured three times and was worse each time, because most of the others ask
+    about sibling names that do not exist yet when a single class is drawn out; this one
+    is about the property alone, which is present either way.
+    """
+    return Prompt(
+        system=_AXIS_CHECK_SYSTEM,
+        user=(
+            f"FOLDER: {path or '(root)'}\n"
+            f"PROPERTY: {axis}\nQUESTION IT ASKS: {axis_question}\n"
+            f"FOLDER NAMES IT WOULD PRODUCE: {', '.join(names)}"
+        ),
+    )
+
+
 _BOUNDARY_CHECK_SYSTEM = """\
 You are the independent verifier for a proposed library folder boundary, and you are \
 checking ONE thing about it. Answer with exactly HOLDS or FAILS and nothing else.

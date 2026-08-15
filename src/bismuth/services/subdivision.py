@@ -482,7 +482,21 @@ class LibraryMaintenanceService:
         # is one answer to it, and a later class has to answer the same question --
         # otherwise the siblings sit on different distinctions and no name rules anything
         # out.
-        axis = charter.split_basis if charter is not None else ""
+        # ...but only once there is a boundary to be held to. ADR-0014 already calls a
+        # single child provisional: it may receive documents and grow a sibling, and it is
+        # not reviewed as a complete boundary. The axis was not provisional with it, and
+        # that was the difference between a good tree and a bad one. Fixed from one class
+        # drawn out of five documents, "what kind of document is this" is a locally correct
+        # answer that then governs the whole archive for ever, because nothing short of a
+        # destructive replacement can revise it. Both rounds that chose a format axis fixed
+        # it at five documents; every subject axis was fixed at fifteen or more.
+        #
+        # So while the boundary is provisional the axis is asked again, with the existing
+        # child shown. Nothing moves: the child keeps its name and its documents, and only
+        # the recorded property changes. Two children make a boundary, and from then on the
+        # axis is binding and only Review may redraw it.
+        established = len(contents.children) >= 2
+        axis = charter.split_basis if charter is not None and established else ""
         spent = self._axes_above(folder)
 
         with log_context(stage="subdivision.emerging"):
@@ -568,7 +582,7 @@ class LibraryMaintenanceService:
             axis=axis or emerging.axis.strip(),
             axis_question=(
                 charter.split_question
-                if charter is not None and charter.split_question
+                if charter is not None and charter.split_question and established
                 else emerging.axis_question
             ),
             groups=tuple(
@@ -664,7 +678,7 @@ class LibraryMaintenanceService:
             basis=axis or emerging.axis.strip() or emerging.name,
             basis_question=(
                 charter.split_question
-                if charter is not None and charter.split_question
+                if charter is not None and charter.split_question and established
                 else emerging.axis_question
             ),
             groups=proposed_groups,
@@ -1194,6 +1208,35 @@ class LibraryMaintenanceService:
                 axis_question=axis_question,
                 groups=packet_groups,
                 complete=complete,
+            )
+
+        # The property is checked on its own, because it is the one judgement that
+        # survives every later question about this folder and the only one that was
+        # answered wrongly every single time inside the combined reply.
+        axis_holds = "HOLDS"
+        if groups:
+            axis_holds = await self._llm.choose(
+                prompts.build_axis_check(
+                    path=str(folder),
+                    axis=axis,
+                    axis_question=axis_question,
+                    names=[group.name for group in groups],
+                ),
+                choices=("FAILS", "HOLDS"),
+                max_tokens=8,
+            )
+        if axis_holds.strip().upper() == "FAILS":
+            log_trace(
+                "subdivide.axis_refused",
+                folder=str(folder),
+                axis=axis,
+                proposed=[group.name for group in groups],
+            )
+            return prompts.BoundaryAudit(
+                one_property=True,
+                names_answer_question=True,
+                mutually_exclusive=True,
+                useful_for_navigation=False,
             )
 
         checks: list[prompts.BoundaryAudit] = []
