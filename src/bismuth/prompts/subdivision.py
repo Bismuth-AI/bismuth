@@ -143,15 +143,22 @@ a later look at a different level can take it.
 
 Whatever you do not name stays exactly where it is, and most of it staying is normal.
 
-**Every sign you add lengthens the choice the reader makes before they see a single \
-document.** Count the signs already here. If there are many of them and few documents \
-behind each, this folder has replaced one long list with a longer one, and another sign \
-makes it worse. At that width a new sign is worth it only when it takes a real share of \
-what is still loose.
+**Compare two numbers before you answer: how many signs are already here, and how many \
+documents are still loose.** They pull in opposite directions and the answer depends on \
+which is winning.
 
-Two or three documents about the same law are not a class. They are two or three \
-documents. A class is something you expect more of; if the honest name for the group is \
-one law's title, they stay where they are.
+A big loose pile behind a handful of thin signs means this folder is still mostly an \
+unsorted list. The reader gains nothing from three names when most of what they want is \
+not behind any of them. **Here another sign is exactly what is needed, and declining \
+leaves the pile where it is.**
+
+Many signs with few documents behind each means the opposite: one long list has been \
+replaced by a longer one, and another name makes the reader's first choice harder for \
+no gain. Here the answer is no unless the new sign takes a real share of what is loose.
+
+A handful of documents about the same one thing are not a class either way. A class is \
+something you expect more of; if the honest name for the group is one document's subject, \
+they stay where they are.
 
 `emerged` is false when nothing new has gathered along this axis. That is the common \
 answer and the safe one. Leave `axis` empty; this folder already has one.\
