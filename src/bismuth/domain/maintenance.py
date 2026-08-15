@@ -125,16 +125,14 @@ def validate_plan(
         problems.append(PlanProblem.INVALID_AXIS)
     if not axis_question.strip() or "\n" in axis_question or "\r" in axis_question:
         problems.append(PlanProblem.MISSING_AXIS_QUESTION)
-    # Containment, and it earns its keep. Loosening this to equality looked right -- 73 of
-    # 120 proposals in one round died here -- and made the tree worse, not better: without
-    # it the model restates its ancestor's property in slightly different words at every
-    # level, and the result was 금융 및 자본시장 / 금융시장 및 금융회사 감독 / 특정 금융
-    # 부문 및 비은행 금융, each level peeling off three documents and passing thirty down.
-    # A refused proposal costs one shelf. A chain costs the whole branch.
+    # Equality here. The model now holds the rest of this judgement, with the ancestors'
+    # properties in front of it, which is what containment was standing in for and could
+    # not do: it blocked 113 of 300 proposals in one round -- a root divided on 법령의
+    # 주된 규제 대상 및 목적 leaves a child almost no words -- and simply dropping it
+    # produced chains instead, each level restating its parent in other words. Whether
+    # two properties are the same distinction is not a question about strings.
     wanted_axis = normalise_label(axis)
-    if wanted_axis and any(
-        wanted_axis == normalise_label(item) or restates(axis, item) for item in spent_axes
-    ):
+    if wanted_axis and any(wanted_axis == normalise_label(item) for item in spent_axes):
         problems.append(PlanProblem.SPENT_AXIS)
 
     names: set[str] = set()

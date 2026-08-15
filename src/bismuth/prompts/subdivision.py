@@ -950,13 +950,24 @@ FAILS if what is offered is not the NAME of a property at all: a sentence descri
 split, a comparison between two candidates, or an explanation of why it was chosen. A \
 property is named in a few words, the way a column heading is.
 
+FAILS if the property is one the folders ABOVE are already divided on. Those are listed. \
+Every document here already has the same answer to them, so dividing on one again \
+separates nothing and only restates the parent's name in other words.
+
+Sharing a WORD with an ancestor's property is not the same thing. 규제 대상 산업 under a \
+parent divided on 규제 대상 및 목적 is a different question, and it HOLDS. The test is \
+whether the documents in front of you would give different answers to it -- not whether \
+it reads like something above.
+
 HOLDS if the property is about what the documents are about. HOLDS also when this \
 folder has already been narrowed by subject and the property is a sensible way to split \
 what remains, because by then the subject is fixed and the reader is already inside it.\
 """
 
 
-def build_axis_check(*, path: str, axis: str, axis_question: str, names: list[str]) -> Prompt:
+def build_axis_check(
+    *, path: str, axis: str, axis_question: str, names: list[str], spent: list[str] | None = None
+) -> Prompt:
     """One closed question about the property a boundary is being drawn on.
 
     Separated from the rest of the audit deliberately. Asked as one of six booleans in a
@@ -970,7 +981,9 @@ def build_axis_check(*, path: str, axis: str, axis_question: str, names: list[st
         system=_AXIS_CHECK_SYSTEM,
         user=(
             f"FOLDER: {path or '(root)'}\n"
-            f"PROPERTY: {axis}\nQUESTION IT ASKS: {axis_question}\n"
+            "PROPERTIES THE FOLDERS ABOVE ARE ALREADY DIVIDED ON:\n"
+            + ("\n".join(f"  {item}" for item in spent) if spent else "  (none)")
+            + f"\n\nPROPERTY: {axis}\nQUESTION IT ASKS: {axis_question}\n"
             f"FOLDER NAMES IT WOULD PRODUCE: {', '.join(names)}"
         ),
     )

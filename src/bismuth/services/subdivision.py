@@ -1239,6 +1239,7 @@ class LibraryMaintenanceService:
                     axis=axis,
                     axis_question=axis_question,
                     names=[group.name for group in groups],
+                    spent=list(self._axes_above(folder)),
                 ),
                 choices=("FAILS", "HOLDS"),
                 max_tokens=8,
