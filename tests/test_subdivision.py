@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from bismuth.container import Bismuth
-from bismuth.domain.charter import Charter
+from bismuth.domain.charter import CHARTER_SCHEMA_VERSION, Charter
 from bismuth.prompts import placement as placement_prompts
 from bismuth.prompts import subdivision as subdivision_prompts
 from bismuth.services import subdivision as subdivision_service
@@ -32,13 +32,16 @@ def _emerges(
             axis=axis,
             axis_question=f"어느 {axis}에 속하는가?",
             name=name,
-            note=note,
+            sign=note,
         ),
     )
     script.set(
         subdivision_prompts.Members,
         subdivision_prompts.Members(document_ids=ids),
     )
+    # Membership is one closed SHELF/STAY choice per document since ADR-0014; the
+    # Members schema above no longer reaches this path.
+    script.set_members(ids)
 
 
 def _replacement(
@@ -55,10 +58,18 @@ def _replacement(
             basis=basis,
             basis_question=question,
             signs=[
-                subdivision_prompts.ReplacementSign(name=group.name, note=group.note)
+                subdivision_prompts.ReplacementSign(name=group.name, sign=group.note)
                 for group in groups
             ],
         ),
+    )
+    # Assignment is one closed G### choice per document (ADR-0014).
+    script.set_assignments(
+        {
+            document_id: f"G{index:03d}"
+            for index, group in enumerate(groups, start=1)
+            for document_id in group.document_ids
+        }
     )
 
     def assign(prompt, schema):  # type: ignore[no-untyped-def]
@@ -111,30 +122,29 @@ class TestDivideDecision:
         assert all(not re.search(r"\[[0-9a-f]{16}(?:~\d+)?\]", item.user) for item in prompts)
         assert "[D0001]" in prompts[-1].user
 
-    async def test_id_returning_calls_are_packeted_by_output_cardinality(
+    async def test_membership_is_one_bounded_question_per_document(
         self, engine: Bismuth, script: ScriptedModel, llm
     ) -> None:
+        """Output size is constant in the archive: one closed choice, one document.
+
+        This replaced a packeted call returning a list of ids, where a long enough list
+        could omit or duplicate one (ADR-0014).
+        """
         documents = [(f"D{index:04d}", f"문서 {index}") for index in range(1, 31)]
-        script.set(
-            subdivision_prompts.Members,
-            lambda prompt, schema: subdivision_prompts.Members(
-                document_ids=re.findall(r"\[(D\d{4})\]", prompt.user)
-            ),
-        )
+        script.set_members([f"D{index:04d}" for index in range(1, 11)])
 
         result = await engine.maintenance._find_members(  # type: ignore[attr-defined]
             folder=PurePosixPath(),
             purpose="자료",
             documents=documents,
-            children=[],
             name="자료",
-            note="자료 문서",
         )
 
-        calls = llm.prompts_for(subdivision_prompts.Members)
-        assert len(calls) == 3
-        assert all(len(re.findall(r"\[(D\d{4})\]", call.user)) <= 12 for call in calls)
-        assert result.document_ids == [item[0] for item in documents]
+        calls = llm.prompts_for(None)
+        assert len(calls) == len(documents)
+        # One document per question: a reply can name no other document, in any archive.
+        assert all(len(re.findall(r"\[(D\d{4})\]", call.user)) == 1 for call in calls)
+        assert result.document_ids == [f"D{index:04d}" for index in range(1, 11)]
 
     async def test_nothing_happens_when_nothing_has_gathered(
         self, engine: Bismuth, script: ScriptedModel
@@ -231,9 +241,10 @@ class TestDrawingOutAClass:
         assert "과학" in audit_prompt
         assert "current=문학/" in audit_prompt
 
-    async def test_an_essay_length_folder_note_uses_the_validated_class_name(
+    async def test_an_essay_length_folder_note_falls_back_to_derived_state(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
+        """An unusable sign degrades to the derived one; it never fails an ingest."""
         ids = await _fill(engine, script, 4)
         _emerges(script, "문학", "문학 자료에 관한 상세 분석입니다. " * 30, ids[:2])
 
@@ -241,7 +252,19 @@ class TestDrawingOutAClass:
 
         assert divided
         note = engine.charters.load(PurePosixPath("문학"))
-        assert note is not None and note.purpose == "문학"
+        assert note is not None and note.purpose == "주제: 문학"
+
+    async def test_a_sign_carrying_a_request_local_handle_is_not_written_to_disk(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Handles mean nothing outside their request, and one reached a public file."""
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "D0001과 D0003을 제외한 나머지 문학 자료", ids[:2])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        note = engine.charters.load(PurePosixPath("문학"))
+        assert note is not None and note.purpose == "주제: 문학"
 
     async def test_the_rest_stay_and_are_given_no_name(
         self, engine: Bismuth, script: ScriptedModel
@@ -292,19 +315,10 @@ class TestDrawingOutAClass:
         ids = await _fill(engine, script, 4)
         _emerges(script, "문학", "문학 자료", ids[:2])
         await engine.subdivision.consider(PurePosixPath())
-        script.set(
-            subdivision_prompts.ExistingAssignments,
-            lambda prompt, schema: subdivision_prompts.ExistingAssignments(
-                groups=[
-                    subdivision_prompts.ExistingAssignment(
-                        folder_id="F001",
-                        # The first two files have moved, so doc2 is D0001 in this
-                        # new request-local view rather than its earlier D0003.
-                        document_ids=["D0001"],
-                    )
-                ]
-            ),
-        )
+        # The first two files have moved, so doc2 is D0001 in this new request-local
+        # view rather than its earlier D0003. Routing is one closed F### choice per
+        # loose document (ADR-0014).
+        script.set_routes({"D0001": "F001"})
 
         divided = await engine.subdivision.consider(PurePosixPath())
 
@@ -458,15 +472,9 @@ class TestReview:
             split_at_documents=4,
         )
 
-        def assign(prompt, schema):  # type: ignore[no-untyped-def]
-            ids = re.findall(r"\[(D\d{4})\]", prompt.user)
-            return subdivision_prompts.ReplacementAssignments(
-                groups=[
-                    subdivision_prompts.ReplacementAssignment(folder_id="G001", document_ids=ids)
-                ]
-            )
-
-        script.set(subdivision_prompts.ReplacementAssignments, assign)
+        # Assignment is one closed G### choice per document (ADR-0014), so an oversized
+        # subtree costs more calls rather than one reply that can drop a document.
+        script.set_assignments({document_id: "G001" for document_id, _ in documents})
         replacement = await engine.maintenance._propose_replacement(  # type: ignore[attr-defined]
             folder=PurePosixPath(),
             purpose=charter.purpose,
@@ -481,9 +489,9 @@ class TestReview:
             document_id for group in replacement.groups for document_id in group.document_ids
         ]
         assert sorted(assigned) == sorted(document_id for document_id, _ in documents)
-        packet_calls = llm.prompts_for(subdivision_prompts.ReplacementAssignments)
-        assert len(packet_calls) > 1
-        assert all(len(prompt.system) + len(prompt.user) <= 5_000 for prompt in packet_calls)
+        assignment_calls = [prompt for prompt in llm.prompts_for(None) if "\n  [G" in prompt.user]
+        assert len(assignment_calls) == len(documents)
+        assert all(len(prompt.system) + len(prompt.user) <= 5_000 for prompt in assignment_calls)
 
     def test_a_division_is_not_revisited_until_the_evidence_doubles(self) -> None:
         charter = Charter(
@@ -578,8 +586,16 @@ class TestReview:
         await engine.subdivision.consider(PurePosixPath())
 
         script.set(placement_prompts.PlacementDecision, place_at(""))
-        for index in range(3):
+        # Four, not three: two go to the second child and two to the emerging class,
+        # and one has to be left over or the class takes the whole pile, which is a
+        # move down a level rather than a division.
+        for index in range(4):
             await add(engine, f"more{index}.txt", f"추가 문서 {index}")
+
+        # A second child, because one child is a provisional shelf and is never reviewed
+        # as a complete boundary (ADR-0014). Without it there is no review to hold.
+        _emerges(script, "역사", "역사", ["D0001", "D0002"])
+        await engine.subdivision.consider(PurePosixPath())
 
         # Force the root well past its doubling so the review certainly runs first.
         root = engine.charters.load(PurePosixPath())
@@ -589,12 +605,8 @@ class TestReview:
         )
 
         # doc0/doc1 went into 문학; these two are still loose at the root.
-        _emerges(script, "과학", "과학 자료", [])
-        script.set(
-            subdivision_prompts.Members,
-            # doc2 remains loose as D0001; the two new members follow it.
-            subdivision_prompts.Members(document_ids=["D0002", "D0003"]),
-        )
+        # 문학 and 역사 took four; the handles renumber over what is still loose.
+        _emerges(script, "과학", "과학 자료", ["D0001", "D0002"])
         llm.calls.clear()
 
         await engine.subdivision.consider(PurePosixPath())
@@ -623,11 +635,18 @@ class TestReview:
         ids = await _fill(engine, script, 4)
         _emerges(script, "문학", "문학 자료", ids[:2])
         await engine.subdivision.consider(PurePosixPath())
+        # Two children, because one is a provisional shelf and is never reviewed as a
+        # complete boundary (ADR-0014).
+        _emerges(script, "역사", "역사 자료", ["D0001"])
+        await engine.subdivision.consider(PurePosixPath())
 
         note_path = engine.vault.root / "_folder.md"
         note_path.write_text(
+            # Written against the live version: pinning the old number made this a
+            # no-op replace every time the schema moved, and the migration path it is
+            # supposed to exercise stopped running silently.
             note_path.read_text(encoding="utf-8").replace(
-                "bismuth_charter: 5", "bismuth_charter: 4", 1
+                f"bismuth_charter: {CHARTER_SCHEMA_VERSION}", "bismuth_charter: 4", 1
             ),
             encoding="utf-8",
         )
@@ -668,48 +687,6 @@ class TestReview:
         assert divided[0].moved == 4
         assert (engine.vault.root / "첫째 값").is_dir()
         assert (engine.vault.root / "둘째 값").is_dir()
-
-    async def test_an_overlapping_boundary_plan_is_rejected_before_any_move(
-        self, engine: Bismuth, script: ScriptedModel
-    ) -> None:
-        ids = await _fill(engine, script, 5)
-        _emerges(script, "문학", "문학", ids[:2])
-        await engine.subdivision.consider(PurePosixPath())
-
-        root = engine.charters.load(PurePosixPath())
-        assert root is not None
-        (engine.vault.root / "_folder.md").write_text(
-            root.model_copy(update={"split_at_documents": 1}).to_markdown(), encoding="utf-8"
-        )
-        script.set(
-            subdivision_prompts.Review,
-            subdivision_prompts.Review(
-                one_axis=False,
-                coherent_membership=False,
-                useful_navigation=False,
-            ),
-        )
-        _replacement(
-            script,
-            basis="주제 분야",
-            question="어느 주제 분야에 속하는가?",
-            groups=[
-                subdivision_prompts.Group(
-                    name="과학", note="과학", document_ids=["D0003", "D0004"]
-                ),
-                subdivision_prompts.Group(
-                    name="기술", note="기술", document_ids=["D0003", "D0005"]
-                ),
-            ],
-        )
-
-        divided = await engine.subdivision.consider(PurePosixPath())
-
-        assert divided == []
-        assert not (engine.vault.root / "과학").exists()
-        assert not (engine.vault.root / "기술").exists()
-        assert all((engine.vault.root / f"doc{index}.txt").exists() for index in range(2, 5))
-        assert not any(entry.status.value == "failed" for entry in engine.journal.iter_entries())
 
     async def test_a_review_replaces_the_whole_boundary_and_reuses_names(
         self, engine: Bismuth, script: ScriptedModel

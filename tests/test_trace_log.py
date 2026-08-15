@@ -84,9 +84,7 @@ class TestStages:
         assert staged["subdivide.emerging"] == "subdivision.emerging"
         assert staged["card.window"].startswith("card.")
 
-    async def test_each_card_window_is_its_own_window_id(
-        self, engine: Bismuth, logs: Path
-    ) -> None:
+    async def test_each_card_window_is_its_own_window_id(self, engine: Bismuth, logs: Path) -> None:
         await add(engine, "contract.txt")
 
         windows = {

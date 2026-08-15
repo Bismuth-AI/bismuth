@@ -12,7 +12,7 @@ from bismuth.prompts import subdivision as subdivision_prompts
 def test_emerging_forms_the_candidate_before_the_verdict() -> None:
     fields = list(subdivision_prompts.Emerging.model_json_schema()["properties"])
 
-    assert fields == ["axis", "axis_question", "name", "note", "emerged"]
+    assert fields == ["axis", "axis_question", "name", "sign", "emerged"]
 
 
 def test_review_contains_only_checks_that_gate_the_decision() -> None:

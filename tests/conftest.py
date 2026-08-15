@@ -54,8 +54,13 @@ def placement_to(folder: str | None, *, confidence: float | None = None):
         if folder is None:
             return "UNREADABLE"
         current_line = next(
-            line for line in prompt.user.splitlines() if line.startswith("CURRENT FOLDER:")
+            (line for line in prompt.user.splitlines() if line.startswith("CURRENT FOLDER:")),
+            None,
         )
+        if current_line is None:
+            # Not a placement descent. Bare next() here raised StopIteration inside a
+            # coroutine, which surfaces as an unrelated RuntimeError.
+            return "STAY"
         current_raw = current_line.partition(":")[2].strip()
         current = PurePosixPath() if current_raw == "(root)" else PurePosixPath(current_raw)
         if target.parts[: len(current.parts)] != current.parts or len(target.parts) <= len(
@@ -74,6 +79,15 @@ def placement_to(folder: str | None, *, confidence: float | None = None):
         return "STAY"
 
     return decide
+
+
+def _shown_document(prompt: Prompt) -> str | None:
+    """The one request-local document handle a closed-choice prompt is asking about."""
+    for line in prompt.user.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[D"):
+            return stripped.partition("]")[0].removeprefix("[")
+    return None
 
 
 class ScriptedModel:
@@ -125,7 +139,7 @@ class ScriptedModel:
                 basis_question="이 문서의 종류는 무엇인가?",
                 signs=[
                     subdivision_prompts.ReplacementSign(name="자료", note="자료 문서"),
-                    subdivision_prompts.ReplacementSign(name="기록", note="기록 문서"),
+                    subdivision_prompts.ReplacementSign(name="기록", sign="기록 문서"),
                 ],
             ),
             subdivision_prompts.ReplacementAssignments: (
@@ -154,6 +168,10 @@ class ScriptedModel:
             ),
         }
         self.responses[None] = self.responses.pop(placement_prompts.PlacementDecision)
+        # Default: nothing joins a newly named class, matching the Emerging default.
+        self._members: set[str] = set()
+        self._assignments: dict[str, str] = {}
+        self._routes: dict[str, str] = {}
 
     def set(self, schema: type[BaseModel], response: object) -> None:
         key = None if schema is placement_prompts.PlacementDecision else schema
@@ -162,13 +180,51 @@ class ScriptedModel:
     def set_choice(self, response: object) -> None:
         self.responses[None] = response
 
+    def set_members(self, document_ids: list[str]) -> None:
+        """Script closed-choice membership in a newly named class (ADR-0014).
+
+        Membership stopped being a JSON list of ids and became one SHELF/STAY question
+        per document, so scripting ``Members`` alone no longer reaches this path.
+        """
+        self._members = set(document_ids)
+
+    def set_assignments(self, by_document: dict[str, str]) -> None:
+        """Script closed-choice assignment to a fixed replacement sign, as ``{id: G###}``."""
+        self._assignments = dict(by_document)
+
+    def set_routes(self, by_document: dict[str, str]) -> None:
+        """Script routing a loose document into an existing direct child, as ``{id: F###}``."""
+        self._routes = dict(by_document)
+
     def __call__(self, prompt: Prompt, schema: type[BaseModel] | None) -> BaseModel | str:
+        if schema is None and (choice := self._plain_choice(prompt)) is not None:
+            return choice
         try:
             response = self.responses[schema]
             return response(prompt, schema) if callable(response) else response
         except KeyError as exc:  # pragma: no cover
             wanted = schema.__name__ if schema is not None else "PlainChoice"
             raise AssertionError(f"nothing scripted for {wanted}") from exc
+
+    def _plain_choice(self, prompt: Prompt) -> str | None:
+        """Route one closed choice to its own script.
+
+        Three different questions share the plain-choice call and are only told apart by
+        what they offer: a placement descent, membership in a new class, and assignment
+        to a fixed replacement sign. One shared slot sent all three to the placement
+        chooser.
+        """
+        document_id = _shown_document(prompt)
+        if "NEW SIGN:" in prompt.user:
+            return "SHELF" if document_id in self._members else "STAY"
+        if "\n  [G" in prompt.user:
+            return self._assignments.get(document_id or "", "G001")
+        if "CURRENT FOLDER:" not in prompt.user and "\n  [F" in prompt.user:
+            # Routing a loose document into an existing sign. Shares the F### handle
+            # shape with a placement descent, so the descent marker is what tells them
+            # apart. Default STAY: a document stays put unless a test says otherwise.
+            return self._routes.get(document_id or "", "STAY")
+        return None
 
 
 @pytest.fixture
