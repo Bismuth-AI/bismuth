@@ -308,14 +308,27 @@ class TestRecordedParameters:
         records: list[dict[str, Any]] = []
         monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
 
-        await adapter(body={"temperature": 0.7, "top_k": 20}).structured(
-            Prompt(system="s", user="u"), schema=Answer
-        )
+        await adapter(
+            body={
+                "temperature": 0.7,
+                "top_k": 20,
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+        ).structured(Prompt(system="s", user="u"), schema=Answer)
 
         parameters = records[-1]["attempts"][0]["request_parameters"]
-        assert parameters["temperature"] == 0.7
-        assert parameters["extra_body"]["top_k"] == 20  # smuggled past drop_params
+        # Bismuth owns sampling for a schema-bound call; the endpoint's own needs still go.
+        assert parameters["temperature"] == 0.0
+        assert "top_k" not in parameters.get("extra_body", {})
+        assert parameters["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
         assert parameters["max_tokens"]
+
+    async def test_the_agent_path_keeps_the_operators_sampling(self, stub: Any) -> None:
+        """Only closed questions are Bismuth's to make deterministic."""
+        kwargs: dict[str, Any] = {}
+        litellm_adapter.apply_body(kwargs, {"temperature": 0.7, "top_k": 20})
+        assert kwargs["temperature"] == 0.7
+        assert kwargs["extra_body"]["top_k"] == 20
 
     async def test_a_repair_turn_records_its_own_settings(
         self, stub: Any, monkeypatch: Any

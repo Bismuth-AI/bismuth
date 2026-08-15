@@ -214,6 +214,14 @@ class ScriptedModel:
         to a fixed replacement sign. One shared slot sent all three to the placement
         chooser.
         """
+        if "HOLDS or FAILS" in prompt.system:
+            # Review became one closed question per check. Tests still script a Review
+            # object; answer each check from the field it is about.
+            scripted = self.responses[subdivision_prompts.Review]
+            for name, question in subdivision_prompts.REVIEW_CHECKS:
+                if question in prompt.system:
+                    return "HOLDS" if getattr(scripted, name) else "FAILS"
+            return "HOLDS"
         document_id = _shown_document(prompt)
         if "NEW SIGN:" in prompt.user:
             return "SHELF" if document_id in self._members else "STAY"

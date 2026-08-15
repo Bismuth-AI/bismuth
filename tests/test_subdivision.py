@@ -21,6 +21,11 @@ def _group(name: str, note: str, ids: list[str]) -> subdivision_prompts.Group:
     return subdivision_prompts.Group(name=name, note=note, document_ids=ids)
 
 
+def _review_prompts(llm) -> list:  # type: ignore[no-untyped-def]
+    """Review is one closed HOLDS/FAILS question per check, not a structured call."""
+    return [p for p in llm.prompts_for(None) if "HOLDS or FAILS" in p.system]
+
+
 def _emerges(
     script: ScriptedModel, name: str, note: str, ids: list[str], *, axis: str = "주제"
 ) -> None:
@@ -412,12 +417,14 @@ class TestReview:
             children=[("자료", "자료 문서"), ("기록", "기록 문서")],
         )
 
-        calls = llm.prompts_for(subdivision_prompts.Review)
+        calls = _review_prompts(llm)
         assert review.holds
         assert len(calls) > 1
         assert all(len(prompt.system) + len(prompt.user) <= 5_000 for prompt in calls)
-        seen = [handle for prompt in calls for handle in re.findall(r"\[(D\d{4})\]", prompt.user)]
-        assert sorted(seen) == sorted(document_id for document_id, _ in documents)
+        # Every document is presented; each packet is now asked once per check, so a
+        # handle appears once per check rather than once in total.
+        seen = {handle for prompt in calls for handle in re.findall(r"\[(D\d{4})\]", prompt.user)}
+        assert seen == {document_id for document_id, _ in documents}
 
     async def test_wide_review_reads_every_direct_sign_in_bounded_packets(
         self,
@@ -445,7 +452,7 @@ class TestReview:
             children=children,
         )
 
-        calls = llm.prompts_for(subdivision_prompts.Review)
+        calls = _review_prompts(llm)
         assert review.holds
         assert len(calls) > 1
         assert all(len(prompt.system) + len(prompt.user) <= 5_000 for prompt in calls)
@@ -544,7 +551,7 @@ class TestReview:
         for index in range(4):
             await add(engine, f"more{index}.txt", f"추가 문서 {index}")
 
-        assert llm.prompts_for(subdivision_prompts.Review)
+        assert _review_prompts(llm)
 
     async def test_a_holding_review_re_arms_the_doubling(
         self,
@@ -570,7 +577,7 @@ class TestReview:
         llm.calls.clear()
 
         await engine.subdivision.consider(PurePosixPath())
-        assert not llm.prompts_for(subdivision_prompts.Review)  # not due again yet
+        assert not _review_prompts(llm)  # not due again yet
 
     async def test_a_holding_review_still_lets_a_new_class_come_out(
         self,
@@ -611,7 +618,7 @@ class TestReview:
 
         await engine.subdivision.consider(PurePosixPath())
 
-        assert llm.prompts_for(subdivision_prompts.Review)  # the review did run
+        assert _review_prompts(llm)  # the review did run
         assert (engine.vault.root / "과학").is_dir()  # and did not swallow the other question
 
     async def test_a_holding_review_moves_nothing(
