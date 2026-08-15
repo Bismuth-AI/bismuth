@@ -89,16 +89,15 @@ _EMERGING_SYSTEM = f"""\
 These documents have not been sorted, and this folder has no sub-folders yet. You are \
 deciding TWO things, and the first one outlives this answer.
 
-**First, the AXIS.** Every sub-folder this folder ever gets will be one answer to a \
-single question, and you are choosing that question now. Consider two or three candidate \
-axes before choosing. Prefer the one that lets a reader rule out the most documents, \
-keeps answers mutually exclusive, avoids repeating the same split under every child, and \
-is likely to remain meaningful as the collection grows. Return the name of ONE property, \
-not a comparison between candidate properties and not an explanation. Do not use any \
-domain rule that is not evidenced by the documents.
+**First, the CLASS** -- one group that has gathered here and is worth a shelf. Describe \
+it, then name it.
 
-**Then, the first CLASS on it** -- the one value of that axis that has gathered enough \
-documents to be worth a shelf.
+**Then the AXIS**: the one property that name is a value of. Every sub-folder this folder \
+ever gets will be an answer to it, so it outlives this reply. Prefer the property that \
+lets a reader rule out the most documents, keeps answers mutually exclusive, and stays \
+meaningful as the collection grows. Return the name of ONE property, not a comparison \
+between candidates and not an explanation. Do not use any domain rule that is not \
+evidenced by the documents.
 
 **The axis you choose here is permanent.** Every later question about this folder is asked \
 against it, and nothing after this can change it. You are choosing it from the documents \
@@ -236,26 +235,19 @@ class Emerging(BaseModel):
     One name, deliberately. A reply that could carry several would be a partition, and a
     partition of a heterogeneous pile always needs somewhere to put the remainder.
 
-    The verdict comes last. The model must first form the best concrete candidate, which
-    avoids committing to a boolean before considering the evidence without paying for a
-    free-form scratchpad.
+    The concrete candidate comes first and the verdict last, so constrained decoding
+    cannot commit to either before looking at the evidence, and no free-form scratchpad
+    has to be paid for.
+
+    The axis sits between them for the same reason. Generated first, it was written
+    before the model had considered what actually distinguishes these documents, and it
+    came back as whichever property phrase the prompt made most salient -- the ancestor's,
+    which the prompt shows in order to forbid it. One folder proposed its parent's exact
+    property on every arrival from 61 documents to 68, was refused every time, and never
+    divided. Named after the class, the axis answers "what property is this class a value
+    of", which is a question about the class.
     """
 
-    axis: str = Field(
-        default="",
-        description=(
-            "The name of the ONE property the sub-folders tell apart. It is not a "
-            "comparison of candidate properties and not an explanation. Asked only the first time; "
-            "after that the folder already has one and you are held to it."
-        ),
-    )
-    axis_question: str = Field(
-        default="",
-        description=(
-            "One question about one property. Every child folder name must be a direct "
-            "answer to it. Asked only the first time."
-        ),
-    )
     sign: str = Field(
         default="",
         description=(
@@ -268,6 +260,22 @@ class Emerging(BaseModel):
     name: str = Field(
         default="",
         description="Folder name for what you just described, one level. Not a path.",
+    )
+    axis: str = Field(
+        default="",
+        description=(
+            "The ONE property the name you just wrote is a value of -- the question every "
+            "sub-folder here will answer. Not a comparison of candidate properties and not "
+            "an explanation. Asked only the first time; after that the folder already has "
+            "one and you are held to it."
+        ),
+    )
+    axis_question: str = Field(
+        default="",
+        description=(
+            "One question about that one property. Every child folder name must be a direct "
+            "answer to it. Asked only the first time."
+        ),
     )
     emerged: bool = Field(description="False when the concrete candidate is not worth a shelf.")
 
