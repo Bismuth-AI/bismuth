@@ -144,6 +144,16 @@ a later look at a different level can take it.
 
 Whatever you do not name stays exactly where it is, and most of it staying is normal.
 
+**Every sign you add lengthens the choice the reader makes before they see a single \
+document.** Count the signs already here. If there are many of them and few documents \
+behind each, this folder has replaced one long list with a longer one, and another sign \
+makes it worse. At that width a new sign is worth it only when it takes a real share of \
+what is still loose.
+
+Two or three documents about the same law are not a class. They are two or three \
+documents. A class is something you expect more of; if the honest name for the group is \
+one law's title, they stay where they are.
+
 `emerged` is false when nothing new has gathered along this axis. That is the common \
 answer and the safe one. Leave `axis` empty; this folder already has one.\
 """
@@ -1221,4 +1231,9 @@ def _render_children(children: list[tuple[str, str]]) -> str:
     rendered = "\n".join(
         f"  {name}/  — {note}" if note else f"  {name}/" for name, note in children
     )
-    return f"EXISTING SUB-FOLDERS:\n{rendered}"
+    # Counted, because the model cannot weigh a cost it has to tally itself. One
+    # 300-document round left twenty-eight signs at the root, several of them a single
+    # law's title, and a reader choosing among twenty-eight names is back to scanning.
+    return (
+        f"EXISTING SUB-FOLDERS ({len(children)} of them, and a reader must choose one):\n{rendered}"
+    )
