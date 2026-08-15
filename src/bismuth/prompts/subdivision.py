@@ -192,6 +192,14 @@ class Emerging(BaseModel):
         ),
     )
     name: str = Field(default="", description="Folder name for that class, one level. Not a path.")
+    sign: str = Field(
+        default="",
+        description=(
+            "One short line telling a reader what belongs behind this name that does NOT "
+            "belong behind its siblings. Positive only: no excluded documents, no leftovers, "
+            "no document ids, no description of how you decided."
+        ),
+    )
     emerged: bool = Field(description="False when the concrete candidate is not worth a shelf.")
 
     @field_validator("axis")
@@ -302,20 +310,35 @@ class Replacement(BaseModel):
 
 
 class ReplacementSign(BaseModel):
-    """One sign in a context-bounded replacement sketch; membership comes later."""
+    """One sign in a context-bounded replacement sketch; membership comes later.
 
-    name: str = Field(max_length=120, description="Folder name, one level. Not a path.")
+    ``name`` carries no length ceiling on purpose. It had ``max_length=120`` and a real
+    run returned a median name length of exactly 120 -- the budget was read as an
+    instruction and saturated, and 83% of the names were then silently cut to fit a
+    64-character path segment. The same model, in the same run, produced a median of 10
+    characters for ``Emerging.name``, which says what a folder name is and stops.
+    """
+
+    name: str = Field(description="Folder name, one level. Not a path.")
+    sign: str = Field(
+        default="",
+        description=(
+            "One short line telling a reader what belongs behind this name that does NOT "
+            "belong behind its siblings. Positive only: no excluded documents, no leftovers, "
+            "no document ids, no description of how you decided."
+        ),
+    )
 
 
 class ReplacementSketch(BaseModel):
     """A boundary design with no document IDs, safe to reduce across evidence packets."""
 
-    basis: str = Field(
-        max_length=120, description="The name of the one property used by every sign."
-    )
-    basis_question: str = Field(
-        max_length=240, description="One question every sign name directly answers."
-    )
+    # No character ceilings here either, for the reason on ReplacementSign: a field
+    # budget is read as an instruction. Generation is bounded by the schema's output cap,
+    # which is a transport circuit breaker and never fired in the run that produced the
+    # saturated names.
+    basis: str = Field(description="The name of the one property used by every sign.")
+    basis_question: str = Field(description="One question every sign name directly answers.")
     signs: list[ReplacementSign] = Field(min_length=2, max_length=12)
 
     @field_validator("basis")
