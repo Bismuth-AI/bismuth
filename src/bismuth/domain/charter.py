@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
@@ -38,19 +39,51 @@ def routing_purpose(value: str, *, fallback: str) -> str:
 
 
 def boundary_purpose(axis: str, class_name: str) -> str:
-    """Derive a durable child sign from machine-owned boundary state.
+    """The last-resort child sign, derived from machine-owned boundary state alone.
 
-    The model chooses the axis and the class name.  It does not also get to write an
-    unconstrained explanation of that choice: such explanations became inventories,
-    exclusions, and even leaked request-local document handles.  Keeping the stored
-    sign as a deterministic projection makes it stable for the lifetime of the
-    boundary and means output length is never a semantic acceptance criterion.
+    Used when no usable sign was proposed.  It says nothing the folder name does not
+    already say -- the axis is identical across every sibling, so ``axis: name`` cannot
+    rule anything out.  That is acceptable as a fallback and was not acceptable as the
+    only mechanism: a 300-document run wrote it everywhere and review then answered
+    "these signs do not help a reader rule alternatives out" in 25 of 26 packets,
+    correctly.  Prefer :func:`routing_sign`.
     """
     clean_axis = " ".join(axis.split()).strip()
     clean_name = " ".join(class_name.split()).strip()
     if clean_axis and clean_name:
         return f"{clean_axis}: {clean_name}"
     return clean_name or clean_axis or "?"
+
+
+#: Request-local handles the model is shown. They mean nothing outside that one request,
+#: and they have been observed inside model-written notes. Not anchored with ``\b``: in a
+#: language that does not space its particles, ``D0001과`` has no word boundary after the
+#: digits, and that is exactly the shape the leak took.
+_REQUEST_HANDLE = re.compile(r"(?<![A-Za-z0-9])[DFG]\d{3,4}(?!\d)")
+
+
+def routing_sign(proposed: str, *, axis: str, class_name: str) -> str:
+    """A child's sign: what belongs here that does not belong behind a sibling.
+
+    [SPEC.md 3.6] makes the note the only thing a reader has for narrowing candidates,
+    so it has to be able to exclude.  ADR-0014 replaced model prose with a derived
+    string because the model had written request-local handles, exclusions and its own
+    decision process into a public file; that removed the leak and the information with
+    it.
+
+    So the prose comes back, but never as something that can fail an ingest or outlive
+    its meaning: anything carrying a request-local handle, spanning lines, or running
+    past the sign budget falls back to the derived form.  A fallback sign is worse; a
+    wrong one is a lie on disk, and a failed one loses a document that is already safe.
+    """
+    normalised = " ".join(proposed.split()).strip()
+    if (
+        normalised
+        and len(normalised) <= MAX_PURPOSE_CHARS
+        and not _REQUEST_HANDLE.search(normalised)
+    ):
+        return normalised
+    return boundary_purpose(axis, class_name)
 
 
 class Charter(BaseModel):

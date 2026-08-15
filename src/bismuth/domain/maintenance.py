@@ -10,10 +10,29 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from bismuth.domain.paths import MAX_SEGMENT
+
 
 def normalise_label(value: str) -> str:
     """A comparison form for model-authored labels."""
     return "".join(character for character in value.casefold() if character.isalnum())
+
+
+def restates(inner: str, outer: str) -> bool:
+    """Whether ``inner`` says nothing ``outer`` has not already said, above it.
+
+    One direction only, and deliberately.  A descendant whose whole name sits inside an
+    ancestor's is repeating a distinction that is already fixed to one value at that
+    depth -- observed as ``대통령령 총리령(하위시행규정)/…/대통령령``, where the
+    grandchild names one half of a compound its ancestor had already resolved.  The
+    other direction is ordinary refinement: a child adding words to an ancestor's name
+    is usually saying something new, and rejecting it would forbid most real trees.
+
+    Compared on the normalised form, so punctuation and spacing cannot smuggle a repeat
+    past an equality test -- which is exactly how the observed case got through.
+    """
+    small, large = normalise_label(inner), normalise_label(outer)
+    return bool(small) and bool(large) and small != large and small in large
 
 
 def is_axis_label(value: str) -> bool:
@@ -35,6 +54,7 @@ class PlanProblem(StrEnum):
     MISSING_AXIS_QUESTION = "axis has no question"
     SPENT_AXIS = "axis already used above here"
     INVALID_NAME = "invalid class name"
+    NAME_TOO_LONG = "class name is longer than a routing sign"
     AXIS_AS_NAME = "class name repeats the axis instead of answering it"
     ANCESTOR_NAME = "class carries an ancestor's name"
     DUPLICATE_NAME = "duplicate class name"
@@ -84,7 +104,9 @@ def validate_plan(
     if not axis_question.strip() or "\n" in axis_question or "\r" in axis_question:
         problems.append(PlanProblem.MISSING_AXIS_QUESTION)
     wanted_axis = normalise_label(axis)
-    if wanted_axis and any(wanted_axis == normalise_label(item) for item in spent_axes):
+    if wanted_axis and any(
+        wanted_axis == normalise_label(item) or restates(axis, item) for item in spent_axes
+    ):
         problems.append(PlanProblem.SPENT_AXIS)
 
     names: set[str] = set()
@@ -95,9 +117,13 @@ def validate_plan(
         key = normalise_label(name)
         if not name or not key:
             problems.append(PlanProblem.INVALID_NAME)
+        # A name is going to become one path segment. One that has to be cut to fit was
+        # never a sign; the cut just hid that a sentence had been proposed.
+        if len(name) > MAX_SEGMENT:
+            problems.append(PlanProblem.NAME_TOO_LONG)
         if key and key == wanted_axis:
             problems.append(PlanProblem.AXIS_AS_NAME)
-        if key in ancestor_keys:
+        if key in ancestor_keys or any(restates(name, item) for item in ancestor_names):
             problems.append(PlanProblem.ANCESTOR_NAME)
         if key in names:
             problems.append(PlanProblem.DUPLICATE_NAME)

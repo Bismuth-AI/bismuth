@@ -15,7 +15,12 @@ _WINDOWS_RESERVED = frozenset(
     | {f"lpt{i}" for i in range(1, 10)}
 )
 
-_MAX_SEGMENT = 64
+MAX_SEGMENT = 64
+"""Longest path segment we will write. Also the longest a class name may be: a name
+that has to be cut to fit is not a routing sign, and cutting it silently is how a
+120-character sentence became a folder."""
+
+_MAX_SEGMENT = MAX_SEGMENT
 
 
 def sanitize_segment(raw: str) -> str:
