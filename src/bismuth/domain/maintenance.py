@@ -84,7 +84,7 @@ class PlanProblem(StrEnum):
     DUPLICATE_DOCUMENT = "document assigned to more than one class"
     SINGLE_DOCUMENT = "a sign points at one document"
     NO_MEMBERS = "class has no documents"
-    NO_DIVISION = "single group took every document"
+    NO_DIVISION = "single group took the folder, leaving no remainder to divide from"
     UNASSIGNED_DOCUMENT = "review leaves documents outside the new boundary"
 
 
@@ -181,7 +181,11 @@ def validate_plan(
                 problems.append(PlanProblem.DUPLICATE_DOCUMENT)
             assigned.add(document_id)
 
-    if not allow_no_division and len(groups) == 1 and assigned == available_document_ids:
+    # A drawn class that leaves one document behind is a rename with an outlier attached:
+    # the reader pays an extra level that rules nothing out. Measured on 300 documents as
+    # three folders holding a single document and a single child. SINGLE_DOCUMENT already
+    # says a class of one document is not a class; the remainder deserves the same rule.
+    if not allow_no_division and len(groups) == 1 and len(available_document_ids - assigned) < 2:
         problems.append(PlanProblem.NO_DIVISION)
     if require_complete and assigned != available_document_ids:
         problems.append(PlanProblem.UNASSIGNED_DOCUMENT)
