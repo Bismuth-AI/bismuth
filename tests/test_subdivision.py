@@ -963,3 +963,42 @@ class TestTheAxisStaysSingleLine:
             subdivision_prompts.Replacement(basis="one\ntwo")
         with pytest.raises(ValidationError):
             subdivision_prompts.Emerging(emerged=True, axis="one\ntwo", name="x")
+
+
+class TestABoundaryThatIsNotCarrying:
+    """SPEC 3.3.1: a folder's loose pile must not outweigh its largest child."""
+
+    async def test_a_single_shelf_that_leaves_more_behind_reopens_the_review(
+        self,
+        engine: Bismuth,
+        script: ScriptedModel,
+        llm,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """The doubling schedule cannot reach this: one child is never an established
+        partition, so the folder grew a corridor instead of a fan (measured: six levels,
+        37 documents loose behind a shelf of 7)."""
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+        script.set(placement_prompts.PlacementDecision, place_at(""))
+        llm.calls.clear()
+
+        await add(engine, "more.txt", "추가 문서")
+
+        assert _review_prompts(llm)
+
+    async def test_a_carrying_boundary_waits_for_the_doubling(
+        self,
+        engine: Bismuth,
+        script: ScriptedModel,
+        llm,  # type: ignore[no-untyped-def]
+    ) -> None:
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학", ids[:4])
+        await engine.subdivision.consider(PurePosixPath())
+        script.set(placement_prompts.PlacementDecision, place_at(""))
+        llm.calls.clear()
+
+        await add(engine, "more.txt", "추가 문서")
+
+        assert not _review_prompts(llm)
