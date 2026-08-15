@@ -257,11 +257,21 @@ class LibraryMaintenanceService:
         # as a complete boundary made the inevitable "not useful navigation" verdict
         # trigger expensive redesigns before a second class had even emerged.
         established_boundary = len(contents.children) >= 2
+        # The second door to the review, and it is rationed by growth rather than by the
+        # doubling schedule: a boundary that is not carrying its folder should be looked
+        # at again as soon as there is anything new to look at, and not before. A holding
+        # review records the size it was upheld at, which closes this door until the next
+        # arrival -- without that it re-opens on the same evidence every ingest.
+        failing = (
+            charter is not None
+            and charter.split_at_documents < total
+            and self._boundary_is_failing(folder, contents)
+        )
         if (
             charter is not None
             and charter.divided
-            and established_boundary
-            and charter.due_for_review(total)
+            and (established_boundary or failing)
+            and (charter.due_for_review(total) or failing)
             # Review safety problems postpone only the destructive review. They must
             # never prevent additive filing into the still-usable current structure.
             and len(self._read(folder, recursive=True).documents) == total
@@ -2104,6 +2114,27 @@ class LibraryMaintenanceService:
             if charter is not None and not charter.managed:
                 return True
         return False
+
+    def _boundary_is_failing(self, folder: PurePosixPath, contents: _Contents) -> bool:
+        """Whether more documents stayed loose here than went into the biggest shelf.
+
+        SPEC.md 3.3.1 states this as a scale-free invariant, and it is the one shape a
+        boundary cannot argue its way out of: the classes drawn are not carrying the
+        folder, so the reader still faces the pile the folders were meant to replace.
+        Two live counts compared against each other -- no threshold, nothing tuned.
+
+        It is a second door to the review, because the doubling schedule cannot open for
+        this case. A folder with one child is not an established partition, so it never
+        becomes due; measured on 300 documents, one held 37 loose behind a single shelf
+        of 7 and grew a corridor six levels deep, each level one more thin class drawn
+        off the same undivided pile. Redrawing the whole boundary is what that needs.
+        """
+        if not contents.children:
+            return False
+        largest = max(
+            self._count_documents(folder / name, recursive=True) for name, _ in contents.children
+        )
+        return len(contents.documents) > largest
 
     def _count_documents(self, folder: PurePosixPath, *, recursive: bool) -> int:
         return sum(
