@@ -928,6 +928,10 @@ FAILS if this folder is the root, or has no boundary yet, and the property is on
 those always-present ones -- the kind of document, its form, its issuer, its date, its \
 language.
 
+FAILS if what is offered is not the NAME of a property at all: a sentence describing the \
+split, a comparison between two candidates, or an explanation of why it was chosen. A \
+property is named in a few words, the way a column heading is.
+
 HOLDS if the property is about what the documents are about. HOLDS also when this \
 folder has already been narrowed by subject and the property is a sensible way to split \
 what remains, because by then the subject is fixed and the reader is already inside it.\
