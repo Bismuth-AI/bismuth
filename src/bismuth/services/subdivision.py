@@ -1196,16 +1196,37 @@ class LibraryMaintenanceService:
                 complete=complete,
             )
 
+        async def ask(
+            packet: list[tuple[str, str]], shown_groups: list[prompts.Group] | None = None
+        ) -> prompts.BoundaryAudit:
+            """One packet, one closed question per check."""
+            ids = {document_id for document_id, _ in packet}
+            source_groups = shown_groups if shown_groups is not None else groups
+            packet_groups = _groups_for_ids(source_groups, ids)
+            verdicts: dict[str, bool] = {}
+            for name, question in prompts.BOUNDARY_CHECKS:
+                answer = await self._llm.choose(
+                    prompts.build_boundary_check(
+                        check=question,
+                        path=str(folder),
+                        documents=packet,
+                        axis=axis,
+                        axis_question=axis_question,
+                        groups=packet_groups,
+                        complete=complete,
+                    ),
+                    choices=("HOLDS", "FAILS"),
+                    max_tokens=8,
+                )
+                # An unusable reply must not silently approve a mutation.
+                verdicts[name] = answer.strip().upper() == "HOLDS"
+            return prompts.BoundaryAudit(**verdicts)
+
         checks: list[prompts.BoundaryAudit] = []
         if _prompt_chars(build([], groups)) > MAX_MAINTENANCE_PROMPT_CHARS:
             group_packets = _value_packets(groups, lambda shown: build([], shown))
             for shown in group_packets:
-                checks.append(
-                    await self._llm.structured(
-                        build([], shown),
-                        schema=prompts.BoundaryAudit,
-                    )
-                )
+                checks.append(await ask([], shown))
             document_packets = _document_packets(
                 documents,
                 lambda packet: build(
@@ -1215,22 +1236,14 @@ class LibraryMaintenanceService:
             )
             for packet in document_packets:
                 shown = _groups_relevant_to_ids(groups, {item[0] for item in packet})
-                checks.append(
-                    await self._llm.structured(
-                        build(packet, shown),
-                        schema=prompts.BoundaryAudit,
-                    )
-                )
+                checks.append(await ask(packet, shown))
         else:
-            checks = [
-                await self._llm.structured(build(packet), schema=prompts.BoundaryAudit)
-                for packet in _document_packets(documents, build)
-            ]
+            checks = [await ask(packet) for packet in _document_packets(documents, build)]
         return prompts.BoundaryAudit(
-            one_property=all(check.one_property for check in checks),
-            names_answer_question=all(check.names_answer_question for check in checks),
-            mutually_exclusive=all(check.mutually_exclusive for check in checks),
-            useful_for_navigation=all(check.useful_for_navigation for check in checks),
+            **{
+                name: all(getattr(check, name) for check in checks)
+                for name, _ in prompts.BOUNDARY_CHECKS
+            }
         )
 
     async def _audit_replacement_change(
