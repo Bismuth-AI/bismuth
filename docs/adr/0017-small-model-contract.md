@@ -93,24 +93,48 @@ was the answer that came back. That is the same effect this repository already h
 generating a verdict field after the evidence, and it should be assumed for every closed
 question.
 
+## The axis, which took eighteen rounds
+
+The property a folder is divided on outlives every other judgement: every later question
+about that folder is asked against it. It was also the judgement made with the least
+evidence -- fixed the moment one class came out, from as few as five documents -- and
+nothing short of a destructive replacement could revise it. Both rounds that chose a
+format axis fixed it at five documents; every subject axis was fixed at fifteen or more.
+
+Three things fixed it, and the order matters because the first two alone did not.
+
+1. **The contract reached the model.** The rule that an always-present attribute is not
+   the first cut existed only in a field description, and field descriptions do not
+   survive constrained decoding.
+2. **The axis is provisional while the boundary is.** ADR-0014 already called a folder
+   with one child provisional; the axis was not. It is now re-asked, with the existing
+   child shown, until two children make a boundary. Nothing moves -- the child keeps its
+   name and its documents, and only the recorded property changes.
+3. **The property is checked on its own.** Inside the six-boolean audit this check
+   approved 문서의 성격, 주관 부처 and 법령의 성격 -- every axis it exists to reject. As a
+   single closed question it refuses them. Splitting *all six* was measured three times
+   and was worse each time; this one splits cleanly because it is about the property
+   alone, which is present whether one class is proposed or twelve.
+
 ## Revisit when
 
-The measured numbers move. On 30 documents in both input orders, across fourteen rounds:
+The measured numbers move. Thirty documents, both input orders, at the end of eighteen
+rounds:
 
-| | best | current |
+| | first measured | now |
 |---|---|---|
-| same-folder pair F1 between orders | 0.60 | 0.42 |
-| documents left at the root | 0% | 0–10% forward, 0% reverse |
-| leaf sizes | 3–12 | 5–24 |
-| root axis on subject rather than format | both orders (once) | forward only |
+| same-folder pair F1 between orders | 0.39 | **0.68** |
+| documents left at the root | 40% | **3% / 0%** |
+| root axis on subject rather than format | forward only | **both orders** |
+| leaf sizes | 2-24 | 3-12 |
+| destructive replacements | 3 | 0-1 |
+| retries per ~360 calls | -- | 1-2 |
 
-The axis chosen at the root still depends on input order, and that is the open problem.
-It is decided from the documents visible when the folder first divides, and nothing but a
-destructive replacement can change it afterwards — so the judgement made on the least
-evidence is the one that lasts longest. Both rounds that chose a format axis fixed it at
-five documents; every subject axis was fixed at fifteen or more. Telling the model the
-choice is permanent moved that from five to fifteen and twenty, and did not remove the
-dependence.
+F1 will not reach 1.0 and should not be read as if it could: two different reasonable
+organisations of the same corpus score low against each other by construction. What
+matters is that both are now organised on what the documents are about, and that a
+document lands somewhere in both.
 
-Whatever addresses this is a change to when an axis may be recorded or how it may be
-revised, not another line in a prompt.
+Still open: leaf sizes reach twelve against a browsing target nobody has set, a parent
+sometimes holds one document and one child, and none of this has been measured beyond
+thirty documents or outside one corpus, one language and one model.
