@@ -617,23 +617,26 @@ def build_emerging_reduce(
 REVIEW_CHECKS: tuple[tuple[str, str], ...] = (
     (
         "one_axis",
-        "Do all the sub-folder names answer the ONE recorded question above? FAILS if some "
-        "of them answer a different question, so that the names sit on two different kinds "
-        "of distinction. If no axis question was recorded at all, that is FAILS.",
+        "FAILS if some sub-folder names answer a different question from the one recorded "
+        "above, so the names sit on two different kinds of distinction, or if no axis "
+        "question was recorded at all.\n"
+        "HOLDS if every sub-folder name answers that one recorded question.",
     ),
     (
         "coherent_membership",
-        "Take only the documents that are inside a sub-folder. Is each one described by the "
-        "sign it sits behind? FAILS only if documents are behind signs that do not describe "
-        "them. Documents still loose in this folder are not inside any sub-folder, so they "
-        "are not part of this question at all.",
+        "Consider only the documents that are inside a sub-folder. Documents still loose in "
+        "this folder are inside no sub-folder and are not part of this question.\n"
+        "FAILS if documents sit behind signs that do not describe them.\n"
+        "HOLDS if the documents behind each sign are described by it.",
     ),
     (
         "useful_navigation",
-        "Read the sub-folder signs as a reader who wants one document. Is each sign specific "
-        "enough to decide, from the sign alone, whether to open that folder? FAILS if a sign "
-        "is so vague or so overlapping with another that the reader would have to open both. "
-        "Shelves that do not exist yet are not part of this question.",
+        "Read the sub-folder signs as a reader who wants one document. Shelves that do not "
+        "exist yet are not part of this question.\n"
+        "FAILS if a sign is so vague, or so overlapping with another, that the reader would "
+        "have to open both.\n"
+        "HOLDS if each sign is specific enough to decide from the sign alone whether to open "
+        "that folder.",
     ),
 )
 """One check per call. Three booleans in one reply came back all-false on boundaries whose
@@ -855,47 +858,57 @@ def build_replacement_choice(
 BOUNDARY_CHECKS: tuple[tuple[str, str], ...] = (
     (
         "one_property",
-        "Does the axis name ONE property? FAILS if it names two, or compares candidate "
-        "properties, or is an explanation rather than the name of a property.",
+        "FAILS if the axis names two properties, compares candidate properties, or is an "
+        "explanation rather than the name of a property.\n"
+        "HOLDS if the axis is the name of one property.",
     ),
     (
         "names_answer_question",
-        "Is every folder name a direct answer to the axis question? FAILS if a name answers "
-        "some other question, or is not an answer at all.",
+        "FAILS if a proposed name answers some other question, or is not an answer at all.\n"
+        "HOLDS if every name listed under GROUPS is an answer to the axis question.",
     ),
     (
         "mutually_exclusive",
-        "Could a document naturally belong to more than one of these folders? FAILS if it "
-        "could -- then the names do not tell a reader which one to open.",
+        "FAILS if two proposed names overlap so a reader could not tell which to open, or if "
+        "a single proposed name would equally well describe the documents staying behind.\n"
+        "HOLDS if each proposed name claims a distinct part of this folder. One name alone "
+        "has no sibling to overlap with, so it normally HOLDS.",
     ),
     (
         "useful_for_navigation",
-        "Do these signs narrow the search, or do they restate the documents? FAILS if a "
-        "reader would still have to open several folders to find one document.",
+        "FAILS if the name is so vague or so general that a reader looking for something "
+        "else would have to open it anyway.\n"
+        "HOLDS if a reader who wants something else can see this name and skip it. Documents "
+        "left loose in the folder are expected and are not a fault in the name.",
     ),
     (
         "each_name_is_one_answer",
-        "Does any name offer a CHOICE between two answers instead of being one of them? "
-        "FAILS if one does: a folder named for two alternatives holds both and excludes "
-        "nothing.",
+        "FAILS if a name joins two alternatives, because such a folder holds both and "
+        "excludes nothing.\n"
+        "HOLDS if each name is a single answer.",
     ),
     (
         "subject_before_attribute",
-        "This is about WHICH property was chosen. Some properties are known for nearly "
-        "every document -- what kind of document it is, what form it takes, who issued it, "
-        "when, in what language. A folder tree built on one of those first is well formed "
-        "and still useless to a reader who arrived looking for a topic, because every topic "
-        "is now spread across every folder.\n"
-        "FAILS when this is the first cut in this folder AND the axis is one of those "
+        "Some properties are known for nearly every document -- what kind of document it is, "
+        "what form it takes, who issued it, when, in what language. A tree built on one of "
+        "those FIRST is well formed and still useless to a reader who arrived looking for a "
+        "topic, because every topic is then spread across every folder.\n"
+        "FAILS if FOLDER is the root or an undivided folder AND the axis is one of those "
         "always-present properties.\n"
-        "HOLDS when the axis is about what the documents are ABOUT, and also HOLDS when "
-        "this folder is already narrowed by topic and the property is a sensible way to "
-        "split what is left.",
+        "HOLDS if the axis is about what the documents are ABOUT. Also HOLDS if this folder "
+        "is already narrowed by topic and the property is a sensible way to split what is "
+        "left.",
     ),
 )
-"""One check per call, for the same reason as REVIEW_CHECKS. Asked as six booleans in one
-reply, this audit answered `subject_before_attribute: true` for the axes 문서의 성격,
-주관 부처 and 법령의 성격 -- the three it exists to reject."""
+"""One check per call, each ending on the condition that HOLDS.
+
+Three phrasings were measured. Six booleans in one reply approved the axes 문서의 성격,
+주관 부처 and 법령의 성격 -- the three this exists to reject. Split into closed calls but
+phrased as questions, three checks failed nearly everything. Split and phrased as a
+statement followed by "FAILS if ...", five of six failed nearly everything and the archive
+stayed flat at thirty documents: the answer was tracking the last condition read, which is
+the same recency this repository already handles by generating a verdict field last."""
+
 
 _BOUNDARY_CHECK_SYSTEM = """\
 You are the independent verifier for a proposed library folder boundary, and you are \

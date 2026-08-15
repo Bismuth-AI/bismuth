@@ -21,11 +21,6 @@ def _group(name: str, note: str, ids: list[str]) -> subdivision_prompts.Group:
     return subdivision_prompts.Group(name=name, note=note, document_ids=ids)
 
 
-def _boundary_check_prompts(llm) -> list:  # type: ignore[no-untyped-def]
-    """The boundary audit is one closed HOLDS/FAILS question per check."""
-    return [p for p in llm.prompts_for(None) if "proposed library folder boundary" in p.system]
-
-
 def _review_prompts(llm) -> list:  # type: ignore[no-untyped-def]
     """Review is one closed HOLDS/FAILS question per check, not a structured call."""
     return [p for p in llm.prompts_for(None) if "HOLDS or FAILS" in p.system]
@@ -246,7 +241,7 @@ class TestDrawingOutAClass:
         _emerges(script, "과학", "과학 자료", ids[2:4])
         await engine.subdivision.consider(PurePosixPath())
 
-        audit_prompt = _boundary_check_prompts(llm)[-1].user
+        audit_prompt = llm.prompts_for(subdivision_prompts.BoundaryAudit)[-1].user
         assert "문학" in audit_prompt
         assert "과학" in audit_prompt
         assert "current=문학/" in audit_prompt
@@ -662,20 +657,18 @@ class TestReview:
             ),
             encoding="utf-8",
         )
-        # The audit is one closed call per check, so the first round is a full pass over
-        # BOUNDARY_CHECKS: the legacy boundary fails, and the replacement proposed after
-        # it passes.
+        # The legacy boundary fails its audit; the replacement proposed after it passes.
         asked = 0
 
         def audit(prompt, schema):  # type: ignore[no-untyped-def]
             nonlocal asked
-            first_round = asked < len(subdivision_prompts.BOUNDARY_CHECKS)
+            first = asked == 0
             asked += 1
             return subdivision_prompts.BoundaryAudit(
-                one_property=not first_round,
-                names_answer_question=not first_round,
-                mutually_exclusive=not first_round,
-                useful_for_navigation=not first_round,
+                one_property=not first,
+                names_answer_question=not first,
+                mutually_exclusive=not first,
+                useful_for_navigation=not first,
             )
 
         script.set(subdivision_prompts.BoundaryAudit, audit)

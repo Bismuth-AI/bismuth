@@ -217,10 +217,7 @@ class ScriptedModel:
         if "HOLDS or FAILS" in prompt.system:
             # Review and the boundary audit became one closed question per check. Tests
             # still script the objects; answer each check from the field it is about.
-            for schema, table in (
-                (subdivision_prompts.Review, subdivision_prompts.REVIEW_CHECKS),
-                (subdivision_prompts.BoundaryAudit, subdivision_prompts.BOUNDARY_CHECKS),
-            ):
+            for schema, table in ((subdivision_prompts.Review, subdivision_prompts.REVIEW_CHECKS),):
                 for name, question in table:
                     if question in prompt.system:
                         scripted = self.responses[schema]
