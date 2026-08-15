@@ -80,6 +80,12 @@ documents staying put is the normal outcome, not a failure.
 If two classes have grown, name the thicker; you will be asked again and the other can \
 come out then.
 
+**`sign` is the line printed under the folder name, and `name` is the folder name.** \
+They are not the same text. The reader has already read the name; the sign is what they \
+read next to decide whether to open the folder or walk past it, so it has to say \
+something the name did not. Write the sign first and name the folder after it. One line, \
+in the documents' own language, describing only what belongs here.
+
 `emerged` is false when nothing has gathered yet -- common in a young archive, and the \
 right answer more often than not. A collection whose documents are each about something \
 different is a list, and a list is best left as a list. Say so.\
@@ -191,14 +197,18 @@ class Emerging(BaseModel):
             "answer to it. Asked only the first time."
         ),
     )
-    name: str = Field(default="", description="Folder name for that class, one level. Not a path.")
     sign: str = Field(
         default="",
         description=(
-            "One short line telling a reader what belongs behind this name that does NOT "
-            "belong behind its siblings. Positive only: no excluded documents, no leftovers, "
-            "no document ids, no description of how you decided."
+            "One short line a reader uses to decide whether to open this folder or skip it: "
+            "what kind of document belongs here. Say more than the folder name will say. "
+            "Positive only: no excluded documents, no leftovers, no document ids, no "
+            "description of how you decided."
         ),
+    )
+    name: str = Field(
+        default="",
+        description="Folder name for what you just described, one level. Not a path.",
     )
     emerged: bool = Field(description="False when the concrete candidate is not worth a shelf.")
 
@@ -319,15 +329,16 @@ class ReplacementSign(BaseModel):
     characters for ``Emerging.name``, which says what a folder name is and stops.
     """
 
-    name: str = Field(description="Folder name, one level. Not a path.")
     sign: str = Field(
         default="",
         description=(
-            "One short line telling a reader what belongs behind this name that does NOT "
-            "belong behind its siblings. Positive only: no excluded documents, no leftovers, "
-            "no document ids, no description of how you decided."
+            "One short line a reader uses to decide whether to open this folder or skip it: "
+            "what kind of document belongs here. Say more than the folder name will say. "
+            "Positive only: no excluded documents, no leftovers, no document ids, no "
+            "description of how you decided."
         ),
     )
+    name: str = Field(description="Folder name for what you just described, one level. Not a path.")
 
 
 class ReplacementSketch(BaseModel):
@@ -574,8 +585,11 @@ def build_replacement_sketch(
             "this bounded evidence packet. This is one packet from a larger subtree, so do not "
             "return document IDs. Name one corpus-evidenced property and two or more reusable "
             "class signs on that property. Signs must be mutually exclusive, useful for ruling "
-            "alternatives out, and written in the documents' own language. Notes are short "
-            "positive routing rules, not inventories, counts, exclusions, or process narration. "
+            "alternatives out, and written in the documents' own language. Each class has two "
+            "separate texts and they are never the same text: `name` is the folder name, and "
+            "`sign` is the line printed under it, which has to say something the name did not. "
+            "Write the sign first and name the folder after it. Signs are short positive routing "
+            "rules, not inventories, counts, exclusions, or process narration. "
             "Do not import a domain taxonomy that is absent from the evidence."
         ),
         user=(
