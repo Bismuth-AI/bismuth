@@ -78,6 +78,12 @@ it anyway. What you name is one KIND of what this folder already holds: narrower
 the folder's own name, and a name only SOME of these documents could take. If nothing \
 narrower than the folder itself fits, nothing has emerged; say so.
 
+**Every level costs the reader a correct guess.** Look at how deep the folder path \
+above already is: a shelf you add here sits behind all of those choices, and a reader \
+who guesses wrong at any one of them never reaches it. Deep down, the bar for another \
+level is higher than it was at the top, not lower. A wide shelf a reader can scan beats \
+a narrow one they have to find.
+
 **The name is one folder, not a path.** Write the single level you are adding. A name \
 with a separator in it is refused outright and the whole answer is thrown away.
 
