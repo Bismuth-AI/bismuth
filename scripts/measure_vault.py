@@ -1,7 +1,8 @@
-"""Measure a vault against SPEC.md 6.2. Reads only; calls no model; changes nothing.
+"""Score a vault against SPEC.md 3.3.1 and 6.2. Reads only; calls no model; changes nothing.
 
-The targets in the spec are all "미정" because nothing has ever been measured. This
-prints the numbers you would fill them in from.
+3.3.1 states the shape an archive of a given size should have, derived from what an
+agent with ls/grep/read can afford. This scores a vault against it, so one round can be
+compared to the next without another model call -- the baseline a benchmark needs.
 
     python scripts/measure_vault.py [VAULT_PATH]
 
@@ -53,6 +54,7 @@ def main(argv: list[str]) -> int:
     print(f"  깊이            최대 {max(depths, default=0)}층")
     print()
 
+    print(_scorecard(total, leaf_counts, branching, depths, folders, children, counts))
     print("SPEC 6.2")
     if leaf_counts:
         print(
@@ -86,6 +88,78 @@ def main(argv: list[str]) -> int:
             bar = "·" * min(counts[folder], 40)
             print(f"  {'  ' * (len(folder.parts) - 1)}{folder.name:<24} {counts[folder]:>4} {bar}")
     return 0
+
+
+#: SPEC 3.3.1 -- the band a well-shaped archive of this size sits in, as
+#: (documents, widest branching, deepest level, largest leaf). Interpolation between
+#: rows is deliberate: the shape moves with size rather than snapping between tiers.
+_BANDS = (
+    (100, 5, 2, 20),
+    (1_000, 9, 3, 25),
+    (10_000, 10, 4, 30),
+    (100_000, 12, 5, 30),
+)
+#: Absolute ceilings from the same section. Past any of these the branch has failed.
+_CEILING = (20, 5, 50)
+
+
+def _band(total: int) -> tuple[int, int, int]:
+    """The width, depth and leaf ceiling recommended at this archive size."""
+    for size, width, depth, leaf in _BANDS:
+        if total <= size:
+            return width, depth, leaf
+    return _BANDS[-1][1:]
+
+
+def _pass_through(folders, children, counts) -> list[PurePosixPath]:
+    """Folders that cost an ls and narrow nothing: almost no documents, one child."""
+    return [
+        folder
+        for folder in folders
+        if folder.parts and len(children[folder]) == 1 and counts[folder] < 2
+    ]
+
+
+def _undivided(folders, children, counts) -> list[PurePosixPath]:
+    """Folders whose loose pile outweighs their largest child -- the split did not happen."""
+    return [
+        folder
+        for folder in folders
+        if children[folder] and counts[folder] > max(counts[c] for c in children[folder])
+    ]
+
+
+def _line(label: str, value: str, ok: bool | None) -> str:
+    mark = "  " if ok is None else (" ✓" if ok else " ✗")
+    return f"  {label:<14} {value:<34}{mark}"
+
+
+def _scorecard(total, leaf_counts, branching, depths, folders, children, counts) -> str:
+    """How this vault sits against the recommended shape for its size (SPEC 3.3.1)."""
+    width_max, depth_max, leaf_max = _band(total)
+    width_cap, depth_cap, leaf_cap = _CEILING
+    width = branching[0] if branching else 0
+    depth = max(depths, default=0)
+    leaf = leaf_counts[0] if leaf_counts else 0
+    through = _pass_through(folders, children, counts)
+    undivided = _undivided(folders, children, counts)
+
+    rows = [
+        f"SPEC 3.3.1 — {total}건 장서의 권장 형태: "
+        f"폭 ≤{width_max} · 깊이 ≤{depth_max} · 잎 ≤{leaf_max}",
+        "",
+        _line("층당 폭", f"최대 {width}  (권장 {width_max}, 상한 {width_cap})", width <= width_max),
+        _line("깊이", f"최대 {depth}  (권장 {depth_max}, 상한 {depth_cap})", depth <= depth_max),
+        _line("잎 크기", f"최대 {leaf}  (권장 {leaf_max}, 상한 {leaf_cap})", leaf <= leaf_max),
+        _line("통과 폴더", f"{len(through)}개  (목표 0)", not through),
+        _line("미분해 더미", f"{len(undivided)}개  (목표 0)", not undivided),
+    ]
+    for folder in through[:3]:
+        rows.append(f"      통과: {folder}")
+    for folder in undivided[:3]:
+        largest = max(counts[c] for c in children[folder])
+        rows.append(f"      더미: {folder}  ({counts[folder]}건 남음 > 최대 자식 {largest}건)")
+    return "\n".join(rows) + "\n"
 
 
 def _in_inbox(folder: PurePosixPath) -> bool:
