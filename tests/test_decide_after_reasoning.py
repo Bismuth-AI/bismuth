@@ -18,7 +18,12 @@ def test_emerging_forms_the_candidate_before_the_verdict() -> None:
 def test_review_contains_only_checks_that_gate_the_decision() -> None:
     fields = list(subdivision_prompts.Review.model_json_schema()["properties"])
 
-    assert fields == ["one_axis", "coherent_membership", "useful_navigation"]
+    assert fields == [
+        "one_axis",
+        "coherent_membership",
+        "useful_navigation",
+        "useful_shares",
+    ]
 
 
 def test_maintenance_schemas_have_no_free_form_reason_metadata() -> None:
