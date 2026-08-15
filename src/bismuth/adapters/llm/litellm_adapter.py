@@ -121,7 +121,16 @@ _OPENAI_BODY_PARAMS = frozenset(
 smuggled past it -- see :func:`apply_body`."""
 
 
-def apply_body(kwargs: dict[str, Any], body: dict[str, Any]) -> None:
+_SAMPLING_PARAMS = frozenset(
+    {"temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty", "seed"}
+)
+"""How the model picks its next token. A classification call owns these; see
+:func:`apply_body`."""
+
+
+def apply_body(
+    kwargs: dict[str, Any], body: dict[str, Any], *, owns_sampling: bool = False
+) -> None:
     """Merge configured request-body values into a completion call, in place.
 
     Split because LiteLLM runs with ``drop_params``, which silently discards arguments
@@ -131,14 +140,19 @@ def apply_body(kwargs: dict[str, Any], body: dict[str, Any]) -> None:
     endpoint untouched. The standard ones stay top-level so LiteLLM can translate them
     per provider.
 
-    Configured values win over Bismuth's own, including ``temperature``: structured
-    calls default to 0.0 for determinism, and a server that wants otherwise is the one
-    that has to be satisfied.
+    ``owns_sampling`` drops the configured sampling values for schema-bound calls, which
+    ask a closed question and want the same answer twice. A real configuration carried
+    ``temperature: 0.7`` and ``presence_penalty: 1.5`` -- sensible for chat, and a
+    presence penalty is the exact opposite of what placement asks for, because placement
+    shows the model the existing folder names and wants one of them back. Everything the
+    endpoint itself needs, including ``chat_template_kwargs``, still goes through.
     """
     if not body:
         return
     extra: dict[str, Any] = dict(kwargs.get("extra_body") or {})
     for name, value in body.items():
+        if owns_sampling and name in _SAMPLING_PARAMS:
+            continue
         if name in _OPENAI_BODY_PARAMS:
             kwargs[name] = value
         else:
@@ -625,7 +639,9 @@ class LiteLLMAdapter:
             # Some endpoints sit behind a gateway that authenticates with a cookie or
             # its own header; without these the call never reaches the model.
             kwargs["extra_headers"] = self._headers
-        apply_body(kwargs, self._body)
+        # Every call through this adapter is schema-bound or a closed choice, so Bismuth
+        # owns how the token is picked. The agent chat path keeps the operator's values.
+        apply_body(kwargs, self._body, owns_sampling=True)
         if force_temperature:
             kwargs["temperature"] = temperature
         # Config may request a smaller budget, but it cannot raise a task's reviewed

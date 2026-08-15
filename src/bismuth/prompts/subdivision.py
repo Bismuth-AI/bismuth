@@ -53,7 +53,28 @@ A sign names a CLASS -- something you expect more of -- never one document's sub
 If the only honest name for a group is the title of the document inside it, that group \
 should not exist.
 
-Signs and notes in the DOCUMENTS' OWN LANGUAGE.\
+**An attribute nearly every document has is not the first distinction to draw.** Format, \
+type, language, date, and issuing body are known for almost everything, so they fill a \
+tree neatly and leave the reader no better off: someone arrives wanting a subject, not a \
+format. Those attributes are usable LATER, inside a shelf that is already about \
+something, when there is still a reason to split it further. Drawn first, they scatter \
+each subject across every branch and the reader has to walk all of them.
+
+The first question is what the documents are ABOUT.
+
+**`sign` is the line printed under the folder name, and `name` is the folder name.** \
+They are not the same text. The reader has already read the name; the sign is what they \
+read next to decide whether to open the folder or walk past it, so it has to say \
+something the name did not. Write the sign first and name the folder after it.
+
+A broad name needs a sign more, not less. `name` is two or three words and cannot carry \
+scope; the sign is where the scope goes -- what kinds of documents fall under it, said in \
+a full line. That is not an inventory: an inventory lists what happens to be here today, \
+and scope says what would belong here tomorrow. If the sign you are about to write is the \
+name again, you have written the label twice and told the reader nothing.
+
+Signs and notes in the DOCUMENTS' OWN LANGUAGE. If the documents are in one language, the \
+sign is in that language too.\
 """
 
 _EMERGING_SYSTEM = f"""\
@@ -79,12 +100,6 @@ documents staying put is the normal outcome, not a failure.
 
 If two classes have grown, name the thicker; you will be asked again and the other can \
 come out then.
-
-**`sign` is the line printed under the folder name, and `name` is the folder name.** \
-They are not the same text. The reader has already read the name; the sign is what they \
-read next to decide whether to open the folder or walk past it, so it has to say \
-something the name did not. Write the sign first and name the folder after it. One line, \
-in the documents' own language, describing only what belongs here.
 
 `emerged` is false when nothing has gathered yet -- common in a young archive, and the \
 right answer more often than not. A collection whose documents are each about something \
@@ -141,6 +156,17 @@ out to cut across the real one, documents that have gathered and clearly belong 
 together elsewhere.
 
 {_SIGNS}
+
+**A boundary is never finished, and unfinished is not the same as wrong.** Shelves appear \
+one at a time as classes gather, so at any moment some documents sit in the folder itself \
+with no shelf yet -- their `current` path is the bare filename. That is the designed \
+state, not a defect. You are asked whether what has been built is RIGHT, not whether it \
+is COMPLETE.
+
+Saying no here does not add the missing shelves. It throws away the ones that exist and \
+rebuilds the whole subtree from scratch, moving every document, including the ones that \
+are correctly placed today. Say no only when keeping what is there would be worse than \
+that.
 
 Judge the current boundary only. Do not propose a replacement, enumerate documents, \
 recount memberships, or explain your work. Each output boolean is a directly used check; \
@@ -281,10 +307,18 @@ class Review(BaseModel):
         description="All direct child signs still answer the one recorded axis question."
     )
     coherent_membership: bool = Field(
-        description="Documents generally sit behind signs that accurately describe them."
+        description=(
+            "Documents that are behind a sign are described by it. Documents still loose in "
+            "the folder itself are expected and are not counted against this."
+        )
     )
     useful_navigation: bool = Field(
-        description="The current signs still help a reader rule alternatives out."
+        description=(
+            "Each sign that exists is specific enough that a reader can tell from it alone "
+            "whether to open that folder. Judge the signs as written, not how much of the "
+            "folder they cover: shelves this boundary has not grown yet are not a fault in "
+            "the shelves it has."
+        )
     )
 
     @property
@@ -400,6 +434,23 @@ class BoundaryAudit(BaseModel):
     useful_for_navigation: bool = Field(
         description="The signs materially narrow the search instead of restating the documents."
     )
+    each_name_is_one_answer: bool = Field(
+        default=True,
+        description=(
+            "No proposed name offers a choice between two answers instead of being one of "
+            "them. A name that joins two alternatives holds both, so it excludes nothing."
+        ),
+    )
+    subject_before_attribute: bool = Field(
+        default=True,
+        description=(
+            "This boundary is not the first cut on an attribute nearly every document has "
+            "-- format, type, language, date, issuing body. Such a boundary is well formed "
+            "and still leaves a reader who arrived with a subject no better off. True when "
+            "the axis is about what the documents are ABOUT, or when the folder is already "
+            "narrowed by subject and this attribute is a reasonable further split."
+        ),
+    )
 
     @property
     def accepted(self) -> bool:
@@ -408,6 +459,8 @@ class BoundaryAudit(BaseModel):
                 self.one_property,
                 self.names_answer_question,
                 self.mutually_exclusive,
+                self.each_name_is_one_answer,
+                self.subject_before_attribute,
                 self.useful_for_navigation,
             )
         )
@@ -475,6 +528,7 @@ def build_emerging(
     children: list[tuple[str, str]],
     axis: str = "",
     spent: list[str] | None = None,
+    language: str = "",
 ) -> Prompt:
     """Step one: has any one class grown thick enough to come out?
 
@@ -489,8 +543,11 @@ def build_emerging(
                 "\n\nPROPERTIES ALREADY USED ABOVE THIS FOLDER (do not reuse them here):\n  "
                 + "\n  ".join(spent)
             )
-        return Prompt(system=_EMERGING_SYSTEM, user=user)
-    return Prompt(system=_EMERGING_ALONG_SYSTEM, user=f"{user}\n\nTHE AXIS HERE: {axis}")
+        return Prompt(system=_EMERGING_SYSTEM, user=user + answer_in(language))
+    return Prompt(
+        system=_EMERGING_ALONG_SYSTEM,
+        user=f"{user}\n\nTHE AXIS HERE: {axis}{answer_in(language)}",
+    )
 
 
 def build_members(
@@ -542,6 +599,79 @@ def build_emerging_reduce(
     )
 
 
+REVIEW_CHECKS: tuple[tuple[str, str], ...] = (
+    (
+        "one_axis",
+        "Do all the sub-folder names answer the ONE recorded question above? FAILS if some "
+        "of them answer a different question, so that the names sit on two different kinds "
+        "of distinction. If no axis question was recorded at all, that is FAILS.",
+    ),
+    (
+        "coherent_membership",
+        "Take only the documents that are inside a sub-folder. Is each one described by the "
+        "sign it sits behind? FAILS only if documents are behind signs that do not describe "
+        "them. Documents still loose in this folder are not inside any sub-folder, so they "
+        "are not part of this question at all.",
+    ),
+    (
+        "useful_navigation",
+        "Read the sub-folder signs as a reader who wants one document. Is each sign specific "
+        "enough to decide, from the sign alone, whether to open that folder? FAILS if a sign "
+        "is so vague or so overlapping with another that the reader would have to open both. "
+        "Shelves that do not exist yet are not part of this question.",
+    ),
+)
+"""One check per call. Three booleans in one reply came back all-false on boundaries whose
+signs were specific and correct; asked one at a time, against the same evidence, each has
+a single thing to weigh. This is the SPEC 2.1 contract applied to the one question that
+can destroy structure."""
+
+_REVIEW_CHECK_SYSTEM = """\
+You are re-examining a library folder that was divided earlier, and you are checking ONE \
+thing about it. Answer with exactly HOLDS or FAILS and nothing else.
+
+**HOLDS is the default.** The division was made by someone looking at this same archive, \
+and undoing it moves every document, including the ones that are already in the right \
+place. Answer FAILS only when you can point at what is actually wrong.
+
+A boundary is never finished. Shelves appear one at a time as classes gather, so some \
+documents always sit in the folder itself with no shelf yet -- their `current` path is the \
+bare filename. That is the designed state. You are asked whether what has been built is \
+RIGHT, not whether it is COMPLETE.
+
+THE ONE CHECK:
+{check}\
+"""
+
+
+def build_review_check(
+    *,
+    check: str,
+    path: str,
+    purpose: str,
+    basis: str,
+    basis_question: str,
+    before: int,
+    count: int,
+    documents: list[tuple[str, str]],
+    children: list[tuple[str, str]],
+) -> Prompt:
+    """One closed HOLDS/FAILS question about an existing division."""
+    return Prompt(
+        system=_REVIEW_CHECK_SYSTEM.format(check=check),
+        user=_review_listing(
+            path=path,
+            purpose=purpose,
+            basis=basis,
+            basis_question=basis_question,
+            before=before,
+            count=count,
+            documents=documents,
+            children=children,
+        ),
+    )
+
+
 def build_review(
     *,
     path: str,
@@ -577,6 +707,7 @@ def build_replacement_sketch(
     current_question: str,
     documents: list[tuple[str, str]],
     children: list[tuple[str, str]],
+    language: str = "",
 ) -> Prompt:
     """Propose signs from one bounded packet; document membership is assigned later."""
     return Prompt(
@@ -731,8 +862,19 @@ def build_boundary_audit(
             "taxonomy. The axis must name one property, its question must ask only that "
             "property, and every sibling name must be an answer to that question. Reject "
             "candidate comparisons, mixed axes, overlapping siblings, document-title shelves, "
-            "and distinctions that do not help a reader rule alternatives out. Folder notes "
-            "are derived by the application and are not part of this judgement."
+            "and distinctions that do not help a reader rule alternatives out.\n\n"
+            "`each_name_is_one_answer` is false when a name offers a CHOICE between two "
+            "answers rather than being one of them; such a folder holds both and excludes "
+            "nothing.\n\n"
+            "`subject_before_attribute` is about WHICH property was chosen. Format, document "
+            "type, language, date and issuing body are known for nearly every document, so a "
+            "boundary on one of them is well formed and still leaves a reader who arrived "
+            "with a subject no better off -- their subject is now scattered across every "
+            "branch. It is false when this is the FIRST cut and it is on such an attribute. "
+            "It is true when the axis is about what the documents are ABOUT, and also true "
+            "when this folder is already narrowed by subject and the attribute is a "
+            "reasonable further split inside it.\n\n"
+            "Folder notes are derived by the application and are not part of this judgement."
         ),
         user=(
             f"FOLDER: {path or '(root)'}\nMODE: {mode}\nAXIS: {axis}\n"
@@ -844,11 +986,27 @@ def build_routing_audit(
     )
 
 
+def answer_in(language: str) -> str:
+    """A closing line naming the collection's own language, when it has one.
+
+    Last, because that is the instruction a small model is most likely to still be
+    holding when it starts writing. The code comes off the cards, so an English archive
+    gets English back and this file names no language itself.
+    """
+    if not language:
+        return ""
+    return (
+        f"\n\nThese documents are written in `{language}`. Write every value you return "
+        f"-- the property, the question, each folder name and each sign -- in `{language}`, "
+        "using the words these documents use."
+    )
+
+
 def _listing(
     path: str, purpose: str, documents: list[tuple[str, str]], children: list[tuple[str, str]]
 ) -> str:
     return _LISTING.format(
-        path=path or "(루트)",
+        path=path or "(root)",
         purpose=f"NOTE: {purpose}\n" if purpose else "",
         count=len(documents),
         documents=_render_documents(documents),
@@ -868,7 +1026,7 @@ def _review_listing(
     children: list[tuple[str, str]],
 ) -> str:
     return _REVIEW_USER.format(
-        path=path or "(루트)",
+        path=path or "(root)",
         purpose=f"NOTE: {purpose}\n" if purpose else "",
         basis=basis,
         basis_question=basis_question or "(not recorded)",
