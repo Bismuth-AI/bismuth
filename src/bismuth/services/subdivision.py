@@ -550,11 +550,14 @@ class LibraryMaintenanceService:
         if not members.document_ids:
             return None
 
+        # A sign copied out of the pile it is labelling names those documents, not the
+        # class, so it degrades to the derived form like any other unusable sign.
+        offered_sign = "" if _quotes_evidence(emerging.sign, contents.lines) else emerging.sign
         proposed_groups = [
             prompts.Group(
                 name=emerging.name,
                 note=routing_sign(
-                    emerging.sign,
+                    offered_sign,
                     axis=axis or emerging.axis.strip(),
                     class_name=emerging.name,
                 ),
@@ -1105,9 +1108,16 @@ class LibraryMaintenanceService:
             sketches = reduced
 
         sketch = sketches[0]
+        # The sign too, not only the axis and the name: a round that passed this check on
+        # both still wrote four law titles into a sign, because that was the field nobody
+        # was looking at.
         quoted = [
             wording
-            for wording in [sketch.basis, *(sign.name for sign in sketch.signs)]
+            for wording in [
+                sketch.basis,
+                *(sign.name for sign in sketch.signs),
+                *(sign.sign for sign in sketch.signs),
+            ]
             if _quotes_evidence(wording, documents)
         ]
         if quoted:
