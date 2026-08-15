@@ -53,6 +53,14 @@ A sign names a CLASS -- something you expect more of -- never one document's sub
 If the only honest name for a group is the title of the document inside it, that group \
 should not exist.
 
+**One sign says one thing.** A name that strings several unrelated things together is \
+not a sign, it is an inventory of what happened to land there, and a reader cannot tell \
+which part of it is meant -- so they open it, which is the cost the sign exists to avoid. \
+It also cannot grow: the next document either extends the list or does not belong, and \
+either way the name has to be rewritten. If you can only name the group by listing its \
+contents, you have not found the class. Either name the one thing they are all a case \
+of, or take the thickest of them alone and leave the rest loose.
+
 **A class that covers every document here is not a class, it is this folder.** Putting \
 all of them behind one new sign moves the whole pile down a level and leaves the reader \
 facing the same list one click further in; the folder below is then the same size with \
@@ -121,7 +129,10 @@ Whatever does not belong to the class you name stays exactly where it is. Most o
 documents staying put is the normal outcome, not a failure.
 
 If two classes have grown, name the thicker; you will be asked again and the other can \
-come out then.
+come out then. And if a broader class contains both, name that one instead -- the first \
+shelf in a folder sets how wide the ones after it will be, and a narrow first shelf \
+leaves the rest of the collection to be taken out in slivers. A shelf that turns out too \
+broad gets split again later; a folder full of slivers is never repaired.
 
 `emerged` is false when nothing has gathered yet -- common in a young archive, and the \
 right answer more often than not. A collection whose documents are each about something \
@@ -151,6 +162,13 @@ A big loose pile behind a handful of thin signs means this folder is still mostl
 unsorted list. The reader gains nothing from three names when most of what they want is \
 not behind any of them. **Here another sign is exactly what is needed, and declining \
 leaves the pile where it is.**
+
+**But a big pile calls for a broad sign, not one more narrow one.** Taking three \
+documents out of fifty leaves a forty-seven-document pile and adds a name to read on the \
+way past it -- the reader is worse off, not better. Look at the whole loose pile and ask \
+what the largest part of it is a case of; name that, even though it is broader than the \
+neat little group you can see. A broad shelf can be split again later, and will be. A \
+thin one is permanent clutter.
 
 Many signs with few documents behind each means the opposite: one long list has been \
 replaced by a longer one, and another name makes the reader's first choice harder for \
