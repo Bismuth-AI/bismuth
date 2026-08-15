@@ -26,8 +26,12 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-_EMPTY_SUMMARY = "(요약 없음)"
-_UNKNOWN_TYPE = "문서"
+# Both fields are NonEmptyStr, so a fallback has to say something -- and whatever it says
+# goes on the card and into every later prompt as evidence. A Korean word here taught a
+# German archive that its unparsed documents were 문서, against a card prompt that asks
+# for the document's own language. A punctuation mark belongs to no language.
+_EMPTY_SUMMARY = "—"
+_UNKNOWN_TYPE = "—"
 
 LABEL_MAX_CHARS = 40
 """How long a topic or keyword may be. These are filing labels: they go on the card, into

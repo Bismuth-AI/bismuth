@@ -71,10 +71,26 @@ class _Contents:
     children: list[tuple[str, str]] = field(default_factory=list)
     scripts: list[str] = field(default_factory=list)
     """Dominant writing system of each document title, when one is detectable."""
+    languages: list[str] = field(default_factory=list)
+    """The language each card reported, so a prompt can name it back."""
 
     @property
     def lines(self) -> list[tuple[str, str]]:
         return [(document_id, line) for document_id, line, _ in self.documents]
+
+    @property
+    def language(self) -> str:
+        """The language to answer in, when the collection agrees on one.
+
+        Read off the cards rather than assumed. An English instruction produces English
+        folder names over a Korean archive unless the prompt says otherwise -- observed
+        as twelve rejected proposals in one round, all of them named in English. Naming
+        the collection's own language back to the model is evidence, not a builtin.
+        """
+        if not self.languages:
+            return ""
+        code, count = Counter(self.languages).most_common(1)[0]
+        return code if count / len(self.languages) >= 0.75 else ""
 
     def path_of(self, document_id: str) -> PurePosixPath | None:
         return next((p for i, _, p in self.documents if i == document_id), None)
@@ -321,6 +337,7 @@ class LibraryMaintenanceService:
                         current_groups=current_groups,
                         observed_failures=observed_failures,
                         children=direct_signs,
+                        language=review_contents.language,
                     )
                 if replacement_plan is not None:
                     return replacement_plan
@@ -476,6 +493,7 @@ class LibraryMaintenanceService:
                 children=contents.children,
                 axis=axis,
                 spent=spent,
+                language=contents.language,
             )
             log_trace(
                 "subdivide.emerging",
@@ -731,6 +749,7 @@ class LibraryMaintenanceService:
         children: list[tuple[str, str]],
         axis: str,
         spent: list[str],
+        language: str = "",
     ) -> prompts.Emerging:
         def build(packet: list[tuple[str, str]]):  # type: ignore[no-untyped-def]
             return prompts.build_emerging(
@@ -740,6 +759,7 @@ class LibraryMaintenanceService:
                 children=children,
                 axis=axis,
                 spent=spent,
+                language=language,
             )
 
         if _prompt_chars(build([])) > MAX_MAINTENANCE_PROMPT_CHARS:
@@ -849,17 +869,40 @@ class LibraryMaintenanceService:
         else:
             document_packets = _document_packets(documents, build)
 
+        async def ask(
+            packet: list[tuple[str, str]], signs: list[tuple[str, str]]
+        ) -> prompts.Review:
+            """One packet, one closed question per check."""
+            verdicts: dict[str, bool] = {}
+            for name, question in prompts.REVIEW_CHECKS:
+                answer = await self._llm.choose(
+                    prompts.build_review_check(
+                        check=question,
+                        path=str(folder),
+                        purpose=purpose,
+                        basis=charter.split_basis,
+                        basis_question=charter.split_question,
+                        before=charter.split_at_documents,
+                        count=total,
+                        documents=packet,
+                        children=signs,
+                    ),
+                    choices=("HOLDS", "FAILS"),
+                    max_tokens=8,
+                )
+                # An unusable reply is not evidence that the boundary failed.
+                verdicts[name] = answer.strip().upper() != "FAILS"
+            return prompts.Review(**verdicts)
+
         for position, signs in enumerate(sign_packets, start=1):
             with log_context(window_id=f"review:signs-{position:03d}"):
-                checks.append(await self._llm.structured(build([], signs), schema=prompts.Review))
+                checks.append(await ask([], signs))
         for index, packet in enumerate(document_packets, start=1):
             signs = _relevant_children(packet, children) if sign_packets else children
             # A boolean merged fail-closed from many packets is unreadable unless each
             # packet's own answer can be found.
             with log_context(window_id=f"review:docs-{index:03d}"):
-                checks.append(
-                    await self._llm.structured(build(packet, signs), schema=prompts.Review)
-                )
+                checks.append(await ask(packet, signs))
             log_trace(
                 "subdivide.review_packet",
                 folder=str(folder),
@@ -894,6 +937,7 @@ class LibraryMaintenanceService:
         current_groups: list[prompts.Group],
         observed_failures: list[str],
         children: list[tuple[str, str]],
+        language: str = "",
     ) -> prompts.Division | None:
         """Return a fully validated replacement, without controlling later filing."""
         replacement = await self._propose_replacement(
@@ -903,6 +947,7 @@ class LibraryMaintenanceService:
             total=total,
             documents=documents,
             children=children,
+            language=language,
         )
         if replacement is None:
             return None
@@ -977,6 +1022,7 @@ class LibraryMaintenanceService:
         total: int,
         documents: list[tuple[str, str]],
         children: list[tuple[str, str]],
+        language: str = "",
     ) -> prompts.Replacement | None:
         """Build a complete replacement from bounded, independently validated stages.
 
@@ -997,6 +1043,7 @@ class LibraryMaintenanceService:
                 current_question=charter.split_question,
                 documents=packet,
                 children=signs,
+                language=language,
             )
 
         sign_packets: list[list[tuple[str, str]]] = []
@@ -1058,6 +1105,22 @@ class LibraryMaintenanceService:
             sketches = reduced
 
         sketch = sketches[0]
+        quoted = [
+            wording
+            for wording in [sketch.basis, *(sign.name for sign in sketch.signs)]
+            if _quotes_evidence(wording, documents)
+        ]
+        if quoted:
+            # Refused before the per-document assignment calls, which are the expensive
+            # part and would only distribute documents under a copied label.
+            log_trace(
+                "subdivide.rejected",
+                folder=str(folder),
+                reason="replacement wording is copied from the documents it is sorting",
+                proposed=quoted,
+                replacement=True,
+            )
+            return None
 
         assignments_by_sign: list[list[str]] = [[] for _ in sketch.signs]
         handles = [f"G{index:03d}" for index in range(1, len(sketch.signs) + 1)]
@@ -1926,6 +1989,8 @@ class LibraryMaintenanceService:
             contents.documents.append((document_id, description, path))
             if script := _writing_system(card.title):
                 contents.scripts.append(script)
+            if code := card.language.strip():
+                contents.languages.append(code.casefold())
 
         for child in self._vault.iter_folders():
             if not child.parts or child == folder:
@@ -2173,6 +2238,29 @@ def _value_packets(
     return packets
 
 
+def _quotes_evidence(wording: str, documents: list[tuple[str, str]]) -> bool:
+    """Whether a proposed axis or name is copied out of the documents in front of it.
+
+    An axis is the name of a property; a document title is a value of nothing. Observed
+    live: a replacement returned the axis "소상공인 보호 및 지원에 관한 법률, 공인회계사법,
+    보험업법 시행령, 서민의 금융생활 지원에 관한 법률" -- four titles from the packet,
+    joined by commas, recorded on the folder and shown to every later question about it.
+
+    No vocabulary: the comparison is against the evidence in the same request, so it
+    means the same thing in any language and for any collection. Short titles are
+    skipped because a two-character title carries no evidence of copying.
+    """
+    text = normalise_label(wording)
+    if not text:
+        return False
+    for _, description in documents:
+        title = description.split(" | ")[0].removeprefix("current=").strip()
+        key = normalise_label(title)
+        if len(key) >= 8 and key in text:
+            return True
+    return False
+
+
 def _carried(votes: Iterable[bool]) -> bool:
     """Whether a check survives across the packets a review was split into.
 
@@ -2314,6 +2402,8 @@ def _failed_boundary_checks(audit: prompts.BoundaryAudit) -> list[str]:
             "names_answer_question",
             "mutually_exclusive",
             "useful_for_navigation",
+            "each_name_is_one_answer",
+            "subject_before_attribute",
         )
         if not getattr(audit, name)
     ]

@@ -18,6 +18,26 @@ def normalise_label(value: str) -> str:
     return "".join(character for character in value.casefold() if character.isalnum())
 
 
+SCHEMA_FIELD_NAMES = frozenset(
+    {
+        "axis",
+        "axisquestion",
+        "sign",
+        "name",
+        "emerged",
+        "basis",
+        "basisquestion",
+        "signs",
+        "groups",
+        "note",
+        "documentids",
+    }
+)
+"""Normalised names of the fields Bismuth's own schemas expose. Not a vocabulary about
+documents -- these are our identifiers, and a class named after one is a decoding
+artefact rather than an answer."""
+
+
 def restates(inner: str, outer: str) -> bool:
     """Whether ``inner`` says nothing ``outer`` has not already said, above it.
 
@@ -55,6 +75,8 @@ class PlanProblem(StrEnum):
     SPENT_AXIS = "axis already used above here"
     INVALID_NAME = "invalid class name"
     NAME_TOO_LONG = "class name is longer than a routing sign"
+    NAME_IS_A_PATH = "class name contains a path separator"
+    NAME_IS_A_SCHEMA_FIELD = "class name is a field of the schema, not an answer"
     AXIS_AS_NAME = "class name repeats the axis instead of answering it"
     ANCESTOR_NAME = "class carries an ancestor's name"
     DUPLICATE_NAME = "duplicate class name"
@@ -121,6 +143,15 @@ def validate_plan(
         # never a sign; the cut just hid that a sentence had been proposed.
         if len(name) > MAX_SEGMENT:
             problems.append(PlanProblem.NAME_TOO_LONG)
+        # Sanitisation would quietly flatten these, so the plan would look valid and the
+        # folder would land one level up from where the model said. Observed: "과학기술정보통신부/".
+        if any(separator in name for separator in ("/", "\\")):
+            problems.append(PlanProblem.NAME_IS_A_PATH)
+        # Constrained decoding fills fields in order, and a small model can fill one with
+        # the name of the next. Observed: a class literally named "emerged", which reached
+        # validation and was refused for an unrelated reason.
+        if key in SCHEMA_FIELD_NAMES:
+            problems.append(PlanProblem.NAME_IS_A_SCHEMA_FIELD)
         if key and key == wanted_axis:
             problems.append(PlanProblem.AXIS_AS_NAME)
         if key in ancestor_keys or any(restates(name, item) for item in ancestor_names):
