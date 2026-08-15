@@ -1004,26 +1004,19 @@ class TestABoundaryThatIsNotCarrying:
         assert not _review_prompts(llm)
 
 
-class TestHowTheDocumentsFell:
-    """SPEC 3.3.1: a reader gains what a sign lets them rule out."""
-
-    async def test_the_share_check_is_asked_once_for_the_whole_folder(
+class TestAFolderBornFull:
+    async def test_a_new_shelf_is_asked_about_itself_once(
         self,
         engine: Bismuth,
         script: ScriptedModel,
         llm,  # type: ignore[no-untyped-def]
     ) -> None:
-        """Packets hold slices; no slice can see where the collection went."""
+        """Its documents were moved in, not filed in, so nothing else would ask it."""
         ids = await _fill(engine, script, 6)
-        _emerges(script, "문학", "문학", ids[:2])
-        await engine.subdivision.consider(PurePosixPath())
-        script.set(placement_prompts.PlacementDecision, place_at(""))
+        _emerges(script, "문학", "문학", ids[:4])
         llm.calls.clear()
 
-        await add(engine, "more.txt", "추가 문서")
+        await engine.subdivision.consider(PurePosixPath())
 
-        shares = [
-            p for p in llm.prompts_for(None) if "SIGNS AND WHAT ENDED UP BEHIND THEM" in p.user
-        ]
-        assert len(shares) == 1
-        assert "문학 — 2 documents" in shares[0].user
+        asked = [p for p in llm.prompts_for(subdivision_prompts.Emerging) if "문학" in p.user]
+        assert asked

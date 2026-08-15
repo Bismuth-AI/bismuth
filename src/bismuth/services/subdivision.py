@@ -226,12 +226,21 @@ class LibraryMaintenanceService:
         if not divided.happened:
             return []
 
-        # What was just created is not considered here. It was formed a moment ago from a
-        # judgement over these same documents, and asking it again adds no evidence -- it
-        # only re-judges. That recursion was worth having when a schedule could leave a
-        # new folder unasked for a long time; every arrival asks now, so a child is
-        # looked at as soon as anything lands in it. Measured with the recursion still
-        # in: a single ingest built 철학/현상학/체화된 인지, one document per level.
+        # A folder born holding documents is asked about itself, once, before this
+        # returns. "Every arrival asks" is not true for a folder that arrives full: the
+        # documents that make it up were moved in, not filed in, so nothing asks it
+        # again until something new happens to land there. Measured on 300 documents
+        # every round: a shelf drawn holding 45 was still a leaf of 63 at the end,
+        # having been asked exactly once in the whole run.
+        #
+        # The chain this used to cause -- a single ingest building 철학/현상학/체화된 인지,
+        # one document per level -- is now refused before it reaches the filesystem: a
+        # class that leaves fewer than two documents behind is NO_DIVISION, so a folder
+        # cannot pass its contents down a level one at a time.
+        for child in divided.created:
+            results = await self.consider(child, filename=filename, on_progress=on_progress)
+            if results:
+                return [divided, *results]
         return [divided]
 
     async def _judge(
@@ -319,7 +328,6 @@ class LibraryMaintenanceService:
                     one_axis=review.one_axis,
                     coherent_membership=review.coherent_membership,
                     useful_navigation=review.useful_navigation,
-                    useful_shares=review.useful_shares,
                 )
             # Schema upgrades force one complete semantic audit of every learned
             # boundary. Previously a failed legacy audit simply returned, leaving the
@@ -333,7 +341,6 @@ class LibraryMaintenanceService:
                     ("current signs do not follow one axis", review.one_axis),
                     ("current membership is incoherent", review.coherent_membership),
                     ("current signs do not improve navigation", review.useful_navigation),
-                    ("one current sign holds most of the folder", review.useful_shares),
                 )
                 if not passed
             ]
@@ -957,27 +964,10 @@ class LibraryMaintenanceService:
                 packets=len(document_packets),
                 documents=len(packet),
             )
-        # Once, and outside the packets: how the documents fell across the signs is a
-        # fact about the whole folder, and no packet holds enough of it to answer.
-        with log_context(window_id="review:shares"):
-            shares = [
-                (name, self._count_documents(folder / name, recursive=True)) for name, _ in children
-            ]
-            answer = await self._llm.choose(
-                prompts.build_share_check(
-                    path=str(folder),
-                    shares=shares,
-                    loose=self._count_documents(folder, recursive=False),
-                ),
-                choices=("FAILS", "HOLDS"),
-                max_tokens=8,
-            )
-            useful_shares = answer.strip().upper() != "FAILS"
         merged = prompts.Review(
             one_axis=_carried(check.one_axis for check in checks),
             coherent_membership=_carried(check.coherent_membership for check in checks),
             useful_navigation=_carried(check.useful_navigation for check in checks),
-            useful_shares=useful_shares,
         )
         log_trace(
             "subdivide.review_merge",
@@ -986,7 +976,6 @@ class LibraryMaintenanceService:
             one_axis_failed=sum(1 for check in checks if not check.one_axis),
             membership_failed=sum(1 for check in checks if not check.coherent_membership),
             navigation_failed=sum(1 for check in checks if not check.useful_navigation),
-            useful_shares=useful_shares,
             holds=merged.holds,
         )
         return merged
@@ -2161,11 +2150,20 @@ class LibraryMaintenanceService:
         ]
         if not counts:
             return False
-        # Only this shape. The mirror image -- one sign holding more than all the rest
-        # put together -- is the review's ``useful_shares`` check, not a door into it:
-        # as a door it bypassed the doubling schedule and fired on every ingest, 274
-        # consecutive root reviews in one 300-document round, every one of them upheld.
-        return len(contents.documents) > max(counts)
+        loose = len(contents.documents)
+        largest = max(counts)
+        if loose > largest:
+            return True
+        # The same failure from the other side: one name holds more than everything else
+        # here put together, so the reader who rules it out has ruled out less than half
+        # and the reader who does not has gained nothing. Measured on 300 documents as a
+        # root split two ways, 213 behind one sign, with the whole tree then growing
+        # downward from it -- six levels deep because the first choice never narrowed.
+        #
+        # Only once a second class exists. Straight after the first draw a folder is
+        # lopsided by construction -- one class at a time is the design (SPEC.md 3.4) --
+        # and calling that a failure would redraw every boundary the moment it was made.
+        return len(counts) >= 2 and largest > sum(counts) - largest + loose
 
     def _count_documents(self, folder: PurePosixPath, *, recursive: bool) -> int:
         return sum(

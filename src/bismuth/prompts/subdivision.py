@@ -417,22 +417,9 @@ class Review(BaseModel):
         )
     )
 
-    useful_shares: bool = Field(
-        default=True,
-        description=(
-            "The signs divide this folder into shares a reader can use, rather than one "
-            "sign holding most of it. Asked once for the whole folder, not per packet."
-        ),
-    )
-
     @property
     def holds(self) -> bool:
-        return (
-            self.one_axis
-            and self.coherent_membership
-            and self.useful_navigation
-            and self.useful_shares
-        )
+        return self.one_axis and self.coherent_membership and self.useful_navigation
 
 
 class Replacement(BaseModel):
@@ -1061,49 +1048,6 @@ def build_axis_check(
             + ("\n".join(f"  {item}" for item in spent) if spent else "  (none)")
             + f"\n\nPROPERTY: {axis}\nQUESTION IT ASKS: {axis_question}\n"
             f"FOLDER NAMES IT WOULD PRODUCE: {', '.join(names)}"
-        ),
-    )
-
-
-_SHARE_CHECK_SYSTEM = """\
-A library folder was divided earlier, and you are checking ONE thing about the division: \
-whether it split the folder into shares a reader can use. Answer with exactly FAILS or \
-HOLDS and nothing else.
-
-A reader gains exactly what a sign lets them rule out. You are shown each sign and how \
-many documents ended up behind it.
-
-FAILS if one sign holds most of what is here. Ruling it out leaves the reader almost the \
-whole collection, and not ruling it out leaves them facing the same undivided pile one \
-level further in -- where the same thing will happen again. The name may be a perfectly \
-good name; that is not what this check is about.
-
-FAILS if more documents stayed loose in the folder than went behind any sign. Then the \
-division did not happen, whatever the signs say.
-
-HOLDS if no single sign swallows the folder and the reader who picks one has genuinely \
-narrowed the search. Shares do not have to be equal. A small shelf beside several \
-comparable ones is fine, and a folder that is still young will look thin everywhere -- \
-that is not this failure.\
-"""
-
-
-def build_share_check(*, path: str, shares: list[tuple[str, int]], loose: int) -> Prompt:
-    """One closed question about how the documents actually fell across the signs.
-
-    Asked once for the whole folder rather than per packet: a packet holds a slice of
-    the documents, and no slice can see how the collection divided. Measured on 300
-    documents, a root split 168/120/5 was upheld by 274 consecutive reviews, because
-    every check it had judged the signs as written and none of them looked at where the
-    documents went.
-    """
-    rendered = "\n".join(f"  {name} — {count} documents" for name, count in shares)
-    return Prompt(
-        system=_SHARE_CHECK_SYSTEM,
-        user=(
-            f"FOLDER: {path or '(root)'}\n"
-            f"SIGNS AND WHAT ENDED UP BEHIND THEM:\n{rendered}\n"
-            f"STILL LOOSE IN THE FOLDER ITSELF: {loose} documents"
         ),
     )
 
