@@ -17,12 +17,12 @@ import logging
 import unicodedata
 import uuid
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import TypeVar
 
-from bismuth.domain.charter import CHARTER_FILENAME, Charter, boundary_purpose, routing_purpose
+from bismuth.domain.charter import CHARTER_FILENAME, Charter, routing_purpose, routing_sign
 from bismuth.domain.document import DocumentCard, sidecar_name
 from bismuth.domain.errors import BismuthError
 from bismuth.domain.journal import Actor, JournalEntry, Operation, OperationKind
@@ -535,7 +535,11 @@ class LibraryMaintenanceService:
         proposed_groups = [
             prompts.Group(
                 name=emerging.name,
-                note=boundary_purpose(axis or emerging.axis.strip(), emerging.name),
+                note=routing_sign(
+                    emerging.sign,
+                    axis=axis or emerging.axis.strip(),
+                    class_name=emerging.name,
+                ),
                 document_ids=members.document_ids,
             )
         ]
@@ -863,11 +867,21 @@ class LibraryMaintenanceService:
                 packets=len(document_packets),
                 documents=len(packet),
             )
-        return prompts.Review(
-            one_axis=all(check.one_axis for check in checks),
-            coherent_membership=all(check.coherent_membership for check in checks),
-            useful_navigation=all(check.useful_navigation for check in checks),
+        merged = prompts.Review(
+            one_axis=_carried(check.one_axis for check in checks),
+            coherent_membership=_carried(check.coherent_membership for check in checks),
+            useful_navigation=_carried(check.useful_navigation for check in checks),
         )
+        log_trace(
+            "subdivide.review_merge",
+            folder=str(folder),
+            packets=len(checks),
+            one_axis_failed=sum(1 for check in checks if not check.one_axis),
+            membership_failed=sum(1 for check in checks if not check.coherent_membership),
+            navigation_failed=sum(1 for check in checks if not check.useful_navigation),
+            holds=merged.holds,
+        )
+        return merged
 
     async def _attempt_boundary_replacement(
         self,
@@ -1077,7 +1091,7 @@ class LibraryMaintenanceService:
             groups=[
                 prompts.Group(
                     name=sign.name,
-                    note=boundary_purpose(sketch.basis, sign.name),
+                    note=routing_sign(sign.sign, axis=sketch.basis, class_name=sign.name),
                     document_ids=assignments_by_sign[index],
                 )
                 for index, sign in enumerate(sketch.signs)
@@ -1228,10 +1242,13 @@ class LibraryMaintenanceService:
                 continue
             charter = self._charter(child)
             direct_children[child.name] = (
-                boundary_purpose(parent.split_basis, child.name)
+                # Show the sign that is actually on disk. Substituting the derived form
+                # here meant review judged a boundary by signs no reader would ever see.
+                routing_sign(charter.purpose, axis=parent.split_basis, class_name=child.name)
                 if (parent := self._charter(folder)) is not None
                 and parent.divided
-                and (charter is None or charter.managed)
+                and charter is not None
+                and charter.managed
                 else (
                     routing_purpose(charter.purpose, fallback=child.name)
                     if charter is not None
@@ -1468,7 +1485,9 @@ class LibraryMaintenanceService:
             child_charter = Charter(
                 path=target,
                 title=name,
-                purpose=boundary_purpose(plan.basis, name),
+                # The sign the plan was audited with, not a fresh derivation of it. A
+                # boundary that passed on one wording must go to disk with that wording.
+                purpose=routing_sign(group.note, axis=plan.basis, class_name=name),
                 holds=(),
                 answers=(),
             )
@@ -1705,7 +1724,7 @@ class LibraryMaintenanceService:
             child_charter = Charter(
                 path=target,
                 title=target.name,
-                purpose=boundary_purpose(plan.basis, target.name),
+                purpose=routing_sign(group.note, axis=plan.basis, class_name=target.name),
                 holds=(),
                 answers=(),
             )
@@ -1853,7 +1872,10 @@ class LibraryMaintenanceService:
                 continue
             if charter is None or not charter.managed:
                 continue
-            purpose = boundary_purpose(axis, child.name)
+            # Fill in a missing or unusable sign; never overwrite a usable one. This
+            # migrated every managed child to the derived form, which is how a whole
+            # archive ended up with signs that repeat their own folder name.
+            purpose = routing_sign(charter.purpose, axis=axis, class_name=child.name)
             if charter.purpose == purpose:
                 continue
             stable = charter.model_copy(update={"title": child.name, "purpose": purpose})
@@ -1926,7 +1948,9 @@ class LibraryMaintenanceService:
                         and (parent := self._charter(child.parent))
                         and parent.divided
                     ):
-                        note = boundary_purpose(parent.split_basis, child.name)
+                        note = routing_sign(
+                            loaded.purpose, axis=parent.split_basis, class_name=child.name
+                        )
                     else:
                         note = routing_purpose(loaded.purpose, fallback=child.name)
             except BismuthError:
@@ -2147,6 +2171,25 @@ def _value_packets(
     if current:
         packets.append(current)
     return packets
+
+
+def _carried(votes: Iterable[bool]) -> bool:
+    """Whether a check survives across the packets a review was split into.
+
+    Not ``all``. Each packet judges the whole boundary from its own slice of the
+    documents, so one packet's doubt is one slice's doubt -- and a failed review is not
+    a no-op, it triggers a complete replacement of the boundary. Requiring unanimity to
+    hold therefore made the most destructive operation in the system the easiest one to
+    reach: in a 300-document run every one of 13 reviews failed, and the replacements
+    turned working sign names into truncated sentences.
+
+    Fail-closed belongs on mutation, not here. The conservative answer to "should this
+    boundary be torn down" is no, so a majority of the evidence has to say yes.
+    """
+    counted = list(votes)
+    if not counted:
+        return True
+    return sum(counted) * 2 > len(counted)
 
 
 def _relevant_children(
