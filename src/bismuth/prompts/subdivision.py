@@ -186,6 +186,13 @@ unsorted list. The reader gains nothing from three names when most of what they 
 not behind any of them. **Here another sign is exactly what is needed, and declining \
 leaves the pile where it is.**
 
+**A sign that takes nearly everything is as useless as one that takes nearly nothing.** \
+The reader gains exactly what they can rule out. If two of every three documents end up \
+behind one name, they have ruled out a third of the collection and must still open the \
+big folder -- and whatever is wrong with this folder is now wrong with that one, one \
+level further in. Aim for shelves a reader would judge comparable in size: not the \
+broadest name that fits, the broadest name that still leaves a real remainder behind.
+
 **But a big pile calls for a broad sign, not one more narrow one.** Taking three \
 documents out of fifty leaves a forty-seven-document pile and adds a name to read on the \
 way past it -- the reader is worse off, not better. Look at the whole loose pile and ask \
