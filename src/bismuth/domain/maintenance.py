@@ -125,15 +125,16 @@ def validate_plan(
         problems.append(PlanProblem.INVALID_AXIS)
     if not axis_question.strip() or "\n" in axis_question or "\r" in axis_question:
         problems.append(PlanProblem.MISSING_AXIS_QUESTION)
-    # Equality, not containment. Containment was added here before the semantic layer had
-    # a check of its own, and it starved the tree the moment an ancestor's property was a
-    # compound phrase: with a root divided on 법령의 규제 대상 및 산업 분야, every narrower
-    # property a child could name shared words with it, and 73 of 120 proposals in one
-    # round died on this line. A child sharing vocabulary with its ancestor is not the
-    # same as a child repeating the distinction, and only meaning can tell them apart --
-    # which is what the axis check does.
+    # Containment, and it earns its keep. Loosening this to equality looked right -- 73 of
+    # 120 proposals in one round died here -- and made the tree worse, not better: without
+    # it the model restates its ancestor's property in slightly different words at every
+    # level, and the result was 금융 및 자본시장 / 금융시장 및 금융회사 감독 / 특정 금융
+    # 부문 및 비은행 금융, each level peeling off three documents and passing thirty down.
+    # A refused proposal costs one shelf. A chain costs the whole branch.
     wanted_axis = normalise_label(axis)
-    if wanted_axis and any(wanted_axis == normalise_label(item) for item in spent_axes):
+    if wanted_axis and any(
+        wanted_axis == normalise_label(item) or restates(axis, item) for item in spent_axes
+    ):
         problems.append(PlanProblem.SPENT_AXIS)
 
     names: set[str] = set()
