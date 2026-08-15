@@ -215,6 +215,14 @@ Reply again with the corrected JSON object only. Fix exactly what the validator 
 objected to and change nothing else.
 """
 
+_LENGTH_INSTRUCTION = """\
+Your previous reply was cut off because it ran past the generation limit.
+
+Answer the same task again, but shorter. Keep every field, and make the free-text ones \
+brief: a few sentences, not a recitation of the source. Do not enumerate items the \
+schema does not ask for. A complete short answer is required; a long one is discarded.
+"""
+
 _CHOICE_RETRY_SYSTEM = """\
 Return exactly one allowed literal and nothing else. Do not use JSON, quotes, prose,
 markdown, or an answer wrapper.
@@ -405,7 +413,14 @@ class LiteLLMAdapter:
                 if attempt == self._max_retries or next_cap <= effective_cap:
                     break
                 output_cap = next_cap
-                messages = self._build_messages(prompt, schema=schema, native=native)
+                # Say what went wrong. Silently doubling the budget is fuel when the
+                # cause is a model enumerating rather than a document that is genuinely
+                # long: one card filled 2048, then 4096, then 8192 tokens and the
+                # document was lost. A reply that stops is worth more than a longer one.
+                messages = [
+                    *self._build_messages(prompt, schema=schema, native=native),
+                    {"role": "user", "content": _LENGTH_INSTRUCTION},
+                ]
                 continue
 
             try:

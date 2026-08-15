@@ -92,6 +92,21 @@ domain rule that is not evidenced by the documents.
 **Then, the first CLASS on it** -- the one value of that axis that has gathered enough \
 documents to be worth a shelf.
 
+**The axis you choose here is permanent.** Every later question about this folder is asked \
+against it, and nothing after this can change it. You are choosing it from the documents \
+in front of you now, which may be a small and unrepresentative part of what this folder \
+will eventually hold.
+
+So look at what these documents do NOT have in common. A property they all share the same \
+value on cannot divide anything -- if the only thing two documents have in common is that \
+they are the same kind of document, "kind of document" is what they look like, not what \
+this collection is organised by. Choosing it now would fix it forever on the evidence of \
+a handful of files.
+
+If you cannot yet see which property will still matter when this folder is ten times \
+larger, say so: `emerged` is false, nothing is created, and you will be asked again with \
+every new document. Waiting costs one more question. Choosing wrong costs the archive.
+
 {_SIGNS}
 
 **You are not dividing this folder and you are not accounting for every document.** \
@@ -833,6 +848,93 @@ def build_replacement_choice(
             f"FOLDER: {path or '(root)'}\nAXIS: {sketch.basis}\n"
             f"QUESTION: {sketch.basis_question}\nSIGNS:\n{signs}\n\n"
             f"DOCUMENT:\n  [{document[0]}] {document[1]}"
+        ),
+    )
+
+
+BOUNDARY_CHECKS: tuple[tuple[str, str], ...] = (
+    (
+        "one_property",
+        "Does the axis name ONE property? FAILS if it names two, or compares candidate "
+        "properties, or is an explanation rather than the name of a property.",
+    ),
+    (
+        "names_answer_question",
+        "Is every folder name a direct answer to the axis question? FAILS if a name answers "
+        "some other question, or is not an answer at all.",
+    ),
+    (
+        "mutually_exclusive",
+        "Could a document naturally belong to more than one of these folders? FAILS if it "
+        "could -- then the names do not tell a reader which one to open.",
+    ),
+    (
+        "useful_for_navigation",
+        "Do these signs narrow the search, or do they restate the documents? FAILS if a "
+        "reader would still have to open several folders to find one document.",
+    ),
+    (
+        "each_name_is_one_answer",
+        "Does any name offer a CHOICE between two answers instead of being one of them? "
+        "FAILS if one does: a folder named for two alternatives holds both and excludes "
+        "nothing.",
+    ),
+    (
+        "subject_before_attribute",
+        "This is about WHICH property was chosen. Some properties are known for nearly "
+        "every document -- what kind of document it is, what form it takes, who issued it, "
+        "when, in what language. A folder tree built on one of those first is well formed "
+        "and still useless to a reader who arrived looking for a topic, because every topic "
+        "is now spread across every folder.\n"
+        "FAILS when this is the first cut in this folder AND the axis is one of those "
+        "always-present properties.\n"
+        "HOLDS when the axis is about what the documents are ABOUT, and also HOLDS when "
+        "this folder is already narrowed by topic and the property is a sensible way to "
+        "split what is left.",
+    ),
+)
+"""One check per call, for the same reason as REVIEW_CHECKS. Asked as six booleans in one
+reply, this audit answered `subject_before_attribute: true` for the axes 문서의 성격,
+주관 부처 and 법령의 성격 -- the three it exists to reject."""
+
+_BOUNDARY_CHECK_SYSTEM = """\
+You are the independent verifier for a proposed library folder boundary, and you are \
+checking ONE thing about it. Answer with exactly HOLDS or FAILS and nothing else.
+
+Judge only from the documents and the proposal you are shown. Do not bring in a \
+preferred way of organising this kind of material. Folder notes are written by the \
+application and are not part of your judgement.
+
+THE ONE CHECK:
+{check}\
+"""
+
+
+def build_boundary_check(
+    *,
+    check: str,
+    path: str,
+    documents: list[tuple[str, str]],
+    axis: str,
+    axis_question: str,
+    groups: list[Group],
+    complete: bool,
+) -> Prompt:
+    """One closed HOLDS/FAILS question about a proposed boundary."""
+    rendered_groups = "\n".join(
+        f"  {group.name}/ — ids: {', '.join(group.document_ids)}" for group in groups
+    )
+    mode = (
+        "This replaces the whole boundary, so every document must be represented."
+        if complete
+        else "This draws out one class; unclaimed documents intentionally remain loose."
+    )
+    return Prompt(
+        system=_BOUNDARY_CHECK_SYSTEM.format(check=check),
+        user=(
+            f"FOLDER: {path or '(root)'}\nMODE: {mode}\nAXIS: {axis}\n"
+            f"QUESTION: {axis_question}\nGROUPS:\n{rendered_groups}\n\n"
+            f"DOCUMENTS:\n{_render_documents(documents)}"
         ),
     )
 
