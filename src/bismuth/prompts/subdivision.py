@@ -27,6 +27,8 @@ first and request-local document handles are assigned in separate bounded packet
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
+
 from pydantic import BaseModel, Field, field_validator
 
 from bismuth.domain.maintenance import is_axis_label
@@ -68,6 +70,21 @@ the same problem, for ever. If everything here really does belong under one name
 have not found the distinction yet -- look for the property that separates these \
 documents from each other, not the one they share. Some of them must stay behind for a \
 division to have happened at all.
+
+**The folder you are inside already has a name, and your shelf goes underneath it.** \
+Every document here is already an answer to that name, so writing it again -- or writing \
+it in other words -- makes a folder that rules nothing out and a reader who has to open \
+it anyway. What you name is one KIND of what this folder already holds: narrower than \
+the folder's own name, and a name only SOME of these documents could take. If nothing \
+narrower than the folder itself fits, nothing has emerged; say so.
+
+**The name is one folder, not a path.** Write the single level you are adding. A name \
+with a separator in it is refused outright and the whole answer is thrown away.
+
+**Name the shelf, not the sorting.** A name that describes the act of arranging rather \
+than what stands on the shelf -- the leftovers, the remainder, the ones sorted by \
+subject -- leaves the reader with the same list and one more click to reach it. If the \
+only thing a group has in common is that it was left over, it is not a group.
 
 **An attribute nearly every document has is not the first distinction to draw.** Format, \
 type, language, date, and issuing body are known for almost everything, so they fill a \
@@ -233,7 +250,7 @@ question was recorded, `one_axis` is false because the sibling contract is incom
 
 _LISTING = """\
 FOLDER: {path}
-{purpose}
+{already}{purpose}
 DOCUMENTS SITTING DIRECTLY HERE ({count}):
 {documents}
 {children}\
@@ -1232,8 +1249,17 @@ def answer_in(language: str) -> str:
 def _listing(
     path: str, purpose: str, documents: list[tuple[str, str]], children: list[tuple[str, str]]
 ) -> str:
+    # The path is at the top, but a small model reads it as an address, not a constraint.
+    # Naming the enclosing folder as a settled fact is what stops the reply that proposes
+    # the folder's own name back: 51 of 180 refusals in one 300-document round.
+    name = PurePosixPath(path).name if path else ""
     return _LISTING.format(
         path=path or "(root)",
+        already=(
+            f"EVERY DOCUMENT HERE IS ALREADY {name}; NAME A KIND OF IT, NOT IT AGAIN.\n"
+            if name
+            else ""
+        ),
         purpose=f"NOTE: {purpose}\n" if purpose else "",
         count=len(documents),
         documents=_render_documents(documents),
