@@ -11,7 +11,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bismuth.domain.errors import CharterError
-from bismuth.domain.maintenance import is_axis_label
+from bismuth.domain.maintenance import is_axis_label, normalise_label
 
 #: Filename of a folder's note; sorts to the top of a listing.
 CHARTER_FILENAME = "_folder.md"
@@ -81,6 +81,9 @@ def routing_sign(proposed: str, *, axis: str, class_name: str) -> str:
         normalised
         and len(normalised) <= MAX_PURPOSE_CHARS
         and not _REQUEST_HANDLE.search(normalised)
+        # A sign that only repeats the folder name excludes nothing, which is the whole
+        # job. Observed live: a model asked for name then sign returned "지침" for both.
+        and normalise_label(normalised) != normalise_label(class_name)
     ):
         return normalised
     return boundary_purpose(axis, class_name)
