@@ -215,12 +215,18 @@ class ScriptedModel:
         chooser.
         """
         if "HOLDS or FAILS" in prompt.system:
-            # Review became one closed question per check. Tests still script a Review
-            # object; answer each check from the field it is about.
-            scripted = self.responses[subdivision_prompts.Review]
-            for name, question in subdivision_prompts.REVIEW_CHECKS:
-                if question in prompt.system:
-                    return "HOLDS" if getattr(scripted, name) else "FAILS"
+            # Review and the boundary audit became one closed question per check. Tests
+            # still script the objects; answer each check from the field it is about.
+            for schema, table in (
+                (subdivision_prompts.Review, subdivision_prompts.REVIEW_CHECKS),
+                (subdivision_prompts.BoundaryAudit, subdivision_prompts.BOUNDARY_CHECKS),
+            ):
+                for name, question in table:
+                    if question in prompt.system:
+                        scripted = self.responses[schema]
+                        if callable(scripted):
+                            scripted = scripted(prompt, schema)
+                        return "HOLDS" if getattr(scripted, name) else "FAILS"
             return "HOLDS"
         document_id = _shown_document(prompt)
         if "NEW SIGN:" in prompt.user:

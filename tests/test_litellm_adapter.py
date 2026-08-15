@@ -443,7 +443,10 @@ class TestRepair:
 
         assert result.year == 2023
         assert [call["max_tokens"] for call in fake.calls] == [2048, 4096]
-        assert len(fake.calls[1]["messages"]) == 2
+        # The retry says what went wrong. Doubling the budget in silence is fuel when the
+        # cause is a model enumerating: one card filled 2048, 4096 and 8192 in turn.
+        assert len(fake.calls[1]["messages"]) == 3
+        assert "ran past the generation limit" in fake.calls[1]["messages"][-1]["content"]
 
     async def test_a_configured_lower_limit_is_not_retried_unchanged(self, stub: Any) -> None:
         fake = stub(['{"name": "Apollo"'])
