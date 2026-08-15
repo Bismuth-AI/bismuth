@@ -53,6 +53,14 @@ A sign names a CLASS -- something you expect more of -- never one document's sub
 If the only honest name for a group is the title of the document inside it, that group \
 should not exist.
 
+**A class that covers every document here is not a class, it is this folder.** Putting \
+all of them behind one new sign moves the whole pile down a level and leaves the reader \
+facing the same list one click further in; the folder below is then the same size with \
+the same problem, for ever. If everything here really does belong under one name, you \
+have not found the distinction yet -- look for the property that separates these \
+documents from each other, not the one they share. Some of them must stay behind for a \
+division to have happened at all.
+
 **An attribute nearly every document has is not the first distinction to draw.** Format, \
 type, language, date, and issuing body are known for almost everything, so they fill a \
 tree neatly and leave the reader no better off: someone arrives wanting a subject, not a \

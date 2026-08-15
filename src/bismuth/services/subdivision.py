@@ -56,6 +56,9 @@ class Divided:
     created: tuple[PurePosixPath, ...] = ()
     moved: int = 0
     basis: str = ""
+    routed: bool = False
+    """True when documents were moved into folders that already existed, rather than
+    into a class created here. Those folders just gained evidence they did not have."""
 
     @property
     def happened(self) -> bool:
@@ -136,6 +139,21 @@ class LibraryMaintenanceService:
         each is gated by the doubling rule and usually costs nothing.
         """
         results = await self.consider(folder, filename=filename, on_progress=on_progress)
+
+        # A folder that just received documents is a folder where a class may now have
+        # gathered, and routing is how most documents reach a deep folder: placement puts
+        # them in the parent and an existing sign takes them. Nothing asked those folders
+        # anything. One grew to 92 of 120 documents while being asked twice.
+        #
+        # Only folders that already existed. Recursing into a class created a moment ago
+        # re-judges the same evidence, and once built 철학/현상학/체화된 인지 in a single
+        # ingest, one document per level.
+        for routed in [result for result in results if result.routed and result.created]:
+            for target in routed.created:
+                results.extend(
+                    await self.consider(target, filename=filename, on_progress=on_progress)
+                )
+
         parent = folder.parent
         while folder.parts:
             # Nothing arrived directly in an ancestor, so its loose pile did not change.
@@ -1485,6 +1503,7 @@ class LibraryMaintenanceService:
             created=unique_affected,
             moved=moved,
             basis=plan.basis,
+            routed=True,
         )
 
     def _apply(

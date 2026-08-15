@@ -143,9 +143,12 @@ def validate_plan(
         # never a sign; the cut just hid that a sentence had been proposed.
         if len(name) > MAX_SEGMENT:
             problems.append(PlanProblem.NAME_TOO_LONG)
-        # Sanitisation would quietly flatten these, so the plan would look valid and the
-        # folder would land one level up from where the model said. Observed: "과학기술정보통신부/".
-        if any(separator in name for separator in ("/", "\\")):
+        # A separator inside the name means a path was proposed, and sanitisation would
+        # quietly flatten it so the folder landed a level up from where the model said.
+        # A trailing one is punctuation -- "과학기술정보통신부/" names that folder and
+        # nothing else -- and refusing it cost nine subdivisions in one 120-document
+        # round. Strip the tail, refuse the rest.
+        if any(separator in name.rstrip("/\\") for separator in ("/", "\\")):
             problems.append(PlanProblem.NAME_IS_A_PATH)
         # Constrained decoding fills fields in order, and a small model can fill one with
         # the name of the next. Observed: a class literally named "emerged", which reached

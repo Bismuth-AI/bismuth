@@ -395,7 +395,7 @@ class TestReview:
         llm,
         monkeypatch,  # type: ignore[no-untyped-def]
     ) -> None:
-        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 5_000)
+        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 8_000)
         documents = [
             (f"D{index:04d}", f"current=x/{index}.txt | " + "가" * 1_300) for index in range(1, 9)
         ]
@@ -420,7 +420,7 @@ class TestReview:
         calls = _review_prompts(llm)
         assert review.holds
         assert len(calls) > 1
-        assert all(len(prompt.system) + len(prompt.user) <= 5_000 for prompt in calls)
+        assert all(len(prompt.system) + len(prompt.user) <= 8_000 for prompt in calls)
         # Every document is presented; each packet is now asked once per check, so a
         # handle appears once per check rather than once in total.
         seen = {handle for prompt in calls for handle in re.findall(r"\[(D\d{4})\]", prompt.user)}
@@ -432,7 +432,7 @@ class TestReview:
         llm,
         monkeypatch,  # type: ignore[no-untyped-def]
     ) -> None:
-        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 5_000)
+        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 8_000)
         children = [(f"분류-{index:03d}", "범위 " + "다" * 180) for index in range(40)]
         charter = Charter(
             path=PurePosixPath(),
@@ -455,7 +455,7 @@ class TestReview:
         calls = _review_prompts(llm)
         assert review.holds
         assert len(calls) > 1
-        assert all(len(prompt.system) + len(prompt.user) <= 5_000 for prompt in calls)
+        assert all(len(prompt.system) + len(prompt.user) <= 8_000 for prompt in calls)
         combined = "\n".join(prompt.user for prompt in calls)
         assert all(name in combined for name, _ in children)
 
@@ -466,7 +466,7 @@ class TestReview:
         llm,
         monkeypatch,  # type: ignore[no-untyped-def]
     ) -> None:
-        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 5_000)
+        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 8_000)
         documents = [
             (f"D{index:04d}", f"current=x/{index}.txt | " + "나" * 1_300) for index in range(1, 9)
         ]
@@ -498,7 +498,7 @@ class TestReview:
         assert sorted(assigned) == sorted(document_id for document_id, _ in documents)
         assignment_calls = [prompt for prompt in llm.prompts_for(None) if "\n  [G" in prompt.user]
         assert len(assignment_calls) == len(documents)
-        assert all(len(prompt.system) + len(prompt.user) <= 5_000 for prompt in assignment_calls)
+        assert all(len(prompt.system) + len(prompt.user) <= 8_000 for prompt in assignment_calls)
 
     def test_a_division_is_not_revisited_until_the_evidence_doubles(self) -> None:
         charter = Charter(
