@@ -306,7 +306,7 @@ class TestDrawingOutAClass:
     async def test_the_sidecar_travels_with_its_document(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        ids = await _fill(engine, script, 3)
+        ids = await _fill(engine, script, 4)
         _emerges(script, "문학", "문학", ids[:2])
 
         await engine.subdivision.consider(PurePosixPath())
@@ -336,7 +336,7 @@ class TestDrawingOutAClass:
     async def test_the_new_folder_gets_a_note_that_distinguishes_it(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        ids = await _fill(engine, script, 3)
+        ids = await _fill(engine, script, 4)
         _emerges(script, "문학", "소설과 시. 과학 자료가 아닌 것.", ids[:2])
 
         await engine.subdivision.consider(PurePosixPath())
@@ -348,7 +348,7 @@ class TestDrawingOutAClass:
     async def test_drawing_a_class_out_is_one_undoable_batch(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        ids = await _fill(engine, script, 3)
+        ids = await _fill(engine, script, 4)
         _emerges(script, "문학", "문학", ids[:2])
         await engine.subdivision.consider(PurePosixPath())
 
@@ -542,9 +542,9 @@ class TestReview:
         llm,  # type: ignore[no-untyped-def]
     ) -> None:
         """Not "how would you divide this" -- that has an answer every time."""
-        ids = await _fill(engine, script, 3)
+        ids = await _fill(engine, script, 4)
         _emerges(script, "문학", "문학", ids[:2])
-        await engine.subdivision.consider(PurePosixPath())  # divided at 3
+        await engine.subdivision.consider(PurePosixPath())  # divided at 4
         llm.calls.clear()
 
         script.set(placement_prompts.PlacementDecision, place_at(""))
@@ -588,7 +588,7 @@ class TestReview:
         """The two questions are different jobs. "The old split still holds" must not
         answer "has anything new grown here", or the folder freezes at the size it was
         first divided at -- measured: nineteen of twenty-nine documents stranded."""
-        ids = await _fill(engine, script, 3)
+        ids = await _fill(engine, script, 4)
         _emerges(script, "문학", "문학", ids[:2])
         await engine.subdivision.consider(PurePosixPath())
 
@@ -624,7 +624,7 @@ class TestReview:
     async def test_a_holding_review_moves_nothing(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        ids = await _fill(engine, script, 3)
+        ids = await _fill(engine, script, 4)
         _emerges(script, "문학", "문학", ids[:2])
         await engine.subdivision.consider(PurePosixPath())
         before = sorted(p.name for p in engine.vault.root.iterdir())
@@ -912,8 +912,8 @@ class TestAnAxisIsSpentOnce:
     as though an enforcement rule could contain an enforcement decree."""
 
     async def _divide_root(self, engine: Bismuth, script: ScriptedModel) -> list[str]:
-        ids = await _fill(engine, script, 4)
-        _emerges(script, "법률", "법률", ids[:3], axis="법령의 종류")
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "법률", "법률", ids[:4], axis="법령의 종류")
         await engine.subdivision.consider(PurePosixPath())
         return ids
 

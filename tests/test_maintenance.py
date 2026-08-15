@@ -58,10 +58,21 @@ def test_a_valid_partial_class_is_safe_to_apply() -> None:
         axis="주제 분야",
         axis_question="어느 분야에 속하는가?",
         groups=(ProposedClass("문학", ("a", "b")),),
-        available_document_ids=frozenset({"a", "b", "c"}),
+        available_document_ids=frozenset({"a", "b", "c", "d"}),
     )
 
     assert result.accepted
+
+
+def test_a_class_that_leaves_one_document_behind_is_a_rename() -> None:
+    result = validate_plan(
+        axis="주제 분야",
+        axis_question="어느 분야에 속하는가?",
+        groups=(ProposedClass("문학", ("a", "b")),),
+        available_document_ids=frozenset({"a", "b", "c"}),
+    )
+
+    assert PlanProblem.NO_DIVISION in result.problems
 
 
 def test_an_axis_label_cannot_be_used_as_its_own_class_name() -> None:
