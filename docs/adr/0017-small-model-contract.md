@@ -73,10 +73,44 @@ vocabulary, so it means the same thing for any collection.
 - Prompts carry more text. That is the cost of the contract being where the model reads it.
 - The operator loses sampling control over classification calls and keeps it for chat.
 
+## What splitting does not fix
+
+Review split cleanly into closed per-check calls. The boundary audit did not, measured
+three times: as questions, three checks failed nearly every proposal and thirty documents
+stayed flat; as statements ending on the failure condition, five of six failed and the
+archive stayed flat again; ending on the holding condition, one folder formed out of
+thirty documents. It was reverted to a single call.
+
+The difference is what the checks are about. Review judges a boundary that exists, and
+every check has something in front of it. The audit usually judges ONE proposed class,
+and most of its checks ask about siblings that are not there — asked in isolation, "do
+these names overlap" has no honest answer for a single name, and the model resolves the
+ambiguity by refusing. A checklist written for a complete boundary cannot be taken apart
+and asked item by item about a single shelf.
+
+The recency effect is separate and real: whichever condition a closed prompt named last
+was the answer that came back. That is the same effect this repository already handles by
+generating a verdict field after the evidence, and it should be assumed for every closed
+question.
+
 ## Revisit when
 
-The measured numbers move. At the time of writing, on 30 documents in both input orders:
-same-folder pair F1 between orders is 0.60, root residue swings between 0% and 47% run to
-run, and leaf sizes sit between 3 and 12. The axis is chosen on subject rather than on
-format in both orders, which it was not before. None of that is settled; it is the first
-baseline that was measured at all.
+The measured numbers move. On 30 documents in both input orders, across fourteen rounds:
+
+| | best | current |
+|---|---|---|
+| same-folder pair F1 between orders | 0.60 | 0.42 |
+| documents left at the root | 0% | 0–10% forward, 0% reverse |
+| leaf sizes | 3–12 | 5–24 |
+| root axis on subject rather than format | both orders (once) | forward only |
+
+The axis chosen at the root still depends on input order, and that is the open problem.
+It is decided from the documents visible when the folder first divides, and nothing but a
+destructive replacement can change it afterwards — so the judgement made on the least
+evidence is the one that lasts longest. Both rounds that chose a format axis fixed it at
+five documents; every subject axis was fixed at fifteen or more. Telling the model the
+choice is permanent moved that from five to fifteen and twenty, and did not remove the
+dependence.
+
+Whatever addresses this is a change to when an axis may be recorded or how it may be
+revised, not another line in a prompt.
