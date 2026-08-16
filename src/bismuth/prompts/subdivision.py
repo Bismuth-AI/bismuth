@@ -202,14 +202,7 @@ thin one is permanent clutter.
 
 Many signs with few documents behind each means the opposite: one long list has been \
 replaced by a longer one, and another name makes the reader's first choice harder for \
-no gain.
-
-**When the list of signs is already long, weigh the new group against those signs, not \
-against the loose pile.** Every reader who ever comes here reads the whole list before \
-they see a single document, so a name earns its place by what it saves all of them -- \
-not by how much of today's leftovers it happens to absorb. A group that is small beside \
-the shelves already standing here belongs on one of them, or stays loose until it grows. \
-Taking the last few loose documents is not a reason to add a twentieth name.
+no gain. Here the answer is no unless the new sign takes a real share of what is loose.
 
 A handful of documents about the same one thing are not a class either way. A class is \
 something you expect more of; if the honest name for the group is one document's subject, \
