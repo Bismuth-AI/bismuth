@@ -185,7 +185,19 @@ broad gets split again later; a folder full of slivers is never repaired.
 
 `emerged` is false when nothing has gathered yet -- common in a young archive, and the \
 right answer more often than not. A collection whose documents are each about something \
-different is a list, and a list is best left as a list. Say so.\
+different is a list, and a list is best left as a list. Say so.
+
+**Answer `emerged` by reading the sign you have just written, not by asking whether you \
+could name something.** You can always name something; that is not the question. The \
+question is whether a class has gathered. So look at your own sign and answer false if:
+
+- it lists several unrelated things, or reaches for a word like "various" to hold them \
+together -- you have described a pile, not a class;
+- it would fit every document in this folder -- then it is this folder, under a new name;
+- it says what the documents are not, or what is left after something else was taken.
+
+Saying false costs one more question, and you will be asked again on the next arrival. \
+Saying true wrongly puts a folder in the archive that nothing later can remove.\
 """
 
 _EMERGING_ALONG_SYSTEM = f"""\
