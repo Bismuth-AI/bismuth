@@ -52,6 +52,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--event")
     parser.add_argument("--call", help="call_id: print the exact request and response")
     parser.add_argument("--artifact", help="path from a result_ref or request_ref")
+    parser.add_argument(
+        "--folder",
+        help="vault path of a folder: every call and trace event that touched it, in order",
+    )
     parser.add_argument("--limit", type=int, default=100)
     args = parser.parse_args(argv)
 
@@ -79,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         "window_id": args.window,
         "stage": args.stage,
         "event": args.event,
+        "folder": args.folder,
     }
     selected = [
         event
@@ -87,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if any(value is not None for value in filters.values()):
         for event in selected[: args.limit]:
+            # Lead with the call id: this listing exists so a defect seen in the finished
+            # tree can be followed to the exact request and response that produced it,
+            # which is `--call <id>` and step 2 of SPEC.md 6.3.
+            if call := event.get("call_id"):
+                print(f"# --call {call}")
             print(json.dumps(event, ensure_ascii=False))
         if len(selected) > args.limit:
             print(f"... {len(selected) - args.limit} more event(s)")
