@@ -190,3 +190,81 @@ def validate_plan(
     if require_complete and assigned != available_document_ids:
         problems.append(PlanProblem.UNASSIGNED_DOCUMENT)
     return PlanValidation(tuple(dict.fromkeys(problems)))
+
+
+class GroupingProblem(StrEnum):
+    """Why a proposal to stand existing folders on one broader shelf was refused."""
+
+    INVALID_NAME = "the broader name is empty or unusable"
+    NAME_TOO_LONG = "the broader name does not fit one path segment"
+    NAME_IS_A_PATH = "the broader name contains a path separator"
+    NAME_IS_A_SCHEMA_FIELD = "the broader name is a field of the answer schema"
+    NAME_EXISTS = "a sub-folder of that name already stands here"
+    NAME_IS_A_MEMBER = "the broader name is one of the folders it would contain"
+    NAME_RESTATES_AXIS = "the broader name repeats the question instead of answering it"
+    ANCESTOR_NAME = "the broader name carries an ancestor's name"
+    TOO_FEW_MEMBERS = "fewer than two folders would move onto the shelf"
+    TOOK_EVERY_FOLDER = "every folder would move, which renames this folder rather than tidying it"
+    UNKNOWN_MEMBER = "a folder named for the shelf does not stand here"
+
+
+@dataclass(frozen=True, slots=True)
+class GroupingValidation:
+    problems: tuple[GroupingProblem, ...]
+
+    @property
+    def accepted(self) -> bool:
+        return not self.problems
+
+
+def validate_grouping(
+    *,
+    name: str,
+    axis: str,
+    members: tuple[str, ...],
+    siblings: tuple[str, ...],
+    ancestor_names: tuple[str, ...] = (),
+) -> GroupingValidation:
+    """Whether existing sub-folders may be stood together under one broader name.
+
+    This operation moves folders, never documents: every document keeps the folder it is
+    in and only the path above it changes. So the contracts here are all about the shape
+    of the move -- that it groups more than one thing, that it leaves something behind to
+    be grouped away from, and that the new name is usable as one path segment.
+    """
+    problems: list[GroupingProblem] = []
+    cleaned = " ".join(name.split()).strip()
+    key = normalise_label(cleaned)
+    if not cleaned or not key:
+        problems.append(GroupingProblem.INVALID_NAME)
+    if len(cleaned) > MAX_SEGMENT:
+        problems.append(GroupingProblem.NAME_TOO_LONG)
+    if any(separator in cleaned.rstrip("/\\") for separator in ("/", "\\")):
+        problems.append(GroupingProblem.NAME_IS_A_PATH)
+    if key in SCHEMA_FIELD_NAMES:
+        problems.append(GroupingProblem.NAME_IS_A_SCHEMA_FIELD)
+    if key and key == normalise_label(axis):
+        problems.append(GroupingProblem.NAME_RESTATES_AXIS)
+
+    sibling_keys = {normalise_label(item) for item in siblings}
+    member_keys = {normalise_label(item) for item in members}
+    if key in member_keys:
+        problems.append(GroupingProblem.NAME_IS_A_MEMBER)
+    elif key in sibling_keys:
+        problems.append(GroupingProblem.NAME_EXISTS)
+    if key in {normalise_label(item) for item in ancestor_names} or any(
+        restates(cleaned, item) for item in ancestor_names
+    ):
+        problems.append(GroupingProblem.ANCESTOR_NAME)
+
+    unique = tuple(dict.fromkeys(member_keys))
+    if len(unique) < 2:
+        problems.append(GroupingProblem.TOO_FEW_MEMBERS)
+    if not member_keys <= sibling_keys:
+        problems.append(GroupingProblem.UNKNOWN_MEMBER)
+    # Something has to stay beside the new shelf. Moving every folder under one name
+    # leaves this folder with a single child that rules nothing out -- the pass-through
+    # SPEC.md 3.3.1 counts as a defect, arrived at from the other direction.
+    elif len(unique) >= len(sibling_keys):
+        problems.append(GroupingProblem.TOOK_EVERY_FOLDER)
+    return GroupingValidation(tuple(dict.fromkeys(problems)))

@@ -26,7 +26,12 @@ from bismuth.domain.charter import CHARTER_FILENAME, Charter, routing_purpose, r
 from bismuth.domain.document import DocumentCard, sidecar_name
 from bismuth.domain.errors import BismuthError
 from bismuth.domain.journal import Actor, JournalEntry, Operation, OperationKind
-from bismuth.domain.maintenance import ProposedClass, normalise_label, validate_plan
+from bismuth.domain.maintenance import (
+    ProposedClass,
+    normalise_label,
+    validate_grouping,
+    validate_plan,
+)
 from bismuth.domain.paths import sanitize_segment
 from bismuth.domain.progress import Progress, ProgressSink, Stage, report
 from bismuth.logging_setup import log_context, log_trace
@@ -237,6 +242,15 @@ class LibraryMaintenanceService:
         # one document per level -- is now refused before it reaches the filesystem: a
         # class that leaves fewer than two documents behind is NO_DIVISION, so a folder
         # cannot pass its contents down a level one at a time.
+        # The list of signs here just changed, so the one question that can shorten it is
+        # asked now and only now. Adding classes one at a time can widen a level and can
+        # never narrow one, which left the width a folder reached early as the width it
+        # kept for good (SPEC.md 3.3.1, and eight rounds of 300 documents: a root of 3,
+        # then 4, then 22, decided by how broad the first two classes happened to be).
+        if not divided.routed:
+            with log_context(stage="subdivision.grouping"):
+                await self._consider_grouping(folder, filename=filename, on_progress=on_progress)
+
         for child in divided.created:
             results = await self.consider(child, filename=filename, on_progress=on_progress)
             if results:
@@ -1984,6 +1998,188 @@ class LibraryMaintenanceService:
             payloads={folder / CHARTER_FILENAME: reviewed.to_markdown().encode("utf-8")},
         )
 
+    async def _consider_grouping(
+        self,
+        folder: PurePosixPath,
+        *,
+        filename: str,
+        on_progress: ProgressSink | None,
+    ) -> bool:
+        """Ask whether several sub-folders that already exist belong on one shelf.
+
+        The fourth operation, and the only one that moves a folder instead of a document
+        (docs/spec/subdivision.md 2). No document changes the folder it is in; the path
+        above it changes. That is why this can be asked freely where redrawing a boundary
+        cannot: there is nothing here for a wrong answer to scramble, only a level to add
+        or not add.
+        """
+        charter = self._charters.load(folder)
+        if charter is None or not charter.managed or self._has_protected_descendant(folder):
+            return False
+        children = [
+            (name, note, self._count_documents(folder / name, recursive=True))
+            for name, note in self._read(folder).children
+            if name != INBOX.parts[0]
+        ]
+        if len(children) < 3:
+            # Two folders cannot be tidied into one shelf and still leave one standing
+            # here, so there is no answer this question could have.
+            return False
+
+        proposal = await self._llm.structured(
+            prompts.build_grouping(
+                path=str(folder),
+                children=children,
+                axis=charter.split_basis,
+                language=self._read(folder).language,
+            ),
+            schema=prompts.Grouping,
+        )
+        log_trace(
+            "subdivide.grouping",
+            folder=str(folder),
+            emerged=proposal.emerged,
+            name=proposal.name,
+            children=len(children),
+        )
+        if not proposal.emerged or not proposal.name.strip():
+            return False
+
+        members: list[tuple[str, str, int]] = []
+        for child in children:
+            answer = await self._llm.choose(
+                prompts.build_grouping_member(
+                    path=str(folder), name=proposal.name, sign=proposal.sign, child=child
+                ),
+                choices=("SHELF", "STAY"),
+                max_tokens=8,
+            )
+            if answer.strip().upper() == "SHELF":
+                members.append(child)
+
+        validation = validate_grouping(
+            name=proposal.name,
+            axis=charter.split_basis,
+            members=tuple(name for name, _, _ in members),
+            siblings=tuple(name for name, _, _ in children),
+            ancestor_names=folder.parts,
+        )
+        if not validation.accepted:
+            log_trace(
+                "subdivide.grouping_rejected",
+                folder=str(folder),
+                reason="; ".join(problem.value for problem in validation.problems),
+                proposed=proposal.name,
+                members=[name for name, _, _ in members],
+            )
+            return False
+        report(
+            on_progress,
+            Progress(stage=Stage.DIVIDING, filename=filename, note=str(folder / proposal.name)),
+        )
+        return self._apply_grouping(folder, charter, proposal, members)
+
+    def _apply_grouping(
+        self,
+        folder: PurePosixPath,
+        charter: Charter,
+        proposal: prompts.Grouping,
+        members: list[tuple[str, str, int]],
+    ) -> bool:
+        """Move whole sub-folders under one new shelf, in a single undoable batch."""
+        try:
+            name = sanitize_segment(proposal.name)
+        except ValueError:
+            log_trace(
+                "subdivide.grouping_rejected",
+                folder=str(folder),
+                reason="unusable path segment",
+                proposed=proposal.name,
+            )
+            return False
+        target = folder / name
+        if self._vault.exists(target):
+            return False
+
+        operations: list[Operation] = [Operation(kind=OperationKind.MKDIR, target=target)]
+        payloads: dict[PurePosixPath, bytes] = {}
+        emptied: list[PurePosixPath] = []
+        moved = 0
+        for child_name, _, _ in members:
+            source = folder / child_name
+            # Shallowest first, so a folder is created before anything lands in it.
+            subtree = sorted(
+                (f for f in self._vault.iter_folders() if _within(f, source)),
+                key=lambda f: len(f.parts),
+            )
+            for sub in subtree:
+                destination = (
+                    target / child_name
+                    if sub == source
+                    else target / child_name / sub.relative_to(source)
+                )
+                operations.append(Operation(kind=OperationKind.MKDIR, target=destination))
+                for path in sorted(self._vault.iter_files(sub, recursive=False)):
+                    # Sidecars travel with their document, as everywhere else.
+                    operations.extend(self._move_document(path, destination))
+                    moved += 1
+                # The folder note is not a document, so it is not in iter_files -- and a
+                # folder that still holds its own note is not empty, so leaving it behind
+                # would strand the note and block the rmdir.
+                note = sub / CHARTER_FILENAME
+                if self._vault.exists(note):
+                    operations.append(
+                        Operation(
+                            kind=OperationKind.MOVE,
+                            source=note,
+                            target=destination / CHARTER_FILENAME,
+                            note="folder note",
+                        )
+                    )
+            # Deepest first: a folder is only removable once everything under it has gone.
+            emptied.extend(reversed(subtree))
+        operations.extend(Operation(kind=OperationKind.RMDIR, target=path) for path in emptied)
+
+        # The shelf answers the same question its contents answer, one step up, so it
+        # carries the parent's axis rather than inventing one. It is divided from birth:
+        # the folders standing in it are its boundary.
+        shelf = Charter(
+            path=target,
+            title=name,
+            purpose=routing_sign(proposal.sign, axis=charter.split_basis, class_name=name),
+            split_basis=charter.split_basis,
+            split_question=charter.split_question,
+            split_at_documents=moved,
+            holds=(),
+            answers=(),
+        )
+        operations.append(
+            Operation(
+                kind=OperationKind.WRITE, target=target / CHARTER_FILENAME, note="folder note"
+            )
+        )
+        payloads[target / CHARTER_FILENAME] = shelf.to_markdown().encode("utf-8")
+
+        self._transactor.execute(
+            JournalEntry(
+                actor=Actor.BISMUTH,
+                reason=(
+                    f"group {len(members)} folder(s) of {folder or '/'} under {name} "
+                    f"({moved} file(s))"
+                ),
+                operations=tuple(operations),
+            ),
+            payloads=payloads,
+        )
+        log_trace(
+            "subdivide.grouped",
+            folder=str(folder),
+            shelf=str(target),
+            members=[child_name for child_name, _, _ in members],
+            files=moved,
+        )
+        return True
+
     def _parent_note(
         self,
         folder: PurePosixPath,
@@ -2210,6 +2406,11 @@ class LibraryMaintenanceService:
 
 def _normalise(text: str) -> str:
     return "".join(text.split()).casefold()
+
+
+def _within(candidate: PurePosixPath, root: PurePosixPath) -> bool:
+    """Whether ``candidate`` is ``root`` or sits under it."""
+    return candidate == root or candidate.parts[: len(root.parts)] == root.parts
 
 
 def _same_name(name: str, ancestors: tuple[str, ...]) -> bool:
