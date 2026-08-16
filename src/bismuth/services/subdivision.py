@@ -576,16 +576,36 @@ class LibraryMaintenanceService:
         if not emerging.emerged or not emerging.name.strip():
             return None
 
-        if normalise_label(emerging.name) in {
-            normalise_label(name) for name, _ in contents.children
-        }:
+        # Naming a shelf that already stands here is not a mistake, it is an answer to a
+        # different question: these loose documents belong behind that sign. Refusing it
+        # threw the answer away -- 119 times at one root in a 300-document round, which
+        # is why 114 documents were still loose at the end of it. The sign it names is
+        # already on the folder's axis, so nothing new is being decided; the documents
+        # are asked one closed question each, exactly as routing does.
+        existing = {normalise_label(name): (name, note) for name, note in contents.children}
+        if (named := existing.get(normalise_label(emerging.name))) is not None:
+            if charter is None or not charter.divided:
+                return None
+            with log_context(stage="subdivision.routing"):
+                members = await self._find_members(
+                    folder=folder, purpose=purpose, documents=contents.lines, name=named[0]
+                )
             log_trace(
-                "subdivide.rejected",
+                "subdivide.routed_to_named_sign",
                 folder=str(folder),
-                reason="proposed class already exists as a direct child",
-                proposed=[emerging.name],
+                sign=named[0],
+                documents=len(members.document_ids),
             )
-            return None
+            if not members.document_ids:
+                return None
+            return prompts.Division(
+                basis=charter.split_basis,
+                basis_question=charter.split_question,
+                groups=[
+                    prompts.Group(name=named[0], note=named[1], document_ids=members.document_ids)
+                ],
+                reuse_existing=True,
+            )
 
         proposed = emerging.axis.strip()
         if not axis and proposed and _same_axis(proposed, spent):
