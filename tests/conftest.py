@@ -124,6 +124,9 @@ class ScriptedModel:
             subdivision_prompts.Members: subdivision_prompts.Members(
                 document_ids=[],
             ),
+            # Same default, for the same reason: existing folders stay where they are
+            # unless a test asks for them to be stood together.
+            subdivision_prompts.Grouping: subdivision_prompts.Grouping(emerged=False),
             subdivision_prompts.Review: subdivision_prompts.Review(
                 one_axis=True,
                 coherent_membership=True,
@@ -172,6 +175,7 @@ class ScriptedModel:
         self._members: set[str] = set()
         self._assignments: dict[str, str] = {}
         self._routes: dict[str, str] = {}
+        self._shelved: set[str] = set()
 
     def set(self, schema: type[BaseModel], response: object) -> None:
         key = None if schema is placement_prompts.PlacementDecision else schema
@@ -187,6 +191,10 @@ class ScriptedModel:
         per document, so scripting ``Members`` alone no longer reaches this path.
         """
         self._members = set(document_ids)
+
+    def set_shelved(self, folder_names: list[str]) -> None:
+        """Script which existing sub-folders move onto a proposed broader shelf."""
+        self._shelved = set(folder_names)
 
     def set_assignments(self, by_document: dict[str, str]) -> None:
         """Script closed-choice assignment to a fixed replacement sign, as ``{id: G###}``."""
@@ -225,6 +233,11 @@ class ScriptedModel:
                             scripted = scripted(prompt, schema)
                         return "HOLDS" if getattr(scripted, name) else "FAILS"
             return "HOLDS"
+        if "THE BROADER SHELF:" in prompt.user:
+            # Standing existing folders on one shelf: the choice is about a folder, not
+            # a document, so it is answered from its own script.
+            name = prompt.user.split("THE FOLDER IN QUESTION: ", 1)[-1].split("/", 1)[0]
+            return "SHELF" if name in self._shelved else "STAY"
         document_id = _shown_document(prompt)
         if "NEW SIGN:" in prompt.user:
             return "SHELF" if document_id in self._members else "STAY"

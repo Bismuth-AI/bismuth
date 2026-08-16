@@ -1020,3 +1020,66 @@ class TestAFolderBornFull:
 
         asked = [p for p in llm.prompts_for(subdivision_prompts.Emerging) if "문학" in p.user]
         assert asked
+
+
+class TestStandingFoldersTogether:
+    """The fourth operation: a level that grew too wide can be narrowed again."""
+
+    async def _three_shelves(self, engine: Bismuth, script: ScriptedModel) -> None:
+        """Handles are request-local, so the two documents still loose are always D0001-2."""
+        for name in ("문학", "과학", "역사"):
+            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"])
+            await engine.subdivision.consider(PurePosixPath())
+
+    async def test_several_folders_move_under_one_broader_name(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _fill(engine, script, 8)
+        script.set(
+            subdivision_prompts.Grouping,
+            subdivision_prompts.Grouping(emerged=True, name="인문", sign="문학과 역사"),
+        )
+        script.set_shelved(["문학", "역사"])
+
+        await self._three_shelves(engine, script)
+
+        assert (engine.vault.root / "인문/문학").is_dir()
+        assert (engine.vault.root / "인문/역사").is_dir()
+        # No document changed the folder it is in; only the path above it changed.
+        assert (engine.vault.root / "인문/문학/doc0.txt").is_file()
+        assert not (engine.vault.root / "문학").exists()
+        # And something stayed behind, or this was a rename.
+        assert (engine.vault.root / "과학").is_dir()
+
+    async def test_a_shelf_that_would_take_every_folder_is_refused(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _fill(engine, script, 8)
+        script.set(
+            subdivision_prompts.Grouping,
+            subdivision_prompts.Grouping(emerged=True, name="자료", sign="모든 자료"),
+        )
+        # 아폴로 is the seeded fixture folder, so this really is every folder here.
+        script.set_shelved(["문학", "과학", "역사", "아폴로"])
+
+        await self._three_shelves(engine, script)
+
+        assert not (engine.vault.root / "자료").exists()
+        assert (engine.vault.root / "문학").is_dir()
+
+    async def test_standing_folders_together_is_one_undoable_batch(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _fill(engine, script, 8)
+        script.set(
+            subdivision_prompts.Grouping,
+            subdivision_prompts.Grouping(emerged=True, name="인문", sign="문학과 역사"),
+        )
+        script.set_shelved(["문학", "역사"])
+        await self._three_shelves(engine, script)
+
+        entry = next(e for e in engine.journal.iter_entries() if "group" in e.reason)
+        engine.transactor.undo(entry.id)
+
+        assert (engine.vault.root / "문학/doc0.txt").is_file()
+        assert not (engine.vault.root / "인문").exists()
