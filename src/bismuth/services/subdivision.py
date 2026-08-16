@@ -1977,6 +1977,45 @@ class LibraryMaintenanceService:
             )
             payloads[note_path] = child_charter.to_markdown().encode("utf-8")
 
+        # Everything was staged; only what a group claimed has come back out. A document
+        # that answered STAY has to be put down again or it is lost -- staged under
+        # .bismuth, invisible to the vault and to its owner. Measured: eight of a hundred
+        # documents stranded the first time a replacement was allowed to leave any behind.
+        #
+        # It lands in the folder itself, loose. Its old sub-folder was retired above with
+        # the rest of the boundary, and "stays where it is" means the folder being
+        # redrawn -- which is exactly what the loose pile is.
+        claimed = {document_id for group in plan.groups for document_id in group.document_ids}
+        left = [(key, paths) for key, paths in staged.items() if key not in claimed]
+        loose: set[str] = set()
+        for _, (staged_document, staged_sidecar) in left:
+            filename = _free_filename(staged_document.name.split("-", 1)[1], loose)
+            loose.add(filename.casefold())
+            operations.append(
+                Operation(
+                    kind=OperationKind.MOVE,
+                    source=staged_document,
+                    target=folder / filename,
+                    note="return document that fits no replacement class",
+                )
+            )
+            if staged_sidecar is not None:
+                operations.append(
+                    Operation(
+                        kind=OperationKind.MOVE,
+                        source=staged_sidecar,
+                        target=folder / sidecar_name(filename),
+                        note="return sidecar with its document",
+                    )
+                )
+        if left:
+            log_trace(
+                "subdivide.replacement_left_loose",
+                folder=str(folder),
+                returned=len(left),
+                claimed=len(claimed),
+            )
+
         parent = self._parent_note(folder, charter, plan, documents=total)
         parent_note = folder / CHARTER_FILENAME
         operations.append(
