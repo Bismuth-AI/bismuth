@@ -94,20 +94,25 @@ def main(argv: list[str]) -> int:
 #: (documents, widest branching, deepest level, largest leaf). Interpolation between
 #: rows is deliberate: the shape moves with size rather than snapping between tiers.
 _BANDS = (
-    (100, 5, 2, 20),
-    (1_000, 9, 3, 25),
-    (10_000, 10, 4, 30),
-    (100_000, 12, 5, 30),
+    (100, 3, 5, 2, 20),
+    (1_000, 5, 9, 3, 25),
+    (10_000, 6, 10, 4, 30),
+    (100_000, 8, 12, 5, 30),
 )
 #: Absolute ceilings from the same section. Past any of these the branch has failed.
 _CEILING = (20, 5, 50)
 
 
-def _band(total: int) -> tuple[int, int, int]:
-    """The width, depth and leaf ceiling recommended at this archive size."""
-    for size, width, depth, leaf in _BANDS:
+def _band(total: int) -> tuple[int, int, int, int]:
+    """The width band, depth and leaf ceiling recommended at this archive size.
+
+    Width is a band, not a ceiling. Read as a ceiling alone it scores an archive that was
+    never divided as a pass: 300 documents in 5 folders, one leaf of 198, width 2 -- four
+    of five rows green. Too few names at a level is the same failure as too many.
+    """
+    for size, floor, width, depth, leaf in _BANDS:
         if total <= size:
-            return width, depth, leaf
+            return floor, width, depth, leaf
     return _BANDS[-1][1:]
 
 
@@ -136,7 +141,7 @@ def _line(label: str, value: str, ok: bool | None) -> str:
 
 def _scorecard(total, leaf_counts, branching, depths, folders, children, counts) -> str:
     """How this vault sits against the recommended shape for its size (SPEC 3.3.1)."""
-    width_max, depth_max, leaf_max = _band(total)
+    width_min, width_max, depth_max, leaf_max = _band(total)
     width_cap, depth_cap, leaf_cap = _CEILING
     width = branching[0] if branching else 0
     depth = max(depths, default=0)
@@ -146,9 +151,13 @@ def _scorecard(total, leaf_counts, branching, depths, folders, children, counts)
 
     rows = [
         f"SPEC 3.3.1 — {total}건 장서의 권장 형태: "
-        f"폭 ≤{width_max} · 깊이 ≤{depth_max} · 잎 ≤{leaf_max}",
+        f"폭 {width_min}~{width_max} · 깊이 ≤{depth_max} · 잎 ≤{leaf_max}",
         "",
-        _line("층당 폭", f"최대 {width}  (권장 {width_max}, 상한 {width_cap})", width <= width_max),
+        _line(
+            "층당 폭",
+            f"최대 {width}  (권장 {width_min}~{width_max}, 상한 {width_cap})",
+            width_min <= width <= width_max,
+        ),
         _line("깊이", f"최대 {depth}  (권장 {depth_max}, 상한 {depth_cap})", depth <= depth_max),
         _line("잎 크기", f"최대 {leaf}  (권장 {leaf_max}, 상한 {leaf_cap})", leaf <= leaf_max),
         _line("통과 폴더", f"{len(through)}개  (목표 0)", not through),
