@@ -141,6 +141,13 @@ they are the same kind of document, "kind of document" is what they look like, n
 this collection is organised by. Choosing it now would fix it forever on the evidence of \
 a handful of files.
 
+**And a property they all answer DIFFERENTLY divides just as badly.** A name, a title, a \
+number, an identifier: everything has one and no two are alike, so every folder ends up \
+holding one document and the reader is back to reading the list, now with a step in front \
+of every entry. The property you want is the one where a handful of answers cover \
+everything here -- several documents sharing each answer, and no document left without \
+one.
+
 If you cannot yet see which property will still matter when this folder is ten times \
 larger, say so: `emerged` is false, nothing is created, and you will be asked again with \
 every new document. Waiting costs one more question. Choosing wrong costs the archive.
