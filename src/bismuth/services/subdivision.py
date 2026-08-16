@@ -185,6 +185,7 @@ class LibraryMaintenanceService:
         filename: str = "",
         on_progress: ProgressSink | None = None,
         allow_emerging: bool = True,
+        newborn: bool = False,
     ) -> list[Divided]:
         """Draw one class out of ``folder``, if one has grown in it.
 
@@ -251,10 +252,19 @@ class LibraryMaintenanceService:
             with log_context(stage="subdivision.grouping"):
                 await self._consider_grouping(folder, filename=filename, on_progress=on_progress)
 
-        for child in divided.created:
-            results = await self.consider(child, filename=filename, on_progress=on_progress)
-            if results:
-                return [divided, *results]
+        # One step, not a descent. Asking a folder that arrived full is new evidence --
+        # those documents have never been looked at together. Asking the folder that
+        # answer created is the same evidence again, one level down, and it does not
+        # stop: measured on 300 documents, a single ingest laid down four levels while
+        # leaving 33 documents loose at the top of them, each level a thin class drawn
+        # off a pile nobody divided.
+        if not newborn:
+            for child in divided.created:
+                results = await self.consider(
+                    child, filename=filename, on_progress=on_progress, newborn=True
+                )
+                if results:
+                    return [divided, *results]
         return [divided]
 
     async def _judge(
