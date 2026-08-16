@@ -453,8 +453,39 @@ class LibraryMaintenanceService:
             on_progress, Progress(stage=Stage.DIVIDING, filename=filename, note=str(folder) or "/")
         )
 
+        established = len(contents.children) >= 2
+        axis = charter.split_basis if charter is not None and established else ""
+        spent = self._axes_above(folder)
+
+        with log_context(stage="subdivision.emerging"):
+            emerging = await self._find_emerging(
+                folder=folder,
+                purpose=purpose,
+                documents=contents.lines,
+                children=contents.children,
+                axis=axis,
+                spent=spent,
+                language=contents.language,
+            )
+            log_trace(
+                "subdivide.emerging",
+                folder=str(folder),
+                documents=len(contents.documents),
+                subtree=total,
+                axis=axis or emerging.axis,
+                axis_is_new=not axis,
+                emerged=emerging.emerged,
+                name=emerging.name,
+            )
+
+        # Only once nothing new has emerged. Routing used to run before that question and
+        # drained the loose pile into the shelves that already existed, so a folder could
+        # never grow a third class: measured at one root over 100 documents, 21 routings
+        # against 17 chances to name something new, and a width frozen at two all run. The
+        # pile is the evidence a new class is drawn from, so it is read for that first.
         if (
-            charter is not None
+            not (emerging.emerged and emerging.name.strip())
+            and charter is not None
             and charter.divided
             and charter.split_basis
             and charter.split_question
@@ -574,30 +605,6 @@ class LibraryMaintenanceService:
         # child shown. Nothing moves: the child keeps its name and its documents, and only
         # the recorded property changes. Two children make a boundary, and from then on the
         # axis is binding and only Review may redraw it.
-        established = len(contents.children) >= 2
-        axis = charter.split_basis if charter is not None and established else ""
-        spent = self._axes_above(folder)
-
-        with log_context(stage="subdivision.emerging"):
-            emerging = await self._find_emerging(
-                folder=folder,
-                purpose=purpose,
-                documents=contents.lines,
-                children=contents.children,
-                axis=axis,
-                spent=spent,
-                language=contents.language,
-            )
-            log_trace(
-                "subdivide.emerging",
-                folder=str(folder),
-                documents=len(contents.documents),
-                subtree=total,
-                axis=axis or emerging.axis,
-                axis_is_new=not axis,
-                emerged=emerging.emerged,
-                name=emerging.name,
-            )
         if not emerging.emerged or not emerging.name.strip():
             return None
 
