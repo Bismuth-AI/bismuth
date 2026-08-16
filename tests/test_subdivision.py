@@ -1099,17 +1099,39 @@ class TestNamingAShelfThatAlreadyStands:
         assert not (engine.vault.root / "doc2.txt").exists()
 
 
-class TestOneStepNotADescent:
-    async def test_a_newborn_folder_does_not_keep_dividing_in_one_ingest(
-        self, engine: Bismuth, script: ScriptedModel
+class TestWhereTheDocumentsWent:
+    """Descending is decided by whether a shelf emptied its parent, not by depth."""
+
+    async def test_a_thin_shelf_is_not_descended_into(
+        self,
+        engine: Bismuth,
+        script: ScriptedModel,
+        llm,  # type: ignore[no-untyped-def]
     ) -> None:
-        """A folder that arrives full is new evidence; what its answer creates is not."""
+        """It left a pile behind, and the pile is the more urgent question."""
         await _fill(engine, script, 8)
-        _emerges(script, "문학", "문학 자료", ["D0001", "D0002", "D0003", "D0004"])
+        _emerges(script, "문학", "문학 자료", ["D0001", "D0002"])
+        llm.calls.clear()
 
         await engine.subdivision.consider(PurePosixPath())
 
-        # 문학 may be asked about itself, but nothing it creates may be asked again here.
-        assert not any(
-            path.is_dir() for path in (engine.vault.root / "문학").glob("*/*") if path.is_dir()
-        )
+        assert (engine.vault.root / "문학").is_dir()
+        assert not [p for p in llm.prompts_for(subdivision_prompts.Emerging) if "문학/" in p.user]
+
+    async def test_a_shelf_that_emptied_its_parent_is_asked_again(
+        self,
+        engine: Bismuth,
+        script: ScriptedModel,
+        llm,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """The whole problem moved one level down; nothing else would ask it."""
+        await _fill(engine, script, 8)
+        _emerges(script, "문학", "문학 자료", [f"D{index:04d}" for index in range(1, 7)])
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        asked = [
+            p for p in llm.prompts_for(subdivision_prompts.Emerging) if "FOLDER: 문학" in p.user
+        ]
+        assert asked
