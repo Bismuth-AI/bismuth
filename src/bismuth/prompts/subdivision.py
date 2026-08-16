@@ -1078,18 +1078,14 @@ FAILS if what is offered is not the NAME of a property at all: a sentence descri
 split, a comparison between two candidates, or an explanation of why it was chosen. A \
 property is named in a few words, the way a column heading is.
 
-The properties the folders above are divided on are listed. **A property is not spent \
-merely because it appears in that list.** It is spent when every document HERE would \
-answer it the same way, which happens when the parent's class was narrow and does not \
-happen when it was broad. A folder that is one value of "what is this about" still holds \
-documents that are about different things at a finer grain, and that same property is \
-then the only refinement available. Refused by name, it left 84 documents undivided in \
-one measured round, a real class proposed and rejected 39 times.
+FAILS if the property is one the folders ABOVE are already divided on. Those are listed. \
+Every document here already has the same answer to them, so dividing on one again \
+separates nothing and only restates the parent's name in other words.
 
-So FAILS only when the documents in front of you would give the property the SAME answer. \
-That is a question about them, not about how the words read. Sharing a word with an \
-ancestor's property is not the test either: 규제 대상 산업 under a parent divided on \
-규제 대상 및 목적 HOLDS.
+Sharing a WORD with an ancestor's property is not the same thing. 규제 대상 산업 under a \
+parent divided on 규제 대상 및 목적 is a different question, and it HOLDS. The test is \
+whether the documents in front of you would give different answers to it -- not whether \
+it reads like something above.
 
 FAILS if almost every document here would give the SAME answer to it. That draws one \
 real shelf and a remainder nobody can name except as "the ones that are not that" -- a \

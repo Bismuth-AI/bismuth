@@ -325,6 +325,10 @@ class TestDrawingOutAClass:
         # view rather than its earlier D0003. Routing is one closed F### choice per
         # loose document (ADR-0014).
         script.set_routes({"D0001": "F001"})
+        # Nothing new emerges, which is what leaves the loose document to routing: the
+        # pile is read for a new class first, and only what no class wanted is offered
+        # to the signs already standing.
+        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
 
         divided = await engine.subdivision.consider(PurePosixPath())
 
