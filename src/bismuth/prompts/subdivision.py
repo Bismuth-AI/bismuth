@@ -1069,9 +1069,17 @@ parent divided on 규제 대상 및 목적 is a different question, and it HOLDS
 whether the documents in front of you would give different answers to it -- not whether \
 it reads like something above.
 
+FAILS if almost every document here would give the SAME answer to it. That draws one \
+real shelf and a remainder nobody can name except as "the ones that are not that" -- a \
+folder holding everything except one thing, which excludes nothing and cannot be divided \
+again. Observed live: inside a folder already about 과학기술, dividing on which ministry \
+issued the documents produced one shelf and 비과학기술 분야 소관 beside it.
+
 HOLDS if the property is about what the documents are about. HOLDS also when this \
 folder has already been narrowed by subject and the property is a sensible way to split \
-what remains, because by then the subject is fixed and the reader is already inside it.\
+what remains -- but only if the documents here really do spread across several of its \
+answers. Standing inside a subject licenses a different question, not one whose answer \
+is already fixed for nearly everything in the folder.\
 """
 
 
