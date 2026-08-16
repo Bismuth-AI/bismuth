@@ -122,6 +122,12 @@ a full line. That is not an inventory: an inventory lists what happens to be her
 and scope says what would belong here tomorrow. If the sign you are about to write is the \
 name again, you have written the label twice and told the reader nothing.
 
+**The sign is a sentence, not a label.** You write it before the name, so there is no
+name yet to avoid repeating -- the test is on the sign alone: if what you just wrote could
+itself serve as a folder name, it is not a sign yet, it is the name arriving early. It was
+measured arriving early fifty times in one 300-document round, and each time the note that
+reached disk was the folder's own name written twice.
+
 **The sign is ONE sentence, and it is addressed to someone standing outside the folder.** \
 They cannot see the documents you are looking at and they are not interested in how you \
 decided. So write what belongs here -- not what you noticed about the pile, not what these \
