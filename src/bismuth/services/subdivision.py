@@ -185,7 +185,6 @@ class LibraryMaintenanceService:
         filename: str = "",
         on_progress: ProgressSink | None = None,
         allow_emerging: bool = True,
-        newborn: bool = False,
     ) -> list[Divided]:
         """Draw one class out of ``folder``, if one has grown in it.
 
@@ -252,19 +251,24 @@ class LibraryMaintenanceService:
             with log_context(stage="subdivision.grouping"):
                 await self._consider_grouping(folder, filename=filename, on_progress=on_progress)
 
-        # One step, not a descent. Asking a folder that arrived full is new evidence --
-        # those documents have never been looked at together. Asking the folder that
-        # answer created is the same evidence again, one level down, and it does not
-        # stop: measured on 300 documents, a single ingest laid down four levels while
-        # leaving 33 documents loose at the top of them, each level a thin class drawn
-        # off a pile nobody divided.
-        if not newborn:
-            for child in divided.created:
-                results = await self.consider(
-                    child, filename=filename, on_progress=on_progress, newborn=True
-                )
-                if results:
-                    return [divided, *results]
+        # A folder that arrived full is asked about itself, because its documents have
+        # never been looked at together and nothing else will ask: they were moved in,
+        # not filed in, so no arrival ever fires for them.
+        #
+        # Whether that continues downward is decided by where the documents went, not by
+        # how deep we are. A shelf that emptied its parent has carried the whole problem
+        # one level down and has to be asked again, or the archive keeps a 107-document
+        # leaf. A shelf that took a few and left a pile behind has not: descending into
+        # it lays down a corridor while the pile nobody divided sits at the top of it --
+        # measured as four levels in a single ingest above 33 loose documents. The pile
+        # is the more urgent question and it is already asked on every arrival.
+        remaining = self._count_documents(folder, recursive=False)
+        for child in divided.created:
+            if self._count_documents(child, recursive=True) <= remaining:
+                continue
+            results = await self.consider(child, filename=filename, on_progress=on_progress)
+            if results:
+                return [divided, *results]
         return [divided]
 
     async def _judge(
