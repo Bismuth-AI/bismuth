@@ -1329,3 +1329,115 @@ def _render_children(children: list[tuple[str, str]]) -> str:
     return (
         f"EXISTING SUB-FOLDERS ({len(children)} of them, and a reader must choose one):\n{rendered}"
     )
+
+
+class Grouping(BaseModel):
+    """One broader shelf drawn over sign posts that already stand side by side.
+
+    The fourth operation, and the only one that moves a folder rather than a document.
+    Adding classes one at a time can only widen a level; nothing could ever narrow one
+    again, so the width a folder reached early was the width it kept -- measured across
+    eight rounds of 300 documents as a root of 3, then 4, then 22, decided entirely by
+    how broad the first two or three classes happened to be.
+
+    Same field order as ``Emerging`` and for the same reason: the concrete candidate is
+    formed before the verdict, so constrained decoding cannot commit to "yes" before it
+    has anything to say yes to.
+    """
+
+    sign: str = Field(
+        default="",
+        description=(
+            "One short line a reader uses to decide whether to open this folder or walk "
+            "past it. What the shelves inside it have in common, said positively."
+        ),
+    )
+    name: str = Field(
+        default="",
+        description="Folder name for what you just described, one level. Not a path.",
+    )
+    emerged: bool = Field(
+        default=False,
+        description="False when no group of these folders belongs together under one name.",
+    )
+
+
+_GROUPING_SYSTEM = f"""\
+This folder has grown a long list of sub-folders. A reader must read that whole list \
+before they see a single document, so the list itself is now the thing costing them \
+time. You are deciding ONE thing: whether several of the folders that already exist \
+belong together under one broader name.
+
+Nothing is being re-sorted. No document changes the folder it is in. The folders you \
+name keep their own names and their own contents and simply stand together on one shelf \
+instead of separately on this one.
+
+**Look for the folders that answer the same part of the question.** Several narrow names \
+that a reader would only ever reach by the same route are the case for this: the broader \
+name goes on the outside, and the reader who does not want it skips all of them at once, \
+which is exactly what they could not do before.
+
+**A group of two barely earns it.** Replacing two names with one that then contains them \
+leaves the reader the same number of choices; it just moves one of them. Look for enough \
+of them that the list actually gets shorter.
+
+**Not everything.** Some folders must stay where they are, or you have renamed this \
+folder rather than tidied it, and the reader gains a level that rules nothing out.
+
+**The broader name must be a real class, not a container word.** It is the answer to the \
+same question the folders under it answer, one step up. If the only name that covers them \
+is a word meaning "assorted", they do not belong together.
+
+{_SIGNS}
+
+`emerged` is false when these folders are already the right list -- when no group of them \
+shares anything a reader would recognise from outside. That is a normal answer and a safe \
+one: a list that is merely long is better than a level that is merely wrong.\
+"""
+
+
+def build_grouping(
+    *, path: str, children: list[tuple[str, str, int]], axis: str, language: str = ""
+) -> Prompt:
+    """Ask whether existing sub-folders should stand together under one broader name."""
+    rendered = "\n".join(
+        f"  {name}/ — {count} documents" + (f" — {note}" if note else "")
+        for name, note, count in children
+    )
+    return Prompt(
+        system=_GROUPING_SYSTEM,
+        user=(
+            f"FOLDER: {path or '(root)'}\n"
+            f"THE QUESTION THESE SUB-FOLDERS ANSWER: {axis or '(none recorded)'}\n"
+            f"SUB-FOLDERS STANDING HERE ({len(children)} of them, all read before any "
+            f"document):\n{rendered}" + answer_in(language)
+        ),
+    )
+
+
+_GROUPING_MEMBER_SYSTEM = """\
+A broader shelf has been decided on and named. You are looking at ONE folder that stands \
+beside it now, and saying whether it moves onto that shelf. Answer with exactly SHELF or \
+STAY and nothing else.
+
+SHELF when a reader who read the broader sign would expect to find this folder behind it.
+
+STAY when they would not. Staying is the normal answer for most folders and costs \
+nothing: the folder keeps its place exactly as it is.\
+"""
+
+
+def build_grouping_member(
+    *, path: str, name: str, sign: str, child: tuple[str, str, int]
+) -> Prompt:
+    """One closed question about one existing sub-folder."""
+    child_name, note, count = child
+    return Prompt(
+        system=_GROUPING_MEMBER_SYSTEM,
+        user=(
+            f"FOLDER: {path or '(root)'}\n"
+            f"THE BROADER SHELF: {name} — {sign}\n\n"
+            f"THE FOLDER IN QUESTION: {child_name}/ — {count} documents"
+            + (f" — {note}" if note else "")
+        ),
+    )
