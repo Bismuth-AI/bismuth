@@ -54,7 +54,7 @@ def main(argv: list[str]) -> int:
     print(f"  깊이            최대 {max(depths, default=0)}층")
     print()
 
-    print(_scorecard(total, leaf_counts, branching, depths, folders, children, counts))
+    print(_scorecard(total, leaf_counts, branching, depths, folders, children, counts, named))
     print("SPEC 6.2")
     if leaf_counts:
         print(
@@ -139,8 +139,18 @@ def _line(label: str, value: str, ok: bool | None) -> str:
     return f"  {label:<14} {value:<34}{mark}"
 
 
-def _scorecard(total, leaf_counts, branching, depths, folders, children, counts) -> str:
-    """How this vault sits against the recommended shape for its size (SPEC 3.3.1)."""
+def _scorecard(total, leaf_counts, branching, depths, folders, children, counts, named) -> str:
+    """What can be counted, in the three roles SPEC.md 3.3.1 gives them.
+
+    Not one score. A ceiling breach disqualifies the branch outright, the scale-free
+    invariants are always-or-never, and the band is a recommendation. Scoring all three
+    the same way rewarded a vault that was never divided: 300 documents in five folders,
+    one leaf of 198, and three of five rows green -- the best total at the time.
+
+    Meaning is not scored here at all. Sibling exclusivity, exclusion-by-note and whether
+    a name points at what is behind it need someone to open the tree; docs/eval/README.md
+    is the rubric for that, and it is what rounds are ranked by.
+    """
     width_min, width_max, depth_max, leaf_max = _band(total)
     width_cap, depth_cap, leaf_cap = _CEILING
     width = branching[0] if branching else 0
@@ -148,18 +158,27 @@ def _scorecard(total, leaf_counts, branching, depths, folders, children, counts)
     leaf = leaf_counts[0] if leaf_counts else 0
     through = _pass_through(folders, children, counts)
     undivided = _undivided(folders, children, counts)
+    segment = max((len(f.name) for f in named), default=0)
+    path = max((len(str(f)) for f in named), default=0)
 
+    breaches = [
+        label
+        for label, value, cap in (
+            ("폭", width, width_cap),
+            ("깊이", depth, depth_cap),
+            ("잎", leaf, leaf_cap),
+        )
+        if value > cap
+    ]
     rows = [
-        f"SPEC 3.3.1 — {total}건 장서의 권장 형태: "
-        f"폭 {width_min}~{width_max} · 깊이 ≤{depth_max} · 잎 ≤{leaf_max}",
-        "",
+        f"실격선 — 폭 {width_cap} · 깊이 {depth_cap} · 잎 {leaf_cap} (SPEC 3.3.1)",
         _line(
-            "층당 폭",
-            f"최대 {width}  (권장 {width_min}~{width_max}, 상한 {width_cap})",
-            width_min <= width <= width_max,
+            "판정",
+            "통과" if not breaches else f"실격 — {', '.join(breaches)} 초과",
+            not breaches,
         ),
-        _line("깊이", f"최대 {depth}  (권장 {depth_max}, 상한 {depth_cap})", depth <= depth_max),
-        _line("잎 크기", f"최대 {leaf}  (권장 {leaf_max}, 상한 {leaf_cap})", leaf <= leaf_max),
+        "",
+        "형태 불변식 — 장서 크기와 무관하게 항상 참이어야 하는 것",
         _line("통과 폴더", f"{len(through)}개  (목표 0)", not through),
         _line("미분해 더미", f"{len(undivided)}개  (목표 0)", not undivided),
     ]
@@ -168,6 +187,23 @@ def _scorecard(total, leaf_counts, branching, depths, folders, children, counts)
     for folder in undivided[:3]:
         largest = max(counts[c] for c in children[folder])
         rows.append(f"      더미: {folder}  ({counts[folder]}건 남음 > 최대 자식 {largest}건)")
+    rows += [
+        "",
+        f"권장 띠 — {total}건 장서, 동점을 가르는 데만 쓴다",
+        _line(
+            "층당 폭",
+            f"최대 {width}  (권장 {width_min}~{width_max})",
+            width_min <= width <= width_max,
+        ),
+        _line("깊이", f"최대 {depth}  (권장 {depth_max})", depth <= depth_max),
+        _line("잎 크기", f"최대 {leaf}  (권장 {leaf_max})", leaf <= leaf_max),
+        "",
+        "경로 가독성 — grep 한 줄에 실린다 (SPEC 3.3.1, 판정 없이 관측만)",
+        f"  가장 긴 마디     {segment}자",
+        f"  가장 긴 경로     {path}자",
+        "",
+        "의미 채점은 여기서 안 한다 → docs/eval/README.md (라운드 순위는 그쪽으로 매긴다)",
+    ]
     return "\n".join(rows) + "\n"
 
 
