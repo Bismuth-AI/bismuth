@@ -76,17 +76,32 @@ def routing_sign(proposed: str, *, axis: str, class_name: str) -> str:
     past the sign budget falls back to the derived form.  A fallback sign is worse; a
     wrong one is a lie on disk, and a failed one loses a document that is already safe.
     """
-    normalised = " ".join(proposed.split()).strip()
-    if (
-        normalised
-        and len(normalised) <= MAX_PURPOSE_CHARS
-        and not _REQUEST_HANDLE.search(normalised)
-        # A sign that only repeats the folder name excludes nothing, which is the whole
-        # job. Observed live: a model asked for name then sign returned "지침" for both.
-        and normalise_label(normalised) != normalise_label(class_name)
-    ):
-        return normalised
+    if sign_refusal(proposed, class_name=class_name) is None:
+        return " ".join(proposed.split()).strip()
     return boundary_purpose(axis, class_name)
+
+
+def sign_refusal(proposed: str, *, class_name: str) -> str | None:
+    """Why this sign cannot go on disk, or ``None`` when it can.
+
+    Split out of ``routing_sign`` so the caller can say what happened. The fallback is a
+    folder note that repeats its own name in other words, and ``boundary_purpose`` says
+    plainly that such a note rules nothing out -- so a run where it appears often has a
+    real defect. Measured on 300 documents: eight of twenty-seven divisions wrote the
+    fallback, and nothing recorded which of these four conditions had rejected the sign.
+    """
+    normalised = " ".join(proposed.split()).strip()
+    if not normalised:
+        return "no sign was proposed"
+    if len(normalised) > MAX_PURPOSE_CHARS:
+        return f"sign is {len(normalised)} characters, past the {MAX_PURPOSE_CHARS} budget"
+    if _REQUEST_HANDLE.search(normalised):
+        return "sign carries a request-local document handle"
+    # A sign that only repeats the folder name excludes nothing, which is the whole
+    # job. Observed live: a model asked for name then sign returned "지침" for both.
+    if normalise_label(normalised) == normalise_label(class_name):
+        return "sign is the folder name again"
+    return None
 
 
 class Charter(BaseModel):

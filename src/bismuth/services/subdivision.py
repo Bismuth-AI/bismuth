@@ -22,7 +22,13 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import TypeVar
 
-from bismuth.domain.charter import CHARTER_FILENAME, Charter, routing_purpose, routing_sign
+from bismuth.domain.charter import (
+    CHARTER_FILENAME,
+    Charter,
+    routing_purpose,
+    routing_sign,
+    sign_refusal,
+)
 from bismuth.domain.document import DocumentCard, sidecar_name
 from bismuth.domain.errors import BismuthError
 from bismuth.domain.journal import Actor, JournalEntry, Operation, OperationKind
@@ -663,10 +669,11 @@ class LibraryMaintenanceService:
         proposed_groups = [
             prompts.Group(
                 name=emerging.name,
-                note=routing_sign(
+                note=_sign(
                     offered_sign,
                     axis=axis or emerging.axis.strip(),
                     class_name=emerging.name,
+                    folder=folder,
                 ),
                 document_ids=members.document_ids,
             )
@@ -1271,7 +1278,12 @@ class LibraryMaintenanceService:
             groups=[
                 prompts.Group(
                     name=sign.name,
-                    note=routing_sign(sign.sign, axis=sketch.basis, class_name=sign.name),
+                    note=_sign(
+                        sign.sign,
+                        axis=sketch.basis,
+                        class_name=sign.name,
+                        folder=folder,
+                    ),
                     document_ids=assignments_by_sign[index],
                 )
                 for index, sign in enumerate(sketch.signs)
@@ -1692,7 +1704,7 @@ class LibraryMaintenanceService:
                 title=name,
                 # The sign the plan was audited with, not a fresh derivation of it. A
                 # boundary that passed on one wording must go to disk with that wording.
-                purpose=routing_sign(group.note, axis=plan.basis, class_name=name),
+                purpose=_sign(group.note, axis=plan.basis, class_name=name, folder=folder),
                 holds=(),
                 answers=(),
             )
@@ -1929,7 +1941,7 @@ class LibraryMaintenanceService:
             child_charter = Charter(
                 path=target,
                 title=target.name,
-                purpose=routing_sign(group.note, axis=plan.basis, class_name=target.name),
+                purpose=_sign(group.note, axis=plan.basis, class_name=target.name, folder=folder),
                 holds=(),
                 answers=(),
             )
@@ -2188,7 +2200,7 @@ class LibraryMaintenanceService:
         shelf = Charter(
             path=target,
             title=name,
-            purpose=routing_sign(proposal.sign, axis=charter.split_basis, class_name=name),
+            purpose=_sign(proposal.sign, axis=charter.split_basis, class_name=name, folder=folder),
             split_basis=charter.split_basis,
             split_question=charter.split_question,
             split_at_documents=moved,
@@ -2407,6 +2419,24 @@ class LibraryMaintenanceService:
 
 def _normalise(text: str) -> str:
     return "".join(text.split()).casefold()
+
+
+def _sign(proposed: str, *, axis: str, class_name: str, folder: PurePosixPath) -> str:
+    """The note that goes on disk, and a line in the log when it is not the model's.
+
+    The fallback repeats the folder name in other words and rules nothing out, so a run
+    that writes it often has a defect worth finding. Without this line the only evidence
+    was the shape of the note itself, read off the finished vault by hand.
+    """
+    if (refusal := sign_refusal(proposed, class_name=class_name)) is not None:
+        log_trace(
+            "subdivide.sign_refused",
+            folder=str(folder),
+            name=class_name,
+            reason=refusal,
+            proposed=proposed[:160],
+        )
+    return routing_sign(proposed, axis=axis, class_name=class_name)
 
 
 def _within(candidate: PurePosixPath, root: PurePosixPath) -> bool:
