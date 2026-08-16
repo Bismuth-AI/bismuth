@@ -112,6 +112,15 @@ a full line. That is not an inventory: an inventory lists what happens to be her
 and scope says what would belong here tomorrow. If the sign you are about to write is the \
 name again, you have written the label twice and told the reader nothing.
 
+**The sign is ONE sentence, and it is addressed to someone standing outside the folder.** \
+They cannot see the documents you are looking at and they are not interested in how you \
+decided. So write what belongs here -- not what you noticed about the pile, not what these \
+particular documents have in common, not why this class and not another. A sign that opens \
+by talking about the documents in front of you, or that explains the distinction you drew, \
+is an account of your reasoning; it goes past the length a folder note can hold, is thrown \
+away, and the folder ends up labelled with its own name repeated back. Two clauses at most. \
+If you cannot say it in one sentence, the class is not clear enough yet.
+
 Signs and notes in the DOCUMENTS' OWN LANGUAGE. If the documents are in one language, the \
 sign is in that language too.\
 """
