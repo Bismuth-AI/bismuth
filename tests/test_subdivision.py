@@ -593,6 +593,10 @@ class TestReview:
         await engine.subdivision.consider(PurePosixPath())
 
         script.set(placement_prompts.PlacementDecision, place_at(""))
+        # Nothing emerges while the pile builds. Left scripted, "문학" would be proposed
+        # again, and naming a shelf that already stands here now routes the loose
+        # documents behind it instead of being refused.
+        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
         # Four, not three: two go to the second child and two to the emerging class,
         # and one has to be left over or the class takes the whole pile, which is a
         # move down a level rather than a division.
@@ -768,6 +772,9 @@ class TestReview:
                 better_navigation=False,
             ),
         )
+        # The refused replacement is what this test is about. Left scripted, "문학" would
+        # be proposed again afterwards and would route the loose documents behind it.
+        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
 
         divided = await engine.subdivision.consider(PurePosixPath())
 
@@ -1070,3 +1077,23 @@ class TestStandingFoldersTogether:
 
         assert (engine.vault.root / "문학/doc0.txt").is_file()
         assert not (engine.vault.root / "인문").exists()
+
+
+class TestNamingAShelfThatAlreadyStands:
+    async def test_the_loose_documents_go_behind_it(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Not a mistake: an answer to a different question, and it used to be thrown
+        away -- 119 times at one root, which is why 114 documents stayed loose."""
+        await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학 자료", ["D0001", "D0002"])
+        await engine.subdivision.consider(PurePosixPath())
+        assert (engine.vault.root / "문학/doc0.txt").is_file()
+
+        # The same name again, over documents that are still loose.
+        _emerges(script, "문학", "문학 자료", ["D0001", "D0002"])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert (engine.vault.root / "문학/doc2.txt").is_file()
+        assert not (engine.vault.root / "doc2.txt").exists()
