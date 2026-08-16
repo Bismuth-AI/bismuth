@@ -1135,24 +1135,3 @@ class TestWhereTheDocumentsWent:
             p for p in llm.prompts_for(subdivision_prompts.Emerging) if "FOLDER: 문학" in p.user
         ]
         assert asked
-
-
-class TestARefusedNameComesBack:
-    async def test_the_next_question_carries_what_was_refused(
-        self,
-        engine: Bismuth,
-        script: ScriptedModel,
-        llm,  # type: ignore[no-untyped-def]
-    ) -> None:
-        """Asked without it, the question is identical and so is the answer: one folder
-        was asked 233 times in a 300-document round and refused all 233."""
-        ids = await _fill(engine, script, 6)
-        # A class named after the axis it is meant to answer never reaches the vault.
-        _emerges(script, "주제", "주제별 자료", ids[:2], axis="주제")
-        await engine.subdivision.consider(PurePosixPath())
-        llm.calls.clear()
-
-        await engine.subdivision.consider(PurePosixPath())
-
-        asked = llm.prompts_for(subdivision_prompts.Emerging)
-        assert any("ALREADY PROPOSED HERE AND REFUSED" in p.user for p in asked)

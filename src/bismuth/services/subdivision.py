@@ -127,10 +127,6 @@ class LibraryMaintenanceService:
         self._charters = charters
         self._transactor = transactor
         self._llm = llm
-        # What each folder has already proposed and could not have. Held for the life of
-        # the process, not written to the vault: it is about this conversation with the
-        # model, not about the archive, and a fresh start should ask fresh questions.
-        self._refused: dict[str, list[str]] = {}
 
     async def consider_with_ancestors(
         self,
@@ -635,7 +631,6 @@ class LibraryMaintenanceService:
             # Everything in this folder shares the ancestors' answer to their axes -- that
             # is what put these documents together -- so those axes cannot tell any of
             # them apart. Reusing one creates a repeated, non-distinguishing boundary.
-            self._remember_refusal(folder, emerging.name)
             log_trace(
                 "subdivide.rejected",
                 folder=str(folder),
@@ -694,7 +689,6 @@ class LibraryMaintenanceService:
             spent_axes=tuple(spent),
         )
         if not preview.accepted:
-            self._remember_refusal(folder, emerging.name)
             log_trace(
                 "subdivide.rejected",
                 folder=str(folder),
@@ -763,7 +757,6 @@ class LibraryMaintenanceService:
                 complete=False,
             )
             if not audit.accepted:
-                self._remember_refusal(folder, emerging.name)
                 log_trace(
                     "subdivide.rejected",
                     folder=str(folder),
@@ -857,18 +850,6 @@ class LibraryMaintenanceService:
             no_forced_fit=all(check.no_forced_fit for check in checks),
         )
 
-    def _remember_refusal(self, folder: PurePosixPath, name: str) -> None:
-        """Keep a name this folder offered and could not have, to show it next time."""
-        if not name.strip():
-            return
-        seen = self._refused.setdefault(str(folder), [])
-        if name in seen:
-            return
-        seen.append(name)
-        # A prompt-size guard, not a judgement: the list is shown back to the model, and
-        # the oldest refusals say the least about what to try next.
-        del seen[:-8]
-
     async def _find_emerging(
         self,
         *,
@@ -880,8 +861,6 @@ class LibraryMaintenanceService:
         spent: list[str],
         language: str = "",
     ) -> prompts.Emerging:
-        refused = self._refused.get(str(folder), [])
-
         def build(packet: list[tuple[str, str]]):  # type: ignore[no-untyped-def]
             return prompts.build_emerging(
                 path=str(folder),
@@ -891,7 +870,6 @@ class LibraryMaintenanceService:
                 axis=axis,
                 spent=spent,
                 language=language,
-                refused=refused,
             )
 
         if _prompt_chars(build([])) > MAX_MAINTENANCE_PROMPT_CHARS:

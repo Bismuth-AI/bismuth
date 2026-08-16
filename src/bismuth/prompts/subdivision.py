@@ -632,7 +632,6 @@ def build_emerging(
     axis: str = "",
     spent: list[str] | None = None,
     language: str = "",
-    refused: list[str] | None = None,
 ) -> Prompt:
     """Step one: has any one class grown thick enough to come out?
 
@@ -640,16 +639,14 @@ def build_emerging(
     "another answer to the same question?". Without one, the axis is chosen here and
     every sub-folder this folder ever gets is held to it.
 
-    ``refused`` carries back what this folder already proposed and could not have. Asked
-    without it the question is identical every time, and so is the answer: one folder of
-    198 documents was asked 233 times in a single 300-document round, each time named a
-    class carrying its own name, and was refused all 233 times.
+    A folder that keeps proposing refused names is not asked differently here. Showing it
+    what it had already been refused was measured and made things worse: the refusals
+    changed kind rather than stopping -- from an ancestor's name to a failed semantic
+    audit -- while the longer prompt quadrupled the run's model calls, 44,399 for 300
+    documents against 9,928. A folder with no good answer left does not have one shown
+    back to it.
     """
     user = _listing(path, purpose, documents, children)
-    if refused:
-        user += "\n\nALREADY PROPOSED HERE AND REFUSED (do not offer these again):\n  " + (
-            "\n  ".join(refused)
-        )
     if not axis:
         if spent:
             user += (
