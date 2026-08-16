@@ -372,6 +372,11 @@ def log_llm_call(record: dict[str, Any]) -> str:
             "t": timestamp,
             **_envelope(call_id=call_id),
             "event": "llm.call",
+            # The folder is the join from a defect in the finished tree back to the calls
+            # that made it. Without it, "this folder is wrong" and "here is what the model
+            # was shown" were two piles of evidence with nothing linking them, and the
+            # exact request/response artifacts went unopened for eighteen tuning rounds.
+            "folder": enriched.get("folder"),
             "operation": enriched.get("operation") or "structured",
             "model": enriched.get("model"),
             "schema": enriched.get("schema"),
