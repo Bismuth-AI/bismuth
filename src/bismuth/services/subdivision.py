@@ -639,19 +639,17 @@ class LibraryMaintenanceService:
                 reuse_existing=True,
             )
 
-        proposed = emerging.axis.strip()
-        if not axis and proposed and _same_axis(proposed, spent):
-            # Everything in this folder shares the ancestors' answer to their axes -- that
-            # is what put these documents together -- so those axes cannot tell any of
-            # them apart. Reusing one creates a repeated, non-distinguishing boundary.
-            log_trace(
-                "subdivide.rejected",
-                folder=str(folder),
-                reason="axis already used above here",
-                proposed=[proposed],
-                spent=spent,
-            )
-            return None
+        # An axis an ancestor used is not automatically spent. It is spent when every
+        # document here gives it the same answer -- which is true when the parent's class
+        # was narrow, and false when it was broad. A folder named 산업·금융, one value of
+        # the root's "which field does this regulate", still holds documents that answer
+        # that same question differently: 가상자산, 공적자금, 소상공인. Refusing the
+        # property by name blocked the one refinement that was available, 78 times out of
+        # 104 in a 300-document round, and left 120 documents undivided.
+        #
+        # Whether the documents here would answer differently is a question about them,
+        # not about two strings, so build_axis_check makes it with the ancestors'
+        # properties and the documents both in front of it (SPEC.md 6.1).
 
         with log_context(stage="subdivision.members"):
             members = await self._find_members(
@@ -700,7 +698,8 @@ class LibraryMaintenanceService:
                 document_id for document_id, _, _ in contents.documents
             ),
             ancestor_names=folder.parts,
-            spent_axes=tuple(spent),
+            # Not spent_axes. Whether an ancestor's property still separates the documents
+            # here is judged above, with the documents in view; a name match is not it.
         )
         if not preview.accepted:
             log_trace(
@@ -2514,12 +2513,6 @@ def _within(candidate: PurePosixPath, root: PurePosixPath) -> bool:
 
 def _same_name(name: str, ancestors: tuple[str, ...]) -> bool:
     return any(_normalise(name) == _normalise(part) for part in ancestors)
-
-
-def _same_axis(proposed: str, spent: list[str]) -> bool:
-    """Whether an axis has already been used somewhere above."""
-    wanted = normalise_label(proposed)
-    return any(wanted == normalise_label(used) for used in spent)
 
 
 def _writing_system(text: str) -> str | None:
