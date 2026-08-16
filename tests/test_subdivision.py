@@ -1097,3 +1097,19 @@ class TestNamingAShelfThatAlreadyStands:
 
         assert (engine.vault.root / "문학/doc2.txt").is_file()
         assert not (engine.vault.root / "doc2.txt").exists()
+
+
+class TestOneStepNotADescent:
+    async def test_a_newborn_folder_does_not_keep_dividing_in_one_ingest(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """A folder that arrives full is new evidence; what its answer creates is not."""
+        await _fill(engine, script, 8)
+        _emerges(script, "문학", "문학 자료", ["D0001", "D0002", "D0003", "D0004"])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        # 문학 may be asked about itself, but nothing it creates may be asked again here.
+        assert not any(
+            path.is_dir() for path in (engine.vault.root / "문학").glob("*/*") if path.is_dir()
+        )
