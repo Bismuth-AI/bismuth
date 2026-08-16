@@ -1158,3 +1158,51 @@ class TestARefusedSignSaysWhy:
         assert refusals
         assert refusals[0]["reason"] == "sign is the folder name again"
         assert refusals[0]["name"] == "문학"
+
+
+class TestAReplacementNeedNotTakeEverything:
+    async def test_a_document_that_fits_no_new_sign_stays_where_it_is(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Offered only the new signs, a model has to pick one and picks the broadest.
+        Measured: a root redrawn on a finance axis pulled 중대재해처벌법 and
+        국립공업고등학교 설치령 behind 금융산업 구조개선."""
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+        root = engine.charters.load(PurePosixPath())
+        assert root is not None
+        (engine.vault.root / "_folder.md").write_text(
+            root.model_copy(update={"split_at_documents": 1}).to_markdown(), encoding="utf-8"
+        )
+        script.set(
+            subdivision_prompts.Review,
+            subdivision_prompts.Review(
+                one_axis=False, coherent_membership=False, useful_navigation=False
+            ),
+        )
+        _replacement(
+            script,
+            basis="다른 속성",
+            question="어느 값인가?",
+            groups=[
+                _group("첫 값", "첫 값 문서", ["D0001", "D0002"]),
+                _group("둘째 값", "둘째 값 문서", ["D0003", "D0004"]),
+            ],
+        )
+        # The rest fit neither sign.
+        script.set_assignments({"D0001": "G001", "D0002": "G001", "D0003": "G002", "D0004": "G002"})
+        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        # Handles renumber over the reviewed subtree, so which document stays is not
+        # fixed here; what matters is that the new boundary did not have to swallow all
+        # six to be applied.
+        taken = sum(
+            1
+            for name in ("첫 값", "둘째 값")
+            if (engine.vault.root / name).is_dir()
+            for _ in (engine.vault.root / name).glob("*.txt")
+        )
+        assert taken < 6, "a replacement must be allowed to leave documents where they are"

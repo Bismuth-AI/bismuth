@@ -242,7 +242,9 @@ class ScriptedModel:
         if "NEW SIGN:" in prompt.user:
             return "SHELF" if document_id in self._members else "STAY"
         if "\n  [G" in prompt.user:
-            return self._assignments.get(document_id or "", "G001")
+            # STAY by default, matching production: a replacement no longer has to take
+            # every document, and one that fits no new sign keeps the folder it is in.
+            return self._assignments.get(document_id or "", "STAY")
         if "CURRENT FOLDER:" not in prompt.user and "\n  [F" in prompt.user:
             # Routing a loose document into an existing sign. Shares the F### handle
             # shape with a placement descent, so the descent marker is what tells them
