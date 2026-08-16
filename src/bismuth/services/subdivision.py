@@ -280,21 +280,24 @@ class LibraryMaintenanceService:
         # as a complete boundary made the inevitable "not useful navigation" verdict
         # trigger expensive redesigns before a second class had even emerged.
         established_boundary = len(contents.children) >= 2
-        # The second door to the review, and it is rationed by growth rather than by the
-        # doubling schedule: a boundary that is not carrying its folder should be looked
-        # at again as soon as there is anything new to look at, and not before. A holding
-        # review records the size it was upheld at, which closes this door until the next
-        # arrival -- without that it re-opens on the same evidence every ingest.
-        failing = (
-            charter is not None
-            and charter.split_at_documents < total
-            and self._boundary_is_failing(folder, contents)
-        )
+        # There was a second door here: a folder whose loose pile outweighed its largest
+        # child opened the review regardless of the schedule, because a one-child folder
+        # is never "established" and so could never become due. The diagnosis was right
+        # and the prescription was wrong. A pile that has not been divided is not a
+        # boundary that was drawn wrongly -- redrawing it moves the documents that were
+        # already filed and leaves the pile exactly where it was. Measured on 300
+        # documents: 금융감독 및 시장질서 kept 30 loose behind a shelf of 6 through
+        # every one of those reviews, while replacement took 48% of the run's model
+        # calls, and in an earlier round the same path shattered a root into 23 thin
+        # folders. Growing a new class out of the pile is the operation for that, and
+        # it is asked on every arrival already. The corridor this door was opened for
+        # is now reached by two operations that did not exist then: a folder born full
+        # asks about itself, and a level that grew too wide can be narrowed again.
         if (
             charter is not None
             and charter.divided
-            and (established_boundary or failing)
-            and (charter.due_for_review(total) or failing)
+            and established_boundary
+            and charter.due_for_review(total)
             # Review safety problems postpone only the destructive review. They must
             # never prevent additive filing into the still-usable current structure.
             and len(self._read(folder, recursive=True).documents) == total
@@ -2319,47 +2322,6 @@ class LibraryMaintenanceService:
             if charter is not None and not charter.managed:
                 return True
         return False
-
-    def _boundary_is_failing(self, folder: PurePosixPath, contents: _Contents) -> bool:
-        """Whether more documents stayed loose here than went into the biggest shelf.
-
-        SPEC.md 3.3.1 states this as a scale-free invariant, and it is the one shape a
-        boundary cannot argue its way out of: the classes drawn are not carrying the
-        folder, so the reader still faces the pile the folders were meant to replace.
-        Two live counts compared against each other -- no threshold, nothing tuned.
-
-        It is a second door to the review, because the doubling schedule cannot open for
-        this case. A folder with one child is not an established partition, so it never
-        becomes due; measured on 300 documents, one held 37 loose behind a single shelf
-        of 7 and grew a corridor six levels deep, each level one more thin class drawn
-        off the same undivided pile. Redrawing the whole boundary is what that needs.
-        """
-        # The inbox is a staging area, not a shelf, and counting it as one made every
-        # folder beside it look like an established two-way boundary.
-        counts = [
-            count
-            for name, _ in contents.children
-            if name != INBOX.parts[0]
-            # An empty shelf is evidence of nothing either way. Counting one made a
-            # folder with a single real child look like an established two-way boundary.
-            and (count := self._count_documents(folder / name, recursive=True))
-        ]
-        if not counts:
-            return False
-        loose = len(contents.documents)
-        largest = max(counts)
-        if loose > largest:
-            return True
-        # The same failure from the other side: one name holds more than everything else
-        # here put together, so the reader who rules it out has ruled out less than half
-        # and the reader who does not has gained nothing. Measured on 300 documents as a
-        # root split two ways, 213 behind one sign, with the whole tree then growing
-        # downward from it -- six levels deep because the first choice never narrowed.
-        #
-        # Only once a second class exists. Straight after the first draw a folder is
-        # lopsided by construction -- one class at a time is the design (SPEC.md 3.4) --
-        # and calling that a failure would redraw every boundary the moment it was made.
-        return len(counts) >= 2 and largest > sum(counts) - largest + loose
 
     def _count_documents(self, folder: PurePosixPath, *, recursive: bool) -> int:
         return sum(
