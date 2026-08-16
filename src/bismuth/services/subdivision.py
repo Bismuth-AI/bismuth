@@ -127,6 +127,10 @@ class LibraryMaintenanceService:
         self._charters = charters
         self._transactor = transactor
         self._llm = llm
+        # What each folder has already proposed and could not have. Held for the life of
+        # the process, not written to the vault: it is about this conversation with the
+        # model, not about the archive, and a fresh start should ask fresh questions.
+        self._refused: dict[str, list[str]] = {}
 
     async def consider_with_ancestors(
         self,
@@ -262,14 +266,14 @@ class LibraryMaintenanceService:
         # it lays down a corridor while the pile nobody divided sits at the top of it --
         # measured as four levels in a single ingest above 33 loose documents. The pile
         # is the more urgent question and it is already asked on every arrival.
-        # "Emptied its parent" means everything else here put together is smaller than
-        # this one shelf -- not merely more than what stayed loose. The looser reading
-        # descended on a folder split roughly in half and kept descending, six levels in
-        # one 300-document round, past the absolute ceiling in SPEC.md 3.3.1.
-        rest = self._count_documents(folder, recursive=True)
+        # Tightened once to "bigger than everything else here put together", to stop a
+        # six-level corridor. It stopped the subdivision instead: 300 documents in five
+        # folders, one leaf of 198, a width of 2. The corridor was never really about
+        # this condition -- the same round asked that 198-document folder 233 times and
+        # refused all 233 answers, which is what the refusal list above fixes.
+        remaining = self._count_documents(folder, recursive=False)
         for child in divided.created:
-            taken = self._count_documents(child, recursive=True)
-            if taken <= rest - taken:
+            if self._count_documents(child, recursive=True) <= remaining:
                 continue
             results = await self.consider(child, filename=filename, on_progress=on_progress)
             if results:
@@ -631,6 +635,7 @@ class LibraryMaintenanceService:
             # Everything in this folder shares the ancestors' answer to their axes -- that
             # is what put these documents together -- so those axes cannot tell any of
             # them apart. Reusing one creates a repeated, non-distinguishing boundary.
+            self._remember_refusal(folder, emerging.name)
             log_trace(
                 "subdivide.rejected",
                 folder=str(folder),
@@ -689,6 +694,7 @@ class LibraryMaintenanceService:
             spent_axes=tuple(spent),
         )
         if not preview.accepted:
+            self._remember_refusal(folder, emerging.name)
             log_trace(
                 "subdivide.rejected",
                 folder=str(folder),
@@ -757,6 +763,7 @@ class LibraryMaintenanceService:
                 complete=False,
             )
             if not audit.accepted:
+                self._remember_refusal(folder, emerging.name)
                 log_trace(
                     "subdivide.rejected",
                     folder=str(folder),
@@ -850,6 +857,18 @@ class LibraryMaintenanceService:
             no_forced_fit=all(check.no_forced_fit for check in checks),
         )
 
+    def _remember_refusal(self, folder: PurePosixPath, name: str) -> None:
+        """Keep a name this folder offered and could not have, to show it next time."""
+        if not name.strip():
+            return
+        seen = self._refused.setdefault(str(folder), [])
+        if name in seen:
+            return
+        seen.append(name)
+        # A prompt-size guard, not a judgement: the list is shown back to the model, and
+        # the oldest refusals say the least about what to try next.
+        del seen[:-8]
+
     async def _find_emerging(
         self,
         *,
@@ -861,6 +880,8 @@ class LibraryMaintenanceService:
         spent: list[str],
         language: str = "",
     ) -> prompts.Emerging:
+        refused = self._refused.get(str(folder), [])
+
         def build(packet: list[tuple[str, str]]):  # type: ignore[no-untyped-def]
             return prompts.build_emerging(
                 path=str(folder),
@@ -870,6 +891,7 @@ class LibraryMaintenanceService:
                 axis=axis,
                 spent=spent,
                 language=language,
+                refused=refused,
             )
 
         if _prompt_chars(build([])) > MAX_MAINTENANCE_PROMPT_CHARS:
