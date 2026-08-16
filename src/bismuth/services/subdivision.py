@@ -1078,7 +1078,10 @@ class LibraryMaintenanceService:
             available_document_ids=frozenset(document_id for document_id, _ in documents),
             ancestor_names=folder.parts,
             spent_axes=tuple(self._axes_above(folder)),
-            require_complete=True,
+            # Not require_complete. A replacement redraws the boundary; it does not
+            # have to account for every document, and demanding that is what forced
+            # unrelated documents behind whichever new name sounded broadest.
+            require_complete=False,
         )
         if not preview.accepted:
             log_trace(
@@ -1254,13 +1257,21 @@ class LibraryMaintenanceService:
                 prompts.build_replacement_choice(
                     path=str(folder), document=document, sketch=sketch
                 ),
-                choices=handles,
+                choices=[*handles, "STAY"],
                 max_tokens=8,
             )
             return document[0], choice
 
         decisions = await _bounded_gather(documents, decide)
+        stayed = 0
         for document_id, handle in decisions:
+            # A document that fits none of the new signs keeps the folder it is in. The
+            # replacement is still a redrawing of the boundary; it is just no longer a
+            # partition, and a partition of a heterogeneous pile can only be completed by
+            # inventing a residue class (see this module's prompts docstring).
+            if handle.strip().upper() == "STAY":
+                stayed += 1
+                continue
             if handle not in handles:
                 log_trace(
                     "subdivide.rejected",
@@ -1271,6 +1282,14 @@ class LibraryMaintenanceService:
                 )
                 return None
             assignments_by_sign[int(handle[1:]) - 1].append(document_id)
+        if stayed:
+            log_trace(
+                "subdivide.replacement_left_behind",
+                folder=str(folder),
+                stayed=stayed,
+                assigned=len(decisions) - stayed,
+                basis=sketch.basis,
+            )
 
         return prompts.Replacement(
             basis=sketch.basis,
@@ -1812,7 +1831,10 @@ class LibraryMaintenanceService:
             available_document_ids=available,
             ancestor_names=folder.parts,
             spent_axes=tuple(self._axes_above(folder)),
-            require_complete=True,
+            # Not require_complete. A replacement redraws the boundary; it does not
+            # have to account for every document, and demanding that is what forced
+            # unrelated documents behind whichever new name sounded broadest.
+            require_complete=False,
         )
         if not validation.accepted:
             reasons = [problem.value for problem in validation.problems]
