@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import PurePosixPath
+from unittest import mock
 
 import pytest
 from pydantic import ValidationError
@@ -1135,3 +1136,25 @@ class TestWhereTheDocumentsWent:
             p for p in llm.prompts_for(subdivision_prompts.Emerging) if "FOLDER: 문학" in p.user
         ]
         assert asked
+
+
+class TestARefusedSignSaysWhy:
+    async def test_the_fallback_note_is_recorded_with_its_reason(
+        self, engine: Bismuth, script: ScriptedModel, caplog
+    ) -> None:
+        """The fallback repeats the folder name and rules nothing out, so a run that
+        writes it often has a defect -- and only the finished vault showed it before."""
+        ids = await _fill(engine, script, 6)
+        # A sign that is the folder name again is one of the four refusals.
+        _emerges(script, "문학", "문학", ids[:2])
+
+        events = []
+        with mock.patch.object(
+            subdivision_service, "log_trace", lambda e, **f: events.append((e, f))
+        ):
+            await engine.subdivision.consider(PurePosixPath())
+
+        refusals = [f for e, f in events if e == "subdivide.sign_refused"]
+        assert refusals
+        assert refusals[0]["reason"] == "sign is the folder name again"
+        assert refusals[0]["name"] == "문학"
