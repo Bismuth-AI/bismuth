@@ -1215,3 +1215,45 @@ class TestAReplacementNeedNotTakeEverything:
             for _ in (engine.vault.root / name).glob("*.txt")
         )
         assert taken < 6, "a replacement must be allowed to leave documents where they are"
+
+
+class TestNoDocumentIsLeftStaged:
+    async def test_a_document_no_class_claimed_comes_back_to_the_folder(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Replacement stages every document and only unstages what a group claimed.
+        When it had to account for all of them that was safe; once it could leave some
+        behind, those stayed under .bismuth -- eight of a hundred, invisible to the
+        vault and to whoever owned them."""
+        await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학 자료", ["D0001", "D0002"])
+        await engine.subdivision.consider(PurePosixPath())
+        root = engine.charters.load(PurePosixPath())
+        assert root is not None
+        (engine.vault.root / "_folder.md").write_text(
+            root.model_copy(update={"split_at_documents": 1}).to_markdown(), encoding="utf-8"
+        )
+        script.set(
+            subdivision_prompts.Review,
+            subdivision_prompts.Review(
+                one_axis=False, coherent_membership=False, useful_navigation=False
+            ),
+        )
+        _replacement(
+            script,
+            basis="다른 속성",
+            question="어느 값인가?",
+            groups=[
+                _group("첫 값", "첫 값 문서", ["D0001", "D0002"]),
+                _group("둘째 값", "둘째 값 문서", ["D0003", "D0004"]),
+            ],
+        )
+        script.set_assignments({"D0001": "G001", "D0002": "G001", "D0003": "G002", "D0004": "G002"})
+        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        stray = list((engine.vault.root / ".bismuth").rglob("*.txt"))
+        assert not stray, f"documents stranded in staging: {[p.name for p in stray]}"
+        filed = list(engine.vault.root.rglob("*.txt"))
+        assert len(filed) == 6, "every document must still be somewhere the vault can see"
