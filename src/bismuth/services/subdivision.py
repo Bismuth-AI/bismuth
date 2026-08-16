@@ -262,9 +262,14 @@ class LibraryMaintenanceService:
         # it lays down a corridor while the pile nobody divided sits at the top of it --
         # measured as four levels in a single ingest above 33 loose documents. The pile
         # is the more urgent question and it is already asked on every arrival.
-        remaining = self._count_documents(folder, recursive=False)
+        # "Emptied its parent" means everything else here put together is smaller than
+        # this one shelf -- not merely more than what stayed loose. The looser reading
+        # descended on a folder split roughly in half and kept descending, six levels in
+        # one 300-document round, past the absolute ceiling in SPEC.md 3.3.1.
+        rest = self._count_documents(folder, recursive=True)
         for child in divided.created:
-            if self._count_documents(child, recursive=True) <= remaining:
+            taken = self._count_documents(child, recursive=True)
+            if taken <= rest - taken:
                 continue
             results = await self.consider(child, filename=filename, on_progress=on_progress)
             if results:
