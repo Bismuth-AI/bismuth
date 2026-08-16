@@ -639,19 +639,13 @@ class LibraryMaintenanceService:
                 reuse_existing=True,
             )
 
-        proposed = emerging.axis.strip()
-        if not axis and proposed and _same_axis(proposed, spent):
-            # Everything in this folder shares the ancestors' answer to their axes -- that
-            # is what put these documents together -- so those axes cannot tell any of
-            # them apart. Reusing one creates a repeated, non-distinguishing boundary.
-            log_trace(
-                "subdivide.rejected",
-                folder=str(folder),
-                reason="axis already used above here",
-                proposed=[proposed],
-                spent=spent,
-            )
-            return None
+        # Reusing an ancestor's property is refused by default and allowed in one narrow
+        # case -- when the parent's class was broad enough that the same property still
+        # separates what is inside it. Which of the two this is depends on the documents
+        # and on how narrow the parent's name was, so build_axis_check decides it with the
+        # folder path and the proposed names in view. Refusing it here by name blocked a
+        # real class 39 times and left 84 documents undivided; refusing nothing at all
+        # built a seven-level corridor. The judgement is the model's, with a stated test.
 
         with log_context(stage="subdivision.members"):
             members = await self._find_members(
@@ -2514,12 +2508,6 @@ def _within(candidate: PurePosixPath, root: PurePosixPath) -> bool:
 
 def _same_name(name: str, ancestors: tuple[str, ...]) -> bool:
     return any(_normalise(name) == _normalise(part) for part in ancestors)
-
-
-def _same_axis(proposed: str, spent: list[str]) -> bool:
-    """Whether an axis has already been used somewhere above."""
-    wanted = normalise_label(proposed)
-    return any(wanted == normalise_label(used) for used in spent)
 
 
 def _writing_system(text: str) -> str | None:
