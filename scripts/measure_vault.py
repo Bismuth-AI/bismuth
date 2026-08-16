@@ -58,13 +58,13 @@ def main(argv: list[str]) -> int:
     print("SPEC 6.2")
     if leaf_counts:
         print(
-            f"  잎 폴더 크기     중앙값 {statistics.median(leaf_counts):.0f}"
-            f" · 최대 {leaf_counts[0]}"
+            f"  잎 폴더당 문서   중앙값 {statistics.median(leaf_counts):.0f}건"
+            f" · 최대 {leaf_counts[0]}건"
             f" · 상위 {', '.join(str(n) for n in leaf_counts[:5])}"
         )
     else:
-        print("  잎 폴더 크기     (아직 폴더 없음)")
-    print(f"  층당 분기 수     최대 {branching[0] if branching else 0}")
+        print("  잎 폴더당 문서   (아직 폴더 없음)")
+    print(f"  한 층의 갈래     최대 {branching[0] if branching else 0}개")
     share = f"{at_root / total:.0%}" if total else "-"
     print(f"  아직 안 나뉨     루트에 {at_root} / {total}  ({share})")
     print(f"  미분류           인박스 {inbox}  ← 읽지 못한 문서만 있어야 함")
@@ -171,7 +171,7 @@ def _scorecard(total, leaf_counts, branching, depths, folders, children, counts,
         if value > cap
     ]
     rows = [
-        f"실격선 — 폭 {width_cap} · 깊이 {depth_cap} · 잎 {leaf_cap} (SPEC 3.3.1)",
+        f"실격선 — 한 층 {width_cap}갈래 · {depth_cap}층 · 잎 폴더 하나에 {leaf_cap}건 (SPEC 3.3.1)",
         _line(
             "판정",
             "통과" if not breaches else f"실격 — {', '.join(breaches)} 초과",
@@ -190,13 +190,18 @@ def _scorecard(total, leaf_counts, branching, depths, folders, children, counts,
     rows += [
         "",
         f"권장 띠 — {total}건 장서, 동점을 가르는 데만 쓴다",
+        "  (잎 = 자식 폴더가 없는 폴더. 잎 크기는 그 폴더 하나에 든 문서 수이지 폴더 개수가 아니다)",
         _line(
-            "층당 폭",
-            f"최대 {width}  (권장 {width_min}~{width_max})",
+            "한 층의 갈래",
+            f"최대 {width}개  (권장 {width_min}~{width_max}개)",
             width_min <= width <= width_max,
         ),
-        _line("깊이", f"최대 {depth}  (권장 {depth_max})", depth <= depth_max),
-        _line("잎 크기", f"최대 {leaf}  (권장 {leaf_max})", leaf <= leaf_max),
+        _line("깊이", f"최대 {depth}층  (권장 {depth_max}층)", depth <= depth_max),
+        _line(
+            "가장 큰 잎",
+            f"한 폴더에 {leaf}건  (권장 {leaf_max}건 이하)",
+            leaf <= leaf_max,
+        ),
         "",
         "경로 가독성 — grep 한 줄에 실린다 (SPEC 3.3.1, 판정 없이 관측만)",
         f"  가장 긴 마디     {segment}자",
