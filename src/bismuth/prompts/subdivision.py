@@ -932,15 +932,29 @@ def build_member_choice(*, path: str, purpose: str, document: tuple[str, str], n
 def build_replacement_choice(
     *, path: str, document: tuple[str, str], sketch: ReplacementSketch
 ) -> Prompt:
-    """Assign one document to one fixed replacement sign."""
+    """Assign one document to one fixed replacement sign, or leave it where it is.
+
+    ``STAY`` is the whole point. Offered only the signs, a model shown a document about
+    something else has to pick one anyway -- and it picks whichever name sounds broadest.
+    Measured on 300 documents: a root redrawn on 금융거래 및 금융기관 감독 pulled 102
+    documents into six finance shelves, and 중대재해처벌법, 과학기술기본법 and
+    국립공업고등학교 설치령 landed behind 금융산업 구조개선, which ended up holding 51
+    documents of which four were about it. The residue was manufactured by the question.
+    """
     signs = "\n".join(
-        f"  [G{index:03d}] {sign.name}/" for index, sign in enumerate(sketch.signs, start=1)
+        f"  [G{index:03d}] {sign.name} — {sign.sign}" for index, sign in enumerate(sketch.signs, 1)
     )
     return Prompt(
         system=(
-            "A complete replacement boundary has already been fixed. Assign this one document "
-            "to exactly one shown sign. Reply with exactly one G### handle. Do not explain, "
-            "rename, or create a sign."
+            "A replacement boundary has already been fixed. Say where this one document "
+            "goes. Reply with exactly one G### handle, or STAY. Do not explain, rename, or "
+            "create a sign.\n\n"
+            "Choose a sign only when it positively describes this document. STAY when none "
+            "of them does -- the document keeps the folder it is in now, which is a normal "
+            "and safe outcome. Never choose the closest sign merely because the document "
+            "has to go somewhere: a document filed under a name that does not describe it "
+            "is worse than one left where it was, because the name then lies to every "
+            "reader who trusts it."
         ),
         user=(
             f"FOLDER: {path or '(root)'}\nAXIS: {sketch.basis}\n"
@@ -1094,7 +1108,8 @@ def build_boundary_check(
         f"  {group.name}/ — ids: {', '.join(group.document_ids)}" for group in groups
     )
     mode = (
-        "This replaces the whole boundary, so every document must be represented."
+        "This redraws the whole boundary. Documents that fit none of the new signs stay "
+        "loose in the folder, so a document missing from the groups is not a fault."
         if complete
         else "This draws out one class; unclaimed documents intentionally remain loose."
     )
@@ -1122,7 +1137,8 @@ def build_boundary_audit(
         f"  {group.name}/ — {group.note} — ids: {', '.join(group.document_ids)}" for group in groups
     )
     mode = (
-        "This replaces the whole boundary, so every document must be represented."
+        "This redraws the whole boundary. Documents that fit none of the new signs stay "
+        "loose in the folder, so a document missing from the groups is not a fault."
         if complete
         else "This draws out one class; unclaimed documents intentionally remain loose."
     )
