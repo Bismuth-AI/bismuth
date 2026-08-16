@@ -396,7 +396,10 @@ class TestReview:
         llm,
         monkeypatch,  # type: ignore[no-untyped-def]
     ) -> None:
-        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 8_000)
+        # Comfortably above the system prompt, which is most of a maintenance call. At
+        # 8,000 the test stopped exercising packeting and started tripping on
+        # prompt length -- a wording change made one sign alone exceed the budget.
+        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 16_000)
         documents = [
             (f"D{index:04d}", f"current=x/{index}.txt | " + "가" * 1_300) for index in range(1, 9)
         ]
@@ -421,7 +424,7 @@ class TestReview:
         calls = _review_prompts(llm)
         assert review.holds
         assert len(calls) > 1
-        assert all(len(prompt.system) + len(prompt.user) <= 8_000 for prompt in calls)
+        assert all(len(prompt.system) + len(prompt.user) <= 16_000 for prompt in calls)
         # Every document is presented; each packet is now asked once per check, so a
         # handle appears once per check rather than once in total.
         seen = {handle for prompt in calls for handle in re.findall(r"\[(D\d{4})\]", prompt.user)}
@@ -433,7 +436,10 @@ class TestReview:
         llm,
         monkeypatch,  # type: ignore[no-untyped-def]
     ) -> None:
-        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 8_000)
+        # Comfortably above the system prompt, which is most of a maintenance call. At
+        # 8,000 the test stopped exercising packeting and started tripping on
+        # prompt length -- a wording change made one sign alone exceed the budget.
+        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 16_000)
         children = [(f"분류-{index:03d}", "범위 " + "다" * 180) for index in range(40)]
         charter = Charter(
             path=PurePosixPath(),
@@ -456,7 +462,7 @@ class TestReview:
         calls = _review_prompts(llm)
         assert review.holds
         assert len(calls) > 1
-        assert all(len(prompt.system) + len(prompt.user) <= 8_000 for prompt in calls)
+        assert all(len(prompt.system) + len(prompt.user) <= 16_000 for prompt in calls)
         combined = "\n".join(prompt.user for prompt in calls)
         assert all(name in combined for name, _ in children)
 
@@ -467,7 +473,10 @@ class TestReview:
         llm,
         monkeypatch,  # type: ignore[no-untyped-def]
     ) -> None:
-        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 8_000)
+        # Comfortably above the system prompt, which is most of a maintenance call. At
+        # 8,000 the test stopped exercising packeting and started tripping on
+        # prompt length -- a wording change made one sign alone exceed the budget.
+        monkeypatch.setattr(subdivision_service, "MAX_MAINTENANCE_PROMPT_CHARS", 16_000)
         documents = [
             (f"D{index:04d}", f"current=x/{index}.txt | " + "나" * 1_300) for index in range(1, 9)
         ]
