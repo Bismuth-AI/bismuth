@@ -92,6 +92,16 @@ than what stands on the shelf -- the leftovers, the remainder, the ones sorted b
 subject -- leaves the reader with the same list and one more click to reach it. If the \
 only thing a group has in common is that it was left over, it is not a group.
 
+**Nothing is named by what it is not.** A shelf whose name says "the ones that are not X" \
+holds everything in the world except X, so it excludes nothing and can never be split \
+further -- what would its children be? A reader cannot use it either: they know what they \
+are looking for, not what they are not looking for. Two things produce such a name, and \
+both are the same mistake. Splitting on a property where almost every document here gives \
+the same answer leaves one shelf and a not-that remainder. And drawing a class you can \
+only describe against the class beside it means the distinction is that other class, not \
+this one. If the honest name is "the rest", nothing has emerged -- say so and leave them \
+where they are.
+
 **An attribute nearly every document has is not the first distinction to draw.** Format, \
 type, language, date, and issuing body are known for almost everything, so they fill a \
 tree neatly and leave the reader no better off: someone arrives wanting a subject, not a \
