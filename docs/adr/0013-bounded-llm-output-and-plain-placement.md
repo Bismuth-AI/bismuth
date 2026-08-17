@@ -21,9 +21,6 @@ were intentionally still accepted, so it was model-authored diagnostic metadata,
 not a safety signal. Keeping JSON only for that field increased failure surface
 without improving the decision.
 
-The experiment and operational evidence are recorded in
-[the troubleshooting guide](../troubleshooting/structured-output-loops.md).
-
 ## Decision
 
 Placement has a dedicated provider-neutral choice protocol:

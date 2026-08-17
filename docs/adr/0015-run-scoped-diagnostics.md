@@ -1,9 +1,8 @@
 # 0015 — Keep run-scoped joinable diagnostics; a compact timeline over exact artifacts
 
 **Status:** accepted
-**Ported from:** [`archive/0022-run-scoped-diagnostics.md`](archive/0022-run-scoped-diagnostics.md),
-written on the abandoned agentic-organizer branch. The mechanism is semantically neutral;
-none of that branch's classification decisions come with it.
+**Ported from:** an earlier record on the abandoned agentic-organizer branch. The mechanism
+is semantically neutral; none of that branch's classification decisions come with it.
 
 ## Context
 

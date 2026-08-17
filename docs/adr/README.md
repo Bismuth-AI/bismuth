@@ -31,6 +31,6 @@ decision should be revisited. Superseded records stay; they are not deleted.
 | [0016](0016-signs-that-discriminate-and-names-that-fit.md) | Signs that discriminate, names that fit, and a boundary torn down only on agreement |
 | [0017](0017-small-model-contract.md) | One judgement per call; every contract in the prompt, not only in the schema |
 
-An abandoned line of work — a global planner agent, then a per-document placement agent —
-is preserved in [`archive/`](archive/README.md). Those records are superseded in full and
-do not govern this branch; they are kept as evidence of what was measured and rejected.
+An earlier line of work — a global planner agent, then a per-document placement agent — was
+measured and abandoned. Nothing in it governs this branch; ADR-0007 through ADR-0009 record
+what replaced it and why.
