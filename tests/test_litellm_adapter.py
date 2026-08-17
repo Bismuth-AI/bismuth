@@ -10,7 +10,7 @@ import pytest
 from pydantic import BaseModel
 
 from bismuth.adapters.llm import litellm_adapter
-from bismuth.adapters.llm.litellm_adapter import LiteLLMAdapter, _parse_json
+from bismuth.adapters.llm.litellm_adapter import _MAX_CHOICE_MAX_TOKENS, LiteLLMAdapter, _parse_json
 from bismuth.domain.errors import ModelRequestError, StructuredOutputError
 from bismuth.ports.llm import Prompt
 
@@ -705,3 +705,82 @@ class TestAParameterTheEndpointRefuses:
             await adapter().structured(Prompt(system="s", user="u"), schema=Answer)
 
         assert len(fake.calls) == 1
+
+
+class SpendsTheBudgetOnThinking(StubLiteLLM):
+    """A reasoning model at default effort: the cap is gone and the reply is empty.
+
+    Its thinking is billed against ``max_tokens`` and never streamed, so the stream ends
+    with ``finish_reason: length`` and no content. Measured on gpt-5-nano: a placement
+    choice came back ``out_tokens: 32``, ``finish_reason: length``, reply ``''`` -- twice,
+    so the document failed -- and a card spent 2048 and then 4096 tokens the same way.
+    """
+
+    def __init__(self, replies: list[str], *, answers_above: int) -> None:
+        super().__init__(replies)
+        self._answers_above = answers_above
+
+    async def acompletion(self, **kwargs: Any) -> FakeStream:
+        self.calls.append(kwargs)
+        if int(kwargs.get("max_tokens", 0)) <= self._answers_above:
+            return FakeStream("", finish_reason="length")
+        return FakeStream(self._replies[min(len(self.calls) - 1, len(self._replies) - 1)])
+
+
+class TestReasoningIsNotWhatWasAsked:
+    @pytest.fixture(autouse=True)
+    def _forget_between_tests(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(litellm_adapter, "_UNSUPPORTED", {})
+
+    async def test_a_classification_call_asks_for_minimal_reasoning(self, stub: Any) -> None:
+        """There is nothing to reason about: the question is closed and the answers listed."""
+        fake = stub(['{"name": "Apollo", "year": 2023}'])
+
+        await adapter().structured(Prompt(system="s", user="u"), schema=Answer)
+
+        assert fake.calls[0]["reasoning_effort"] == "minimal"
+
+    async def test_a_configured_effort_is_not_overridden(self, stub: Any) -> None:
+        """The operator knows their endpoint; Bismuth only supplies the default."""
+        fake = stub(['{"name": "Apollo", "year": 2023}'])
+
+        await adapter(body={"reasoning_effort": "high"}).structured(
+            Prompt(system="s", user="u"), schema=Answer
+        )
+
+        assert fake.calls[0]["reasoning_effort"] == "high"
+
+    async def test_an_endpoint_that_refuses_the_effort_is_obeyed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = RefusesOneParameter(['{"name": "Apollo", "year": 2023}'], refuses="reasoning_effort")
+        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+
+        result = await adapter().structured(Prompt(system="s", user="u"), schema=Answer)
+
+        assert result == Answer(name="Apollo", year=2023)
+        assert "reasoning_effort" not in fake.calls[1]
+
+    async def test_a_choice_gets_room_for_thinking_it_could_not_avoid(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """32 tokens is generous for a literal and nothing at all for a thinking model."""
+        fake = SpendsTheBudgetOnThinking(["F003"], answers_above=32)
+        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+
+        chosen = await adapter().choose(Prompt(system="s", user="u"), choices=["F003", "STAY"])
+
+        assert chosen == "F003"
+        assert fake.calls[0]["max_tokens"] == 32
+        assert fake.calls[1]["max_tokens"] == 256
+
+    async def test_a_spent_budget_does_not_report_a_long_reply(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ "Output reached the limit" about an empty reply sends the reader after a
+        length problem that is not there. The cap was a total, not an output cap."""
+        fake = SpendsTheBudgetOnThinking([""], answers_above=_MAX_CHOICE_MAX_TOKENS)
+        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+
+        with pytest.raises(StructuredOutputError, match="without producing any output"):
+            await adapter().choose(Prompt(system="s", user="u"), choices=["F003", "STAY"])
