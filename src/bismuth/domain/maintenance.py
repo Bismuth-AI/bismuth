@@ -38,21 +38,48 @@ documents -- these are our identifiers, and a class named after one is a decodin
 artefact rather than an answer."""
 
 
+def _is_phrase(label: str) -> bool:
+    """Whether this name is several words rather than one.
+
+    A one-word ancestor is refined by adding words -- 금융 → 금융소비자보호 -- so a child
+    containing it says something new. A whole phrase is not refined that way; a child that
+    still contains it has only decorated it, as 기업 유형별 지원 → 기업 유형별 지원 법령.
+    Counting words rather than characters because the phrase that prompted this normalises
+    to seven characters and is four words. Scripts that do not space their words read as
+    one word and fall to the permissive side, which is the safe direction.
+    """
+    return len(label.split()) >= 2
+
+
 def restates(inner: str, outer: str) -> bool:
     """Whether ``inner`` says nothing ``outer`` has not already said, above it.
 
-    One direction only, and deliberately.  A descendant whose whole name sits inside an
-    ancestor's is repeating a distinction that is already fixed to one value at that
-    depth -- observed as ``대통령령 총리령(하위시행규정)/…/대통령령``, where the
-    grandchild names one half of a compound its ancestor had already resolved.  The
-    other direction is ordinary refinement: a child adding words to an ancestor's name
-    is usually saying something new, and rejecting it would forbid most real trees.
+    Both directions, for different reasons.
+
+    A descendant whose whole name sits inside an ancestor's repeats a distinction already
+    fixed to one value at that depth -- observed as ``대통령령 총리령(하위시행규정)/…/
+    대통령령``, where the grandchild names one half of a compound its ancestor resolved.
+
+    The other direction was left open as ordinary refinement, and the model used it to
+    decorate: ``연구인프라 및 인력 지원`` gained the child ``국가연구인프라 및 인력 지원``,
+    and ``기업 유형별 지원`` gained ``기업 유형별 지원 법령`` (two documents above
+    thirty-eight, a pass-through in all but the count). Every document in the parent
+    answers to such a name -- that is what made it the parent's name -- so it sorts
+    nothing. Saying so in the prompt did not stop it recurring, which is what moved it
+    here.
+
+    Only when the ancestor's name is several words, though. A one-word ancestor is refined
+    by adding words, not decorated by them, and refusing that would forbid most real trees.
 
     Compared on the normalised form, so punctuation and spacing cannot smuggle a repeat
-    past an equality test -- which is exactly how the observed case got through.
+    past an equality test -- which is exactly how the first observed case got through.
     """
     small, large = normalise_label(inner), normalise_label(outer)
-    return bool(small) and bool(large) and small != large and small in large
+    if not small or not large or small == large:
+        return False
+    if small in large:
+        return True
+    return large in small and _is_phrase(outer)
 
 
 def is_axis_label(value: str) -> bool:
