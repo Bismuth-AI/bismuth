@@ -5,8 +5,8 @@ can be gone by the time anything looks at it again, and on Windows resolving a p
 that state comes back in the extended-length form -- which no longer compares against a
 plain root. One live run raised
 
-    ValueError: '\\\\?\\C:\\Users\\sh\\bismuth-vault\\...\\중소기업 인력지원 특별법(...).pdf'
-    is not in the subpath of 'C:\\Users\\sh\\bismuth-vault'
+    ValueError: '\\\\?\\C:\\Users\\<user>\\bismuth-vault\\...\\<document>.pdf'
+    is not in the subpath of 'C:\\Users\\<user>\\bismuth-vault'
 """
 
 from __future__ import annotations

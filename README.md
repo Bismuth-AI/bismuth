@@ -181,8 +181,8 @@ container.py  양쪽을 아는 유일한 곳.
 정확히 실제 모델로는 테스트 불가능한 규칙들입니다.
 
 설계 결정과 그 대가는 [`docs/adr/`](docs/adr/)에 기록되어 있습니다. 코드 주석과 문서는
-오픈소스 관행에 따라 영어로 쓰여 있습니다. 브랜치·커밋·병합 규칙은
-[`docs/git-workflow.md`](docs/git-workflow.md)에 있습니다.
+오픈소스 관행에 따라 영어로 쓰여 있습니다. 기여 절차는
+[`CONTRIBUTING.md`](CONTRIBUTING.md)에 있습니다.
 
 ## 상태
 

@@ -28,8 +28,7 @@ suite that only passed by accident, and a repository that could not prove it.
   the primary users run. Type checking and the copyleft audit still run
   separately.
 - Branching is Git Flow without release branches: `main` carries released
-  versions and their tags, `develop` carries day-to-day work. Written down in
-  [`docs/git-workflow.md`](docs/git-workflow.md) along with the ownership split.
+  versions and their tags, `develop` carries day-to-day work.
 
 ## [0.1.0] — 2026-07-31
 

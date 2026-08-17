@@ -96,7 +96,6 @@ ignore = ["E501"]
 "src/bismuth/adapters/*" = ["TID251"]
 "tests/*" = ["TID251"]
 "examples/*" = ["TID251"]  # examples exist to show embedding, which means wiring adapters
-"scripts/*" = ["TID251"]   # measurement tools read a real vault, so they wire a real adapter
 
 [tool.mypy]
 python_version = "3.11"

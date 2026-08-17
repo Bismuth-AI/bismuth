@@ -25,9 +25,27 @@ htmlcov/
 /vault/
 *.bismuth-vault/
 
-# Team operating notes -- ownership map and each member's git identity. Kept out
-# of the repository on purpose; the workflow itself is in docs/git-workflow.md.
+# Team operating notes -- ownership map, each member's git identity, and the
+# branch/commit conventions that go with them. Local to this team.
 /TEAM.md
+/docs/git-workflow.md
+
+# Working notes for the agents that develop this repository, and the tuning
+# harness they drive. What the repository must be true to is SPEC.md and
+# docs/adr/; these are the scaffolding used to get there, and they carry
+# corpus-specific paths, round-by-round scores and abandoned experiments that
+# would read as decisions to anyone else.
+/CLAUDE.md
+/HANDOFF.md
+/docs/agent-plan.md
+/docs/ralf-handoff.md
+/docs/ralph/
+/docs/eval/
+/docs/troubleshooting/
+/docs/adr/archive/
+/scripts/
+/tests/test_log_analysis.py
+/tests/test_compare_vaults.py
 
 # Editors / OS
 .vscode/
