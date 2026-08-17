@@ -5,6 +5,7 @@ from bismuth.domain.maintenance import (
     PlanProblem,
     ProposedClass,
     is_axis_label,
+    restates,
     validate_plan,
 )
 
@@ -116,3 +117,30 @@ split_at_documents: 10
 
     assert charter.boundary_review_required
     assert charter.due_for_review(10)
+
+
+class TestAChildMayNotRestateItsAncestor:
+    """Both directions of containment, for different reasons."""
+
+    def test_a_name_inside_an_ancestors_name_repeats_a_settled_distinction(self) -> None:
+        # 대통령령 총리령(하위시행규정)/…/대통령령 -- the grandchild names one half of a
+        # compound its ancestor had already resolved.
+        assert restates("대통령령", "대통령령 총리령(하위시행규정)")
+
+    def test_a_name_that_only_decorates_an_ancestors_phrase_sorts_nothing(self) -> None:
+        """Every document in the parent answers to such a name; that is what made it the
+        parent's name. Observed twice after the prompt was told not to: 연구인프라 및 인력
+        지원 → 국가연구인프라 및 인력 지원, and 기업 유형별 지원 → 기업 유형별 지원 법령,
+        which held two documents above thirty-eight."""
+        assert restates("기업 유형별 지원 법령", "기업 유형별 지원")
+        assert restates("국가연구인프라 및 인력 지원", "연구인프라 및 인력 지원")
+
+    def test_a_one_word_ancestor_is_refined_by_adding_words(self) -> None:
+        """Refusing this direction outright would forbid most real trees."""
+        assert not restates("금융소비자보호", "금융")
+        assert not restates("중소기업 기술혁신", "중소기업")
+        assert not restates("금융감독 및 건전성 규제", "금융감독")
+
+    def test_different_words_are_not_a_restatement(self) -> None:
+        assert not restates("나노기술", "과학기술")
+        assert not restates("금융", "금융")
