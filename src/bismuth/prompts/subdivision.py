@@ -745,7 +745,10 @@ def build_emerging_reduce(
             "Document packets independently proposed classes that may have emerged in one "
             "library folder. Select the strongest reusable class, resolving synonyms and "
             "discarding packet-local or document-title shelves. Return one candidate only, "
-            "with no document IDs or explanation. " + axis_rule
+            "with no document IDs or explanation.\n\n"
+            "Carry the selected candidate's sign across as it stands, or improve it. The "
+            "sign is the line a reader uses to decide whether to open the folder, so it "
+            "says what belongs there and is never the name repeated. " + axis_rule
         ),
         user=(
             f"FOLDER: {path or '(root)'}\nPURPOSE: {purpose or '(none)'}\n"

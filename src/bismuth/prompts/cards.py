@@ -7,10 +7,21 @@ assumes the document has headings, a table of contents, or any structure at all.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Annotated
+
+from pydantic import BaseModel, Field, StringConstraints
 
 from bismuth.domain.document import DocumentCard, Entity, Window
 from bismuth.ports.llm import Prompt
+
+#: A label, not prose. The arrays were bounded and their items were not, so a
+#: single item could run away: one keyword came back as
+#: 옥외광고물관리법규제특례법규제특례법규제특례… until the repetition breaker cut the
+#: stream, and 79 of 300 cards needed a retry in one run. Measured over 3,661
+#: topics and 6,568 keywords from a real vault, the longest honest value is 40
+#: characters and the 95th percentile is 23, so this refuses only the runaway.
+#: SPEC.md 2.1 forbids ceilings on *semantic* fields -- summary keeps none.
+Label = Annotated[str, StringConstraints(max_length=80)]
 
 SYSTEM = """\
 You are a librarian cataloguing a document for a shared archive. You will be \
@@ -135,14 +146,14 @@ class CardDraft(BaseModel):
     summary: str = Field(description="Two or three sentences. What it is and what it is for.")
     doc_type: str = Field(description="Short noun phrase for the genre.")
     language: str = Field(description="Language code of the document, e.g. 'ko', 'en'.")
-    topics: list[str] = Field(
+    topics: list[Label] = Field(
         default_factory=list,
         max_length=6,
         description="The few things this document is about, in its own words.",
     )
     entities: list[Entity] = Field(default_factory=list, max_length=20)
-    keywords: list[str] = Field(default_factory=list, max_length=12)
-    answers_questions: list[str] = Field(default_factory=list, max_length=6)
+    keywords: list[Label] = Field(default_factory=list, max_length=12)
+    answers_questions: list[Label] = Field(default_factory=list, max_length=6)
 
 
 class CardUpdate(BaseModel):
@@ -155,10 +166,10 @@ class CardUpdate(BaseModel):
     doc_type: str | None = Field(
         default=None, description="Only when the earlier genre turned out to be wrong."
     )
-    new_topics: list[str] = Field(default_factory=list, max_length=6)
+    new_topics: list[Label] = Field(default_factory=list, max_length=6)
     new_entities: list[Entity] = Field(default_factory=list, max_length=20)
-    new_keywords: list[str] = Field(default_factory=list, max_length=12)
-    new_questions: list[str] = Field(default_factory=list, max_length=6)
+    new_keywords: list[Label] = Field(default_factory=list, max_length=12)
+    new_questions: list[Label] = Field(default_factory=list, max_length=6)
 
 
 class DensifiedSummary(BaseModel):
