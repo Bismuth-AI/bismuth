@@ -1298,3 +1298,25 @@ class TestRoutingSeesTheNotes:
         routing = [p for p in llm.prompts_for(None) if "\n  [F" in p.user and "SIGNS:" in p.user]
         assert routing
         assert all("소설과 시" in p.user for p in routing)
+
+
+class TestEveryMoveNamesItsDocument:
+    async def test_a_swept_document_says_where_it_went(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """subdivide.applied carries a count, and its document_id is the arrival that
+        triggered the pass. On a 165-document vault 186 of 205 moves were unattributable,
+        so "why is this document here" had no answer for nine documents in ten."""
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "소설과 시에 관한 자료", ids[:2])
+
+        events = []
+        with mock.patch.object(
+            subdivision_service, "log_trace", lambda e, **f: events.append((e, f))
+        ):
+            await engine.subdivision.consider(PurePosixPath())
+
+        moves = [f for e, f in events if e == "document.moved"]
+        assert len(moves) == 2
+        assert {m["document_id"] for m in moves} == {"D0001", "D0002"}
+        assert all(m["to_folder"] == "문학" for m in moves)
