@@ -81,6 +81,16 @@ class Transactor:
             raise VaultError(
                 f"entry {entry_id} is {entry.status.value}, not applied -- nothing to undo"
             )
+        # An entry is only reversible while nothing has moved what it moved. Subdivision
+        # keeps re-filing documents as more arrive, so an older entry's sources are
+        # usually somewhere else by now: the inverse then fails partway with "cannot move
+        # missing file", rolls back, and says nothing about why. Say it here instead.
+        if missing := self._moved_since(entry):
+            raise VaultError(
+                f"entry {entry_id} cannot be undone: {len(missing)} of the files it moved "
+                f"have since been moved again, starting with {missing[0]}. Undo the later "
+                "entries first."
+            )
 
         inverse = JournalEntry(
             actor=Actor.USER,
@@ -91,6 +101,16 @@ class Transactor:
         applied = self.execute(inverse)
         self._journal.update(entry.with_status(EntryStatus.REVERTED))
         return applied
+
+    def _moved_since(self, entry: JournalEntry) -> list[str]:
+        """The destinations this entry wrote that are no longer where it left them."""
+        gone: list[str] = []
+        for operation in entry.operations:
+            if operation.kind is not OperationKind.MOVE:
+                continue
+            if not self._vault.exists(operation.target):
+                gone.append(str(operation.target))
+        return gone
 
     def recover(self) -> list[JournalEntry]:
         """Undo anything a crash left half-done. Safe to call on every startup."""
