@@ -246,3 +246,36 @@ class TestUi:
         response = client.get("/")
         assert response.status_code == 200
         assert "Bismuth" in response.text
+
+
+class TestBatchReadsAheadButFilesInOrder:
+    def test_documents_are_filed_in_the_order_they_were_submitted(
+        self, client: TestClient, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Reading runs ahead; filing must not. The tree a document lands in is the one the
+        documents before it built, so a reordered batch is a different archive."""
+        filed: list[str] = []
+        engine = client.app.state.engine
+        original = engine.ingest.file
+
+        async def record(prepared, **kwargs):  # type: ignore[no-untyped-def]
+            filed.append(prepared.source.filename)
+            return await original(prepared, **kwargs)
+
+        monkeypatch.setattr(engine.ingest, "file", record)
+        names = [f"doc{index}.txt" for index in range(6)]
+        submitted = client.post(
+            "/api/batches",
+            files=[("files", (name, f"문서 {name} 내용".encode(), "text/plain")) for name in names],
+        )
+
+        batch = submitted.json()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            batch = client.get(f"/api/batches/{batch['id']}").json()
+            if batch["status"] == "done":
+                break
+            time.sleep(0.05)
+
+        assert batch["status"] == "done"
+        assert filed == names
