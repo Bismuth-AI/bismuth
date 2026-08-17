@@ -263,18 +263,62 @@ def _tail(value: str) -> str:
     return f"…{value[-4:]}" if len(value) > 4 else "…"
 
 
-def save_user_config(settings: Settings) -> Path:
-    """Persist the wizard's answers to :data:`CONFIG_FILE`."""
+class UserConfig(BaseModel):
+    """One answered setup wizard, and the whole of what :data:`CONFIG_FILE` holds.
+
+    Deliberately not a :class:`Settings`. Settings resolves four sources and *merges*
+    them, and a merge cannot say "this endpoint has no headers": pydantic-settings
+    deep-merges dict-valued fields, so ``Settings(api_headers={})`` keeps whatever the
+    config file had. Every scalar answer replaced the old one and the two dicts did not.
+
+    Switching provider therefore carried the previous endpoint's configuration onto the
+    new one. Measured: a private gateway's session Cookie and a qwen-only
+    ``chat_template_kwargs`` stayed attached after the provider was changed to OpenAI.
+    The second came back ``400 Unknown parameter``. The first was sent to a third party
+    and did not come back at all.
+
+    So the wizard writes from here and re-reads Settings afterwards. Persisting cannot
+    inherit, and what a ``BISMUTH_*`` variable still outranks on the way back is the
+    documented precedence.
+    """
+
+    vault_path: Path
+    provider_id: str
+    api_key: str = ""
+    api_base: str | None = None
+    api_headers: dict[str, str] = Field(default_factory=dict)
+    api_body: dict[str, Any] = Field(default_factory=dict)
+    native_schema: bool | None = None
+    model: str = ""
+
+    @field_validator("vault_path")
+    @classmethod
+    def _expand_vault_path(cls, value: Path) -> Path:
+        return value.expanduser().resolve()
+
+    @property
+    def is_configured(self) -> bool:
+        """The same question :meth:`Settings.is_configured` asks, before anything is written."""
+        chosen = provider(self.provider_id)
+        if chosen is None or not self.model:
+            return False
+        if chosen.needs_key and not self.api_key:
+            return False
+        return not (chosen.needs_api_base and not self.api_base)
+
+
+def save_user_config(config: UserConfig) -> Path:
+    """Persist the wizard's answers to :data:`CONFIG_FILE`, replacing what was there."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
-        "vault_path": str(settings.vault_path),
-        "provider_id": settings.provider_id,
-        "api_key": settings.api_key,
-        "api_base": settings.api_base,
-        "api_headers": settings.api_headers,
-        "api_body": settings.api_body,
-        "native_schema": settings.native_schema,
-        "model": settings.model,
+        "vault_path": str(config.vault_path),
+        "provider_id": config.provider_id,
+        "api_key": config.api_key,
+        "api_base": config.api_base,
+        "api_headers": config.api_headers,
+        "api_body": config.api_body,
+        "native_schema": config.native_schema,
+        "model": config.model,
     }
 
     # Temp file + chmod before write: no half-written config, key never world-readable.

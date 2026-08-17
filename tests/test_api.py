@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+
+from bismuth.config import Settings
 
 
 class TestIndex:
@@ -279,3 +283,66 @@ class TestBatchReadsAheadButFilesInOrder:
 
         assert batch["status"] == "done"
         assert filed == names
+
+
+class TestTheWizardDoesNotCarryAnEndpointForward:
+    """POST /api/setup, the path a real provider switch actually took.
+
+    A custom endpoint was configured with a gateway Cookie and a qwen-only
+    ``chat_template_kwargs``; the provider was then changed to OpenAI. Both survived and
+    were sent to api.openai.com, which answered 400 for the body and accepted -- and kept
+    -- the Cookie. Exercised through HTTP because the defect was in what the endpoint
+    persisted, not in what the browser sent: the browser already sent empty ones.
+    """
+
+    def test_changing_provider_clears_the_previous_headers_and_body(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        vault_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        config = tmp_path / "config.json"
+        monkeypatch.setattr("bismuth.config.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("bismuth.config.CONFIG_FILE", config)
+        monkeypatch.setitem(Settings.model_config, "json_file", config)
+        monkeypatch.setattr(
+            "bismuth.api.app.supports_response_schema", lambda **_: True, raising=True
+        )
+
+        custom = client.post(
+            "/api/setup",
+            json={
+                "provider_id": "custom",
+                "api_base": "http://gateway.internal/v1",
+                "api_headers": {"Cookie": "gateway-session"},
+                "api_body": {"chat_template_kwargs": {"enable_thinking": False}},
+                "model": "qwen3-32b",
+                "vault_path": str(vault_path),
+            },
+        )
+        assert custom.status_code == 200
+        assert custom.json()["api_headers"] == {"Cookie": "gateway-session"}
+
+        # What the browser sends for a hosted provider: no endpoint, no headers, no body.
+        hosted = client.post(
+            "/api/setup",
+            json={
+                "provider_id": "openai",
+                "api_key": "sk-test",
+                "api_base": None,
+                "api_headers": {},
+                "api_body": {},
+                "model": "gpt-4o",
+                "vault_path": str(vault_path),
+            },
+        )
+
+        assert hosted.status_code == 200
+        state = hosted.json()
+        assert state["provider_id"] == "openai"
+        assert state["api_headers"] == {}
+        assert state["api_body"] == {}
+        assert state["api_base"] is None
+        assert state["native_schema"] is None
+        assert json.loads(config.read_text(encoding="utf-8"))["api_headers"] == {}

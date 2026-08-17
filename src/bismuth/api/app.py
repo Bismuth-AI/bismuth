@@ -26,7 +26,14 @@ from bismuth.adapters.llm import (
     supports_response_schema,
 )
 from bismuth.api.progress import ProgressBus, stream
-from bismuth.config import PROVIDERS, Settings, load_env_file, provider, save_user_config
+from bismuth.config import (
+    PROVIDERS,
+    Settings,
+    UserConfig,
+    load_env_file,
+    provider,
+    save_user_config,
+)
 from bismuth.container import Bismuth, build
 from bismuth.domain.document import sidecar_name
 from bismuth.domain.errors import BismuthError
@@ -218,7 +225,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             )
             logger.info("%s constrains decoding to a schema: %s", body.api_base, native)
 
-        updated = Settings(
+        answers = UserConfig(
             vault_path=Path(body.vault_path).expanduser(),
             provider_id=chosen.id,
             api_key=key,
@@ -228,10 +235,14 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             native_schema=native,
             model=body.model,
         )
-        if not updated.is_configured:
+        if not answers.is_configured:
             raise HTTPException(400, "모델을 골라 주세요.")
 
-        save_user_config(updated)
+        # Write first, then re-read. Constructing Settings from these answers would
+        # deep-merge them onto the config file instead of replacing it, and the two dict
+        # fields would keep the previous endpoint's headers and body -- see UserConfig.
+        save_user_config(answers)
+        updated = Settings()
         app.state.settings = updated
         # Settings can change mid-run; a manifest that still names the old model makes
         # every later conclusion about it unverifiable.

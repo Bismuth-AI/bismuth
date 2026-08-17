@@ -11,7 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from bismuth.config import PROVIDERS, Settings, load_env_file, provider, save_user_config
+from bismuth.config import (
+    PROVIDERS,
+    Settings,
+    UserConfig,
+    load_env_file,
+    provider,
+    save_user_config,
+)
 
 
 @pytest.fixture
@@ -44,6 +51,17 @@ def configured(**overrides: object) -> Settings:
         "model": "gpt-4o",
     }
     return Settings(**{**base, **overrides})  # type: ignore[arg-type]
+
+
+def answers(**overrides: object) -> UserConfig:
+    """What the wizard would send for a working hosted provider."""
+    base: dict[str, object] = {
+        "vault_path": Path.home() / "bismuth-vault",
+        "provider_id": "openai",
+        "api_key": "sk-test",
+        "model": "gpt-4o",
+    }
+    return UserConfig(**{**base, **overrides})  # type: ignore[arg-type]
 
 
 class TestAmbientKeysAreIgnored:
@@ -95,7 +113,7 @@ class TestConfigFile:
         monkeypatch.setattr("bismuth.config.CONFIG_DIR", tmp_path)
         monkeypatch.setattr("bismuth.config.CONFIG_FILE", tmp_path / "config.json")
 
-        save_user_config(configured(vault_path=tmp_path / "v"))
+        save_user_config(answers(vault_path=tmp_path / "v"))
 
         saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
         assert saved["api_key"] == "sk-test"
@@ -113,9 +131,76 @@ class TestConfigFile:
         monkeypatch.setattr("bismuth.config.CONFIG_DIR", tmp_path)
         monkeypatch.setattr("bismuth.config.CONFIG_FILE", tmp_path / "config.json")
 
-        path = save_user_config(configured())
+        path = save_user_config(answers())
 
         assert oct(path.stat().st_mode)[-3:] == "600"
+
+
+class TestSwitchingProviderLeavesNothingBehind:
+    """A private endpoint's configuration must not travel to a public one.
+
+    Observed: a custom endpoint was set up with a gateway session Cookie and
+    ``chat_template_kwargs`` for a qwen model, then the provider was changed to OpenAI in
+    the wizard. Both survived the change. api.openai.com answered
+    ``400 Unknown parameter: 'chat_template_kwargs'``, and the Cookie had already been
+    sent to it by then.
+    """
+
+    def test_an_empty_dict_cannot_clear_one_the_config_file_holds(
+        self, tmp_path: Path, clean_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Why the wizard cannot persist by constructing Settings, however explicit it is.
+
+        pydantic-settings deep-merges dict-valued fields across sources, so the empty
+        dict a higher-priority source passes contributes no keys instead of replacing
+        them. Pinned because it reads like it should work.
+        """
+        path = tmp_path / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "provider_id": "custom",
+                    "api_headers": {"Cookie": "gateway-session"},
+                    "api_body": {"chat_template_kwargs": {"enable_thinking": False}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setitem(Settings.model_config, "json_file", path)
+
+        merged = Settings(provider_id="openai", api_headers={}, api_body={}, model="gpt-4o")
+
+        assert merged.api_headers == {"Cookie": "gateway-session"}
+        assert merged.api_body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+    def test_saving_the_answers_replaces_the_previous_endpoint(
+        self, tmp_path: Path, clean_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """What the wizard does instead: write the answers, then read the settings back."""
+        path = tmp_path / "config.json"
+        monkeypatch.setattr("bismuth.config.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("bismuth.config.CONFIG_FILE", path)
+        monkeypatch.setitem(Settings.model_config, "json_file", path)
+        save_user_config(
+            answers(
+                provider_id="custom",
+                api_key="",
+                api_base="http://gateway.internal/v1",
+                api_headers={"Cookie": "gateway-session"},
+                api_body={"chat_template_kwargs": {"enable_thinking": False}},
+                native_schema=True,
+                model="qwen3-32b",
+            )
+        )
+
+        save_user_config(answers())
+        reloaded = Settings()
+
+        assert reloaded.provider_id == "openai"
+        assert reloaded.api_headers == {}
+        assert reloaded.api_body == {}
+        assert reloaded.api_base is None
+        assert reloaded.native_schema is None
 
 
 class TestConfigured:
