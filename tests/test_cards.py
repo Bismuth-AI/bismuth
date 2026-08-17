@@ -176,12 +176,23 @@ class TestDescribe:
 
 class TestLabelHygiene:
     """A real run put a whole bibliography into `topics`; that lands in the sidecar and in
-    every later placement prompt, so it is filtered at the source rather than in the UI."""
+    every later placement prompt, so it is filtered at the source rather than in the UI.
+
+    Two layers, deliberately. The schema caps a label at 80 characters so the decoder stops
+    a runaway while it is being written -- one keyword came back as
+    옥외광고물관리법규제특례법규제특례… until the repetition breaker cut the stream, and 79 of
+    300 cards needed a retry in one run. The service then drops anything past
+    LABEL_MAX_CHARS (40), which is where the honest values end. The cap sits above the
+    filter on purpose: everything the schema could truncate is something the filter would
+    have dropped, so a truncation can never leave a mangled label in the card.
+    """
 
     async def test_an_entry_too_long_to_be_a_label_is_dropped(self, script: ScriptedModel) -> None:
+        # model_construct: past the schema cap, which is what a reply from before the cap
+        # existed looks like, and what any non-schema source could still deliver.
         script.set(
             card_prompts.CardDraft,
-            card_prompts.CardDraft(
+            card_prompts.CardDraft.model_construct(
                 title="논문",
                 summary="요약",
                 doc_type="학술논문",
@@ -192,6 +203,7 @@ class TestLabelHygiene:
                     Entity(name="A" * (NAME_MAX_CHARS + 1), kind=EntityKind.PERSON),
                 ],
                 keywords=["ESV", "가" * (LABEL_MAX_CHARS + 1)],
+                answers_questions=[],
             ),
         )
         card = await CardService(FakeLLM(handler=script), context_chars=10_000).describe(
@@ -223,12 +235,15 @@ class TestLabelHygiene:
         logs = configure_logging(log_dir=tmp_path / "logs")
         script.set(
             card_prompts.CardDraft,
-            card_prompts.CardDraft(
+            card_prompts.CardDraft.model_construct(
                 title="t",
                 summary="s",
                 doc_type="문서",
                 language="ko",
                 topics=["참" * 200],
+                entities=[],
+                keywords=[],
+                answers_questions=[],
             ),
         )
         await CardService(FakeLLM(handler=script), context_chars=10_000).describe(
