@@ -624,3 +624,84 @@ class TestAbsoluteDeadline:
 
         abort = records[-1]["attempts"][0]["stream"]["abort"]
         assert abort["kind"] == "absolute_timeout"
+
+
+class RefusesOneParameter(StubLiteLLM):
+    """An endpoint that answers 400 for a sampling parameter by name, then works.
+
+    Shaped like the real thing: OpenAI reports the offending parameter in ``param`` and
+    the reason in ``code``, and LiteLLM passes both through on BadRequestError. Measured
+    against gpt-5.6-luna, which refused ``temperature: 0`` with ``unsupported_value``
+    while litellm.get_supported_openai_params listed temperature as supported -- so
+    drop_params had no reason to remove it and every call failed.
+    """
+
+    def __init__(self, replies: list[str], *, refuses: str) -> None:
+        super().__init__(replies)
+        self._refuses = refuses
+
+    async def acompletion(self, **kwargs: Any) -> FakeStream:
+        if self._refuses in kwargs:
+            self.calls.append(kwargs)
+            error = Exception(f"Unsupported value: '{self._refuses}' is not supported")
+            error.param = self._refuses  # type: ignore[attr-defined]
+            error.code = "unsupported_value"  # type: ignore[attr-defined]
+            raise error
+        return await super().acompletion(**kwargs)
+
+
+class TestAParameterTheEndpointRefuses:
+    @pytest.fixture(autouse=True)
+    def _forget_between_tests(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The registry is process-wide on purpose, so a test must not leak into the next."""
+        monkeypatch.setattr(litellm_adapter, "_UNSUPPORTED", {})
+
+    async def test_the_call_gives_the_parameter_up_and_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = RefusesOneParameter(['{"name": "Apollo", "year": 2023}'], refuses="temperature")
+        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+
+        result = await adapter().structured(Prompt(system="s", user="u"), schema=Answer)
+
+        assert result == Answer(name="Apollo", year=2023)
+        assert "temperature" in fake.calls[0]
+        assert "temperature" not in fake.calls[1]
+
+    async def test_later_calls_do_not_pay_the_refusal_again(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A served model's terms do not change between two documents."""
+        fake = RefusesOneParameter(['{"name": "Apollo", "year": 2023}'] * 2, refuses="temperature")
+        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+        engine = adapter()
+
+        await engine.structured(Prompt(system="s", user="u"), schema=Answer)
+        await engine.structured(Prompt(system="s", user="u"), schema=Answer)
+
+        assert len(fake.calls) == 3  # one refusal, then two accepted calls
+
+    async def test_the_record_says_what_was_given_up(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A sampling change that no log mentions makes the next run unexplainable."""
+        fake = RefusesOneParameter(['{"name": "Apollo", "year": 2023}'], refuses="temperature")
+        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+        records: list[dict[str, Any]] = []
+        monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
+
+        await adapter().structured(Prompt(system="s", user="u"), schema=Answer)
+
+        attempt = records[0]["attempts"][0]
+        assert attempt["parameters_refused"] == ["temperature"]
+        assert "temperature" not in attempt["request_parameters"]
+
+    async def test_an_unrelated_bad_request_still_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only sampling is given up. A refused schema or output cap changes the question."""
+        fake = RefusesOneParameter(['{"name": "Apollo"}'], refuses="max_tokens")
+        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+
+        with pytest.raises(ModelRequestError):
+            await adapter().structured(Prompt(system="s", user="u"), schema=Answer)
+
+        assert len(fake.calls) == 1
