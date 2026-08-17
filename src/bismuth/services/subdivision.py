@@ -817,7 +817,6 @@ class LibraryMaintenanceService:
                     children=contents.children,
                 ),
                 choices=(*handles, "STAY"),
-                max_tokens=8,
             )
             return document[0], choice
 
@@ -960,7 +959,6 @@ class LibraryMaintenanceService:
                     sign=sign,
                 ),
                 choices=("SHELF", "STAY"),
-                max_tokens=8,
             )
             return document[0], choice
 
@@ -1023,7 +1021,6 @@ class LibraryMaintenanceService:
                         children=signs,
                     ),
                     choices=("FAILS", "HOLDS"),
-                    max_tokens=8,
                 )
                 # An unusable reply is not evidence that the boundary failed.
                 verdicts[name] = answer.strip().upper() != "FAILS"
@@ -1276,7 +1273,6 @@ class LibraryMaintenanceService:
                     path=str(folder), document=document, sketch=sketch
                 ),
                 choices=[*handles, "STAY"],
-                max_tokens=8,
             )
             return document[0], choice
 
@@ -1366,7 +1362,6 @@ class LibraryMaintenanceService:
                     spent=list(self._axes_above(folder)),
                 ),
                 choices=("FAILS", "HOLDS"),
-                max_tokens=8,
             )
         if axis_holds.strip().upper() == "FAILS":
             log_trace(
@@ -2191,7 +2186,6 @@ class LibraryMaintenanceService:
                     path=str(folder), name=proposal.name, sign=proposal.sign, child=child
                 ),
                 choices=("SHELF", "STAY"),
-                max_tokens=8,
             )
             if answer.strip().upper() == "SHELF":
                 members.append(child)

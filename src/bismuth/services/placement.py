@@ -80,7 +80,6 @@ class PlacementService:
                             entities=[entity.name for entity in card.entities],
                         ),
                         choices=offered,
-                        max_tokens=32,
                         temperature=0.0,
                     )
                 asked_once = True

@@ -137,13 +137,17 @@ class LLM(Protocol):
         prompt: Prompt,
         *,
         choices: Sequence[str],
-        max_tokens: int = 32,
         temperature: float = 0.0,
     ) -> str:
         """Return exactly one member of a closed request-local choice set.
 
         This is deliberately not JSON. Small routing decisions should not inherit
         the failure surface of open-ended structured generation.
+
+        No output budget: the answer is one of the listed literals, so its length is
+        already known and a caller here cannot size a budget for a model it knows
+        nothing about. Six callers asked for eight tokens, which is generous for
+        ``F003`` and less than one served model spends before it starts speaking.
         """
         ...
 
