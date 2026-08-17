@@ -78,6 +78,14 @@ it anyway. What you name is one KIND of what this folder already holds: narrower
 the folder's own name, and a name only SOME of these documents could take. If nothing \
 narrower than the folder itself fits, nothing has emerged; say so.
 
+**Adding a word to the folder's name is not naming a kind of it.** A name that still \
+contains the folder's own name, with a qualifier stuck in front or behind, sorts nothing: \
+every document here would answer to it, which is exactly what made it the folder's name. \
+Observed live with this very instruction in the prompt -- a folder called \
+연구인프라 및 인력 지원 was given the child 국가연구인프라 및 인력 지원, and the level below \
+repeated the trick again. A kind of something is named by what makes it that kind: \
+different words, not more of the same ones.
+
 **Every level costs the reader a correct guess.** Look at how deep the folder path \
 above already is: a shelf you add here sits behind all of those choices, and a reader \
 who guesses wrong at any one of them never reaches it. Deep down, the bar for another \
