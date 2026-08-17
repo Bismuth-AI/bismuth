@@ -300,3 +300,47 @@ class TestCrashRecovery:
         assert (vault.root / "Apollo/precious.txt").read_text(
             encoding="utf-8"
         ) == "the user put this here"
+
+
+def test_an_entry_whose_files_moved_again_says_so_instead_of_failing_halfway(
+    vault: FileSystemVault, transactor: Transactor
+) -> None:
+    """Subdivision keeps re-filing documents as more arrive, so an older entry's
+    destinations are usually somewhere else by now. Undoing one then died at whichever
+    operation ran out of file -- 'cannot move missing file: …' -- with nothing about the
+    real reason. Measured on a live 165-document vault: 20 of one entry's files."""
+    file_at(vault, "문서.txt")
+    first = transactor.execute(
+        JournalEntry(
+            actor=Actor.BISMUTH,
+            reason="divide",
+            operations=(
+                Operation(
+                    kind=OperationKind.MOVE,
+                    source=PurePosixPath("문서.txt"),
+                    target=PurePosixPath("문학/문서.txt"),
+                ),
+            ),
+        )
+    )
+    # A later pass files it somewhere else, exactly as subdivision does.
+    transactor.execute(
+        JournalEntry(
+            actor=Actor.BISMUTH,
+            reason="divide again",
+            operations=(
+                Operation(
+                    kind=OperationKind.MOVE,
+                    source=PurePosixPath("문학/문서.txt"),
+                    target=PurePosixPath("문학/소설/문서.txt"),
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(VaultError, match="moved again"):
+        transactor.undo(first.id)
+
+    # And nothing was disturbed by the refusal.
+    assert (vault.root / "문학" / "소설" / "문서.txt").is_file()
+    assert transactor._journal.get(first.id).status is EntryStatus.APPLIED
