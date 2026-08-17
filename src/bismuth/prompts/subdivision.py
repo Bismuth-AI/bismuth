@@ -951,17 +951,35 @@ def build_existing_choice(
     )
 
 
-def build_member_choice(*, path: str, purpose: str, document: tuple[str, str], name: str) -> Prompt:
-    """Decide membership in one new class without echoing a document ID."""
+def build_member_choice(
+    *, path: str, purpose: str, document: tuple[str, str], name: str, sign: str = ""
+) -> Prompt:
+    """Decide membership in one new class without echoing a document ID.
+
+    The sign goes in, not just the name. Deciding from two or three words is deciding
+    from whatever those words suggest: 가상융합산업 진흥법 시행규칙 was shelved under
+    이공계인력지원 because it mentions training specialists, and the folder that resulted
+    could never be divided again -- no honest property separates workforce-support law
+    from virtual-convergence-industry law, because they were never one class. The sign is
+    the scope contract the rest of this module exists to produce, and membership was the
+    one question that never saw it.
+    """
     return Prompt(
         system=(
-            "A new library class has been named. Decide whether this one document genuinely "
-            "belongs behind that sign. Reply with exactly SHELF or STAY. Do not explain. STAY "
-            "means the document remains safely in its current folder."
+            "A new library class has been named, and its sign says what belongs behind it. "
+            "Decide whether this one document genuinely belongs there. Reply with exactly "
+            "SHELF or STAY. Do not explain.\n\n"
+            "Judge against the sign, not the name alone: a name is two or three words and "
+            "will suggest more than it means. SHELF only when the sign positively describes "
+            "this document. STAY when it does not -- the document stays safely where it is, "
+            "which is the normal answer for most documents, and a wrong SHELF is worse than "
+            "a STAY because the shelf then holds something its own name denies."
         ),
         user=(
             f"FOLDER: {path or '(root)'}\nPURPOSE: {purpose or '(none)'}\n"
-            f"NEW SIGN: {name}/\n\nDOCUMENT:\n  [{document[0]}] {document[1]}"
+            f"NEW SIGN: {name}/\n"
+            f"WHAT BELONGS BEHIND IT: {sign or '(no sign was written)'}\n\n"
+            f"DOCUMENT:\n  [{document[0]}] {document[1]}"
         ),
     )
 

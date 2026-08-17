@@ -1261,3 +1261,20 @@ class TestNoDocumentIsLeftStaged:
         assert not stray, f"documents stranded in staging: {[p.name for p in stray]}"
         filed = list(engine.vault.root.rglob("*.txt"))
         assert len(filed) == 6, "every document must still be somewhere the vault can see"
+
+
+class TestMembershipSeesTheSign:
+    async def test_the_scope_line_reaches_the_membership_question(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:
+        """Deciding from a two-word name is deciding from what the words suggest. One
+        folder named 이공계인력지원 collected 가상융합산업 진흥법 because that law
+        mentions training specialists, and could never be divided again."""
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "소설과 시, 그리고 문학 비평에 관한 자료", ids[:2])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        asked = [p for p in llm.prompts_for(None) if "NEW SIGN:" in p.user]
+        assert asked
+        assert all("소설과 시, 그리고 문학 비평에 관한 자료" in p.user for p in asked)

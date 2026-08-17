@@ -620,7 +620,12 @@ class LibraryMaintenanceService:
                 return None
             with log_context(stage="subdivision.routing"):
                 members = await self._find_members(
-                    folder=folder, purpose=purpose, documents=contents.lines, name=named[0]
+                    folder=folder,
+                    purpose=purpose,
+                    documents=contents.lines,
+                    name=named[0],
+                    # The sign already on that folder, which is what a reader would use.
+                    sign=named[1],
                 )
             log_trace(
                 "subdivide.routed_to_named_sign",
@@ -653,6 +658,7 @@ class LibraryMaintenanceService:
                 purpose=purpose,
                 documents=contents.lines,
                 name=emerging.name,
+                sign=emerging.sign,
             )
             log_trace(
                 "subdivide.members",
@@ -936,11 +942,16 @@ class LibraryMaintenanceService:
         purpose: str,
         documents: list[tuple[str, str]],
         name: str,
+        sign: str = "",
     ) -> prompts.Members:
         async def decide(document: tuple[str, str]) -> tuple[str, str]:
             choice = await self._llm.choose(
                 prompts.build_member_choice(
-                    path=str(folder), purpose=purpose, document=document, name=name
+                    path=str(folder),
+                    purpose=purpose,
+                    document=document,
+                    name=name,
+                    sign=sign,
                 ),
                 choices=("SHELF", "STAY"),
                 max_tokens=8,
