@@ -16,6 +16,18 @@ from bismuth.domain.journal import Operation, OperationKind
 from bismuth.ports.vault import INBOX, STATE_DIR
 
 _ATTIC = "attic"
+_EXTENDED = "\\\\?\\"
+_EXTENDED_UNC = "\\\\?\\UNC\\"
+
+
+def _plain(path: Path) -> Path:
+    """Drop Windows' extended-length prefix so a path can be compared with a plain root."""
+    text = str(path)
+    if text.startswith(_EXTENDED_UNC):
+        return Path("\\\\" + text[len(_EXTENDED_UNC) :])
+    if text.startswith(_EXTENDED):
+        return Path(text[len(_EXTENDED) :])
+    return path
 
 
 class FileSystemVault:
@@ -39,7 +51,20 @@ class FileSystemVault:
         return candidate
 
     def relative(self, absolute: Path) -> PurePosixPath:
-        return PurePosixPath(absolute.resolve().relative_to(self._root).as_posix())
+        """Absolute to vault-relative, without a second trip to the disk.
+
+        These paths come from walking an already-resolved base, so they are under the
+        root already and resolving them again only adds a filesystem call that can fail.
+        On Windows, resolving a file that has just been moved returns the extended-length
+        form, and ``relative_to`` against a plain root then raises. That is what /status
+        hit while an ingest was filing: it walked a document, subdivision moved it, and
+        reading the vault crashed on a path shaped differently from the root it is under.
+        """
+        try:
+            return PurePosixPath(absolute.relative_to(self._root).as_posix())
+        except ValueError:
+            pass
+        return PurePosixPath(_plain(absolute.resolve()).relative_to(self._root).as_posix())
 
     def exists(self, rel: PurePosixPath) -> bool:
         return self.resolve(rel).exists()
