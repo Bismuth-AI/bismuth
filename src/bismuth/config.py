@@ -140,7 +140,23 @@ class Settings(BaseSettings):
         ),
     )
     llm_max_schema_retries: int = Field(default=2, ge=0)
-    llm_max_concurrency: int = Field(default=4, ge=1)
+    llm_max_concurrency: int = Field(
+        default=12,
+        ge=1,
+        description=(
+            "Model calls in flight at once. Measured on 300-document runs: 12 is safe and "
+            "20 dropped documents. Was 4, which left the gateway idle most of the time."
+        ),
+    )
+    ingest_read_ahead: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "How many documents are read and carded ahead of filing during a batch. "
+            "Reading depends on the document alone; filing depends on the tree the "
+            "documents before it built, so only the first half runs ahead."
+        ),
+    )
     extraction_max_chars: int = Field(default=200_000, ge=1_000)
     card_context_chars: int = Field(
         default=12_000,
