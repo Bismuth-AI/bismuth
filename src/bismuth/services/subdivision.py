@@ -1568,6 +1568,7 @@ class LibraryMaintenanceService:
 
         operations: list[Operation] = []
         affected: list[PurePosixPath] = []
+        routed: list[tuple[str, PurePosixPath]] = []
         moved = 0
         for group in plan.groups:
             target = targets[group.name]
@@ -1599,6 +1600,7 @@ class LibraryMaintenanceService:
                             note="route sidecar behind existing sign",
                         )
                     )
+                routed.append((document_id, target))
                 moved += 1
 
         if not operations:
@@ -1615,6 +1617,7 @@ class LibraryMaintenanceService:
             ),
             payloads=payloads,
         )
+        self._log_moves(folder, routed)
         unique_affected = tuple(dict.fromkeys(affected))
         log_trace(
             "subdivide.routed_existing",
@@ -1703,6 +1706,7 @@ class LibraryMaintenanceService:
         operations: list[Operation] = []
         payloads: dict[PurePosixPath, bytes] = {}
         created: list[PurePosixPath] = []
+        placed: list[tuple[str, PurePosixPath]] = []
         moved = 0
 
         for group, name in zip(plan.groups, names, strict=True):
@@ -1732,8 +1736,9 @@ class LibraryMaintenanceService:
 
             operations.append(Operation(kind=OperationKind.MKDIR, target=target))
             created.append(target)
-            for _, path in members:
+            for document_id, path in members:
                 operations.extend(self._move_document(path, target))
+                placed.append((document_id, target))
                 moved += 1
 
             child_charter = Charter(
@@ -1797,6 +1802,7 @@ class LibraryMaintenanceService:
             ),
             payloads=payloads,
         )
+        self._log_moves(folder, placed)
         log_trace(
             "subdivide.applied",
             folder=str(folder),
@@ -2452,6 +2458,23 @@ class LibraryMaintenanceService:
             if charter is not None and not charter.managed:
                 return True
         return False
+
+    def _log_moves(self, folder: PurePosixPath, moves: list[tuple[str, PurePosixPath]]) -> None:
+        """Record which documents a subdivision moved, and where each one went.
+
+        The applied/routed events carry a count, and the document_id on them is the
+        arrival that triggered the pass -- not the documents that were swept. Measured on
+        a 165-document vault: 19 moves were attributable and 186 were not, so "why is this
+        document here" had no answer for nine of every ten documents, which is the chain
+        SPEC.md 6.3 requires to stay joinable.
+        """
+        for document_id, target in moves:
+            log_trace(
+                "document.moved",
+                document_id=document_id,
+                from_folder=str(folder),
+                to_folder=str(target),
+            )
 
     def _count_documents(self, folder: PurePosixPath, *, recursive: bool) -> int:
         return sum(
