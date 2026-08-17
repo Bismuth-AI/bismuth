@@ -10,7 +10,12 @@ import pytest
 from pydantic import BaseModel
 
 from bismuth.adapters.llm import litellm_adapter
-from bismuth.adapters.llm.litellm_adapter import _MAX_CHOICE_MAX_TOKENS, LiteLLMAdapter, _parse_json
+from bismuth.adapters.llm.litellm_adapter import (
+    _CHOICE_MAX_TOKENS,
+    _MAX_CHOICE_MAX_TOKENS,
+    LiteLLMAdapter,
+    _parse_json,
+)
 from bismuth.domain.errors import ModelRequestError, StructuredOutputError
 from bismuth.ports.llm import Prompt
 
@@ -554,7 +559,7 @@ class TestPlainChoice:
         request = fake.calls[0]
         assert "response_format" not in request
         assert request["temperature"] == 0.0
-        assert request["max_tokens"] == 32
+        assert request["max_tokens"] == _CHOICE_MAX_TOKENS
         assert request["max_retries"] == 0
 
     async def test_invalid_reply_gets_one_clean_retry(self, stub: Any) -> None:
@@ -764,15 +769,15 @@ class TestReasoningIsNotWhatWasAsked:
     async def test_a_choice_gets_room_for_thinking_it_could_not_avoid(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """32 tokens is generous for a literal and nothing at all for a thinking model."""
-        fake = SpendsTheBudgetOnThinking(["F003"], answers_above=32)
+        """A budget generous for a literal can still be nothing at all for a thinking model."""
+        fake = SpendsTheBudgetOnThinking(["F003"], answers_above=_CHOICE_MAX_TOKENS)
         monkeypatch.setattr(litellm_adapter, "_litellm", fake)
 
         chosen = await adapter().choose(Prompt(system="s", user="u"), choices=["F003", "STAY"])
 
         assert chosen == "F003"
-        assert fake.calls[0]["max_tokens"] == 32
-        assert fake.calls[1]["max_tokens"] == 256
+        assert fake.calls[0]["max_tokens"] == _CHOICE_MAX_TOKENS
+        assert fake.calls[1]["max_tokens"] == _CHOICE_MAX_TOKENS * 8
 
     async def test_a_spent_budget_does_not_report_a_long_reply(
         self, monkeypatch: pytest.MonkeyPatch
@@ -784,3 +789,35 @@ class TestReasoningIsNotWhatWasAsked:
 
         with pytest.raises(StructuredOutputError, match="without producing any output"):
             await adapter().choose(Prompt(system="s", user="u"), choices=["F003", "STAY"])
+
+    async def test_a_spent_budget_does_not_spend_the_clean_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The damage this did, and why the two recoveries had to stop sharing a slot.
+
+        The stripped retry prompt exists for a model that answered with the wrong kind of
+        thing; it drops the task and keeps only the literals. A spent budget means the real
+        question was never answered at all, so falling back to a smaller version of it asks
+        a worse question. Measured over one run of 61 documents: 869 of 931 choices, 93%,
+        spent the first budget and were then decided by the stripped prompt -- 567
+        characters of task replaced by 117 of formatting rules. One folder was created.
+        """
+        fake = SpendsTheBudgetOnThinking(["F003"], answers_above=_CHOICE_MAX_TOKENS)
+        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+        records: list[dict[str, Any]] = []
+        monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
+
+        await adapter().choose(Prompt(system="the real task", user="u"), choices=["F003", "STAY"])
+
+        attempts = records[0]["attempts"]
+        assert attempts[1]["messages"][0]["content"] == "the real task"
+        assert len(attempts) == 2  # the clean retry was never needed, so it is still available
+
+    async def test_the_clean_retry_still_follows_a_wrong_kind_of_answer(self, stub: Any) -> None:
+        """The other ladder has to keep working: this is what it was built for."""
+        fake = stub(['{"folder_id": "F003"}', "F003"])
+
+        chosen = await adapter().choose(Prompt(system="the real task", user="u"), choices=["F003"])
+
+        assert chosen == "F003"
+        assert fake.calls[1]["messages"][0]["content"] != "the real task"
