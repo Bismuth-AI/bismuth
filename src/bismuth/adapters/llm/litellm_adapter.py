@@ -172,6 +172,66 @@ def apply_body(
         kwargs["extra_body"] = extra
 
 
+_UNSUPPORTED: dict[str, set[str]] = {}
+"""Generation parameters a served model has refused by name, keyed by model.
+
+Process-wide because both adapters talk to the same endpoint: whichever call discovers
+the refusal spares every later one. Cleared by nothing -- a served model that starts
+accepting a parameter again is a restart away, and the alternative is paying a failed
+round trip per call to find out.
+"""
+
+
+def _drop_unsupported(kwargs: dict[str, Any]) -> None:
+    """Leave out what this model has already refused."""
+    for name in _UNSUPPORTED.get(str(kwargs.get("model", "")), ()):
+        kwargs.pop(name, None)
+
+
+def _learn_refusal(exc: Exception, kwargs: dict[str, Any]) -> str | None:
+    """Give up the sampling parameter an endpoint just refused by name, and remember it.
+
+    Read from the error's own ``param`` field rather than matched against a list of model
+    names, because the lists disagree with the servers. Measured: gpt-5.6-luna answered
+    ``400 unsupported_value`` for ``temperature: 0`` while
+    ``litellm.get_supported_openai_params`` listed temperature as supported, so
+    ``drop_params`` had no reason to remove it.
+
+    Only sampling knobs. Omitting one costs the model's default in its place, which is
+    the endpoint's own stated terms; omitting an output cap or a schema would change what
+    was asked, and those have their own ladders.
+    """
+    name = getattr(exc, "param", None)
+    if not isinstance(name, str) or name not in _SAMPLING_PARAMS or name not in kwargs:
+        return None
+    _UNSUPPORTED.setdefault(str(kwargs.get("model", "")), set()).add(name)
+    del kwargs[name]
+    return name
+
+
+async def _open_stream(kwargs: dict[str, Any], *, given_up: list[str] | None = None) -> Any:
+    """Begin a completion, dropping any sampling parameter the endpoint refuses by name.
+
+    Terminates: a refusal is only acted on while the parameter is still in ``kwargs``, and
+    each one is removed before retrying.
+    """
+    while True:
+        try:
+            return await _load_litellm().acompletion(**kwargs)
+        except Exception as exc:
+            name = _learn_refusal(exc, kwargs)
+            if name is None:
+                raise
+            if given_up is not None:
+                given_up.append(name)
+            logger.warning(
+                "%s refused %s (%s); retrying without it",
+                kwargs.get("model"),
+                name,
+                getattr(exc, "code", None) or "400",
+            )
+
+
 def _loggable_parameters(
     kwargs: dict[str, Any], *, schema: type[BaseModel] | None
 ) -> dict[str, Any]:
@@ -682,6 +742,7 @@ class LiteLLMAdapter:
         attempt_log["max_tokens"] = kwargs["max_tokens"]
         if schema is not None:
             kwargs["response_format"] = schema
+        _drop_unsupported(kwargs)
         attempt_log["request_parameters"] = _loggable_parameters(kwargs, schema=schema)
 
         stream_log: dict[str, Any] = {
@@ -706,7 +767,13 @@ class LiteLLMAdapter:
                 async with absolute:
                     if shared_session := await _shared_aiohttp_session():
                         kwargs["shared_session"] = shared_session
-                    response_stream = await _load_litellm().acompletion(**kwargs)
+                    given_up: list[str] = []
+                    response_stream = await _open_stream(kwargs, given_up=given_up)
+                    if given_up:
+                        attempt_log["parameters_refused"] = given_up
+                        attempt_log["request_parameters"] = _loggable_parameters(
+                            kwargs, schema=schema
+                        )
                     iterator: AsyncIterator[Any] = response_stream.__aiter__()
                     repeat_tail = ""
                     generated_chars = 0

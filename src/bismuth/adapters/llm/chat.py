@@ -12,8 +12,10 @@ from agentkit import AssistantMessage, Message, ToolCall, ToolSpec
 
 from bismuth.adapters.llm.litellm_adapter import (
     _close_stream,
+    _drop_unsupported,
     _dump_chunk,
     _load_litellm,
+    _open_stream,
     _shared_aiohttp_session,
     apply_body,
     usage_of,
@@ -83,6 +85,7 @@ class LiteLLMChatModel:
             if isinstance(value, int) and value > 0
         ]
         kwargs["max_tokens"] = min([self._max_tokens, *configured_limits])
+        _drop_unsupported(kwargs)
 
         record: dict[str, Any] = {
             "operation": "agent_chat",
@@ -104,7 +107,7 @@ class LiteLLMChatModel:
                 async with absolute:
                     if shared_session := await _shared_aiohttp_session():
                         kwargs["shared_session"] = shared_session
-                    response_stream = await _load_litellm().acompletion(**kwargs)
+                    response_stream = await _open_stream(kwargs)
                     iterator: AsyncIterator[Any] = response_stream.__aiter__()
                     while True:
                         try:
