@@ -126,6 +126,7 @@ _OPENAI_BODY_PARAMS = frozenset(
         "n",
         "logit_bias",
         "user",
+        "reasoning_effort",
     }
 )
 """Body values LiteLLM understands as its own arguments. Everything else has to be
@@ -137,6 +138,10 @@ _SAMPLING_PARAMS = frozenset(
 )
 """How the model picks its next token. A classification call owns these; see
 :func:`apply_body`."""
+
+
+_DROPPABLE = _SAMPLING_PARAMS | frozenset({"reasoning_effort"})
+"""Generation settings Bismuth can stop sending without changing the question it asked."""
 
 
 def apply_body(
@@ -172,6 +177,23 @@ def apply_body(
         kwargs["extra_body"] = extra
 
 
+_MINIMAL_REASONING = "minimal"
+"""What a classification call asks a reasoning model to spend on itself.
+
+A reasoning model's ``max_tokens`` is a total, not an output cap: its thinking is billed
+against the same budget and never streamed. Measured on gpt-5-nano at default effort --
+a placement choice returned ``out_tokens: 32``, ``finish_reason: length`` and an empty
+reply, twice, so every document failed; a card spent 2048 tokens and then 4096 the same
+way. There is nothing to reason about in these calls anyway. They ask a closed question
+with the answers listed, which is the same thing qwen's ``enable_thinking: false``
+already turns off, and thinking there cost 93 seconds a document instead of 6.
+
+LiteLLM removes the parameter for models it knows have no reasoning to configure, and an
+endpoint that refuses it by name is honoured through :func:`_learn_refusal`. An operator
+who wants more can set ``reasoning_effort`` in the configured body.
+"""
+
+
 _UNSUPPORTED: dict[str, set[str]] = {}
 """Generation parameters a served model has refused by name, keyed by model.
 
@@ -197,12 +219,12 @@ def _learn_refusal(exc: Exception, kwargs: dict[str, Any]) -> str | None:
     ``litellm.get_supported_openai_params`` listed temperature as supported, so
     ``drop_params`` had no reason to remove it.
 
-    Only sampling knobs. Omitting one costs the model's default in its place, which is
+    Only generation knobs. Omitting one costs the model's default in its place, which is
     the endpoint's own stated terms; omitting an output cap or a schema would change what
     was asked, and those have their own ladders.
     """
     name = getattr(exc, "param", None)
-    if not isinstance(name, str) or name not in _SAMPLING_PARAMS or name not in kwargs:
+    if not isinstance(name, str) or name not in _DROPPABLE or name not in kwargs:
         return None
     _UNSUPPORTED.setdefault(str(kwargs.get("model", "")), set()).add(name)
     del kwargs[name]
@@ -253,6 +275,7 @@ def _loggable_parameters(
             "presence_penalty",
             "frequency_penalty",
             "seed",
+            "reasoning_effort",
             "stream",
         )
         if name in kwargs
@@ -320,6 +343,7 @@ _SCHEMA_MAX_TOKENS: dict[str, int] = {
 }
 _DEFAULT_SCHEMA_MAX_TOKENS = 2048
 _MAX_SCHEMA_MAX_TOKENS = 8192
+_MAX_CHOICE_MAX_TOKENS = 256
 _REPAIR_RAW_CHARS = 2000
 _STALLED_WHITESPACE_CHARS = 512
 
@@ -467,12 +491,25 @@ class LiteLLMAdapter:
             if attempt_log["stream"].get("finish_reason") == "length":
                 last_raw = raw
                 effective_cap = int(attempt_log.get("max_tokens", output_cap))
-                last_error = f"output reached the {effective_cap}-token generation limit"
+                # "output reached the limit" was read off finish_reason alone, and it said
+                # that about a reasoning model that had produced nothing at all: the cap is
+                # a total, and the thinking billed against it is never streamed. Doubling
+                # the budget cannot fix that, so the message must not imply it can.
+                last_error = (
+                    f"the {effective_cap}-token budget was spent without producing any "
+                    "output; a reasoning model counts its own thinking against it"
+                    if not raw.strip()
+                    else f"output reached the {effective_cap}-token generation limit"
+                )
                 attempt_log["error"] = last_error
                 logger.warning(
-                    "%s output reached %d tokens on attempt %d/%d",
+                    "%s %s on attempt %d/%d",
                     schema.__name__,
-                    effective_cap,
+                    (
+                        f"produced nothing within {effective_cap} tokens"
+                        if not raw.strip()
+                        else f"output reached {effective_cap} tokens"
+                    ),
                     attempt + 1,
                     self._max_retries + 1,
                 )
@@ -581,6 +618,7 @@ class LiteLLMAdapter:
         began = time.monotonic()
         last_raw = ""
         last_error = ""
+        cap = max_tokens
         for attempt, messages in enumerate((base_messages, clean_messages)):
             started = time.monotonic()
             attempt_log: dict[str, Any] = {"n": attempt + 1, "messages": messages}
@@ -591,7 +629,7 @@ class LiteLLMAdapter:
                     messages,
                     schema=None,
                     temperature=temperature,
-                    max_tokens=max_tokens,
+                    max_tokens=cap,
                     attempt_log=attempt_log,
                     force_temperature=True,
                 )
@@ -633,6 +671,19 @@ class LiteLLMAdapter:
                 record.update(ok=True, ms=round((time.monotonic() - began) * 1000))
                 log_llm_call(record)
                 return selected
+            if not selected and attempt_log.get("stream", {}).get("finish_reason") == "length":
+                # Nothing was output and the budget is gone, so it went somewhere invisible:
+                # a reasoning model bills its thinking against the same cap. Raising it is
+                # safe here in a way it is not for a card -- a closed choice's output is
+                # bounded by the literals, so the extra room can only absorb thinking.
+                last_error = (
+                    f"the {cap}-token budget was spent without producing any output; "
+                    "a reasoning model counts its own thinking against it"
+                )
+                attempt_log["error"] = last_error
+                logger.warning("%s produced no choice within %d tokens", self._model, cap)
+                cap = min(cap * 8, _MAX_CHOICE_MAX_TOKENS)
+                continue
             last_error = f"reply {raw[:200]!r} is not one exact allowed literal"
             attempt_log["error"] = last_error
 
@@ -728,6 +779,8 @@ class LiteLLMAdapter:
         # Every call through this adapter is schema-bound or a closed choice, so Bismuth
         # owns how the token is picked. The agent chat path keeps the operator's values.
         apply_body(kwargs, self._body, owns_sampling=True)
+        if "reasoning_effort" not in kwargs:
+            kwargs["reasoning_effort"] = _MINIMAL_REASONING
         if force_temperature:
             kwargs["temperature"] = temperature
         # Config may request a smaller budget, but it cannot raise a task's reviewed
