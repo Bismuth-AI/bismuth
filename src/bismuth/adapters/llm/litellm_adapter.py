@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import AsyncIterator, Sequence
@@ -27,6 +28,16 @@ def _load_litellm() -> Any:
     """Import LiteLLM lazily, not at module scope, so our own ``.env`` load wins over python-dotenv's upward directory scan on import."""
     global _litellm
     if _litellm is None:
+        # LiteLLM downloads its price list from GitHub while importing, with a five second
+        # timeout and a warning when it expires. Measured on a box that cannot reach
+        # raw.githubusercontent.com: 8.5s to import, against 3.1s with the bundled copy --
+        # paid at every start, and the first thing the user sees is a network warning from
+        # a tool that organises local files. The bundled copy ships with the installed
+        # LiteLLM, so a model priced only in a newer list reports no cost rather than a
+        # wrong one, which is what usage_of already does for anything unlisted. Set
+        # LITELLM_LOCAL_MODEL_COST_MAP=false to fetch the current list instead.
+        os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
+
         import litellm
 
         litellm.suppress_debug_info = True
