@@ -3,7 +3,9 @@ the server is accepting requests."""
 
 from __future__ import annotations
 
+import os
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -101,3 +103,38 @@ class TestServerPreload:
 
     def test_no_parser_import_is_left_for_the_first_upload(self, client) -> None:  # type: ignore[no-untyped-def]
         assert {"pypdf", "docx", "pptx", "openpyxl"} <= set(sys.modules)
+
+
+class TestStartupMakesNoNetworkCall:
+    """LiteLLM fetches its price list from GitHub while importing, five second timeout.
+
+    On a box that cannot reach raw.githubusercontent.com the import measured 8.5s against
+    3.1s with the bundled copy, and the first thing on screen was a network warning from a
+    tool for local files. A stub stands in for LiteLLM so this asserts the decision rather
+    than paying the timeout to observe it.
+    """
+
+    def _instant_litellm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(sys.modules, "litellm", types.ModuleType("litellm"))
+        monkeypatch.setattr(litellm_adapter, "_litellm", None)
+
+    def test_the_price_list_comes_from_the_installed_package(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LITELLM_LOCAL_MODEL_COST_MAP", raising=False)
+        self._instant_litellm(monkeypatch)
+
+        litellm_adapter.preload()
+
+        assert os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] == "true"
+
+    def test_asking_for_the_current_list_is_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opting back in has to be possible, or the price list can never be corrected."""
+        monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "false")
+        self._instant_litellm(monkeypatch)
+
+        litellm_adapter.preload()
+
+        assert os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] == "false"
