@@ -942,15 +942,29 @@ def build_existing_choice(
     axis_question: str,
     children: list[tuple[str, str]],
 ) -> Prompt:
-    """Route one loose document with a closed, non-JSON decision."""
+    """Route one loose document with a closed, non-JSON decision.
+
+    Each sign carries the note that is on that folder. The name alone is two or three
+    words and suggests more than it means: shown only names, this question sent
+    가상자산 이용자 보호 등에 관한 법률 시행령 into 데이터 산업 관련 법령 -- crypto reads
+    as digital from the name, and the note that would have ruled it out ("데이터 산업의
+    진흥, 거래, 품질 관리 및 관련 위원회 운영") was never in the prompt. The folder then
+    twice tried to draw 가상자산 out of itself and was refused both times, because one
+    document is not a class. Nothing takes a wrongly filed document back out.
+    """
     signs = "\n".join(
-        f"  [F{index:03d}] {name}/" for index, (name, _) in enumerate(children, start=1)
+        f"  [F{index:03d}] {name}/" + (f" — {note}" if note else "")
+        for index, (name, note) in enumerate(children, start=1)
     )
     return Prompt(
         system=(
             "Route this one loose document only when an existing sign positively describes it. "
             "Reply with exactly one shown F### handle or STAY. STAY is normal when no sign is a "
-            "clear fit. Do not explain, rename, or create a sign."
+            "clear fit. Do not explain, rename, or create a sign.\n\n"
+            "Judge against the note under each name, not the name alone: a name is two or "
+            "three words and will suggest more than it means. A document filed behind a sign "
+            "that does not describe it is worse than one left loose, because the sign then "
+            "lies to every reader who trusts it."
         ),
         user=(
             f"FOLDER: {path or '(root)'}\nAXIS: {axis}\nQUESTION: {axis_question}\n"
