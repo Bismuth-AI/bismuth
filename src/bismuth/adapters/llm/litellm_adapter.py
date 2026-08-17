@@ -343,7 +343,15 @@ _SCHEMA_MAX_TOKENS: dict[str, int] = {
 }
 _DEFAULT_SCHEMA_MAX_TOKENS = 2048
 _MAX_SCHEMA_MAX_TOKENS = 8192
-_MAX_CHOICE_MAX_TOKENS = 256
+_CHOICE_MAX_TOKENS = 64
+"""What one literal out of a listed set is allowed to cost.
+
+A ceiling is free when the model stops on its own: an answer of ``F003`` is three tokens
+whether the ceiling is 8 or 64. The only thing a small one can do is cut the answer off,
+and for a model whose thinking is invisible it cuts before the answer starts. Measured on
+gpt-5-nano at minimal effort: 8 tokens spent with nothing shown, then ``SHELF`` in 12.
+"""
+_MAX_CHOICE_MAX_TOKENS = 512
 _REPAIR_RAW_CHARS = 2000
 _STALLED_WHITESPACE_CHARS = 512
 
@@ -579,7 +587,6 @@ class LiteLLMAdapter:
         prompt: Prompt,
         *,
         choices: Sequence[str],
-        max_tokens: int = 32,
         temperature: float = 0.0,
     ) -> str:
         """Return one exact provider-neutral literal, retrying once without bad context."""
@@ -618,8 +625,16 @@ class LiteLLMAdapter:
         began = time.monotonic()
         last_raw = ""
         last_error = ""
-        cap = max_tokens
-        for attempt, messages in enumerate((base_messages, clean_messages)):
+        cap = _CHOICE_MAX_TOKENS
+        # A queue rather than a fixed pair, because the two recoveries are different
+        # questions. The stripped prompt is for a model that answered with the wrong kind
+        # of thing; a spent budget means the real question was never answered at all, and
+        # asking a smaller version of it instead is a worse question, not a retry.
+        pending = [base_messages, clean_messages]
+        attempt = -1
+        while pending:
+            attempt += 1
+            messages = pending.pop(0)
             started = time.monotonic()
             attempt_log: dict[str, Any] = {"n": attempt + 1, "messages": messages}
             record["attempts"].append(attempt_log)
@@ -641,9 +656,7 @@ class LiteLLMAdapter:
                     raw=last_raw,
                     error=last_error,
                 )
-                if attempt == 0:
-                    continue
-                break
+                continue
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 attempt_log.update(
@@ -682,7 +695,9 @@ class LiteLLMAdapter:
                 )
                 attempt_log["error"] = last_error
                 logger.warning("%s produced no choice within %d tokens", self._model, cap)
-                cap = min(cap * 8, _MAX_CHOICE_MAX_TOKENS)
+                if (raised := min(cap * 8, _MAX_CHOICE_MAX_TOKENS)) > cap:
+                    cap = raised
+                    pending.insert(0, messages)  # the same question, with room to answer it
                 continue
             last_error = f"reply {raw[:200]!r} is not one exact allowed literal"
             attempt_log["error"] = last_error

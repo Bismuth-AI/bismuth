@@ -71,7 +71,6 @@ class FakeLLM:
         prompt: Prompt,
         *,
         choices: Sequence[str],
-        max_tokens: int = 32,
         temperature: float = 0.0,
     ) -> str:
         """Drive a plain-choice script. ``None`` is the handler's choice-task key."""
