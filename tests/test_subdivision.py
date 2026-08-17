@@ -1278,3 +1278,23 @@ class TestMembershipSeesTheSign:
         asked = [p for p in llm.prompts_for(None) if "NEW SIGN:" in p.user]
         assert asked
         assert all("소설과 시, 그리고 문학 비평에 관한 자료" in p.user for p in asked)
+
+
+class TestRoutingSeesTheNotes:
+    async def test_each_existing_sign_carries_its_note(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:
+        """Shown names only, routing put 가상자산 이용자 보호법 시행령 into 데이터 산업
+        관련 법령 -- crypto reads as digital from a two-word name, and the note that
+        ruled it out was not in the prompt."""
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "소설과 시. 과학 자료가 아닌 것.", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        routing = [p for p in llm.prompts_for(None) if "\n  [F" in p.user and "SIGNS:" in p.user]
+        assert routing
+        assert all("소설과 시" in p.user for p in routing)
