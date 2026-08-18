@@ -404,3 +404,96 @@ def validate_split(
         if any(restates(name, item) for item in ancestor_names):
             problems.append(SplitProblem.PROMOTED_RESTATES_ANCESTOR)
     return SplitValidation(tuple(dict.fromkeys(problems)))
+
+
+class Operator(StrEnum):
+    """The four things that can be done to a folder (ADR-0018).
+
+    Cobweb scores all four at every node it passes and applies the best. It can afford to
+    because category utility is arithmetic; ours is a model call, so code narrows the
+    choice to what is structurally possible here and the model picks from that.
+    """
+
+    KEEP = "keep"
+    CREATE = "create"
+    MERGE = "merge"
+    SPLIT = "split"
+
+
+REVERSE_OF = {Operator.MERGE: Operator.SPLIT, Operator.SPLIT: Operator.MERGE}
+"""Merge and split undo each other. That is what lets an early mistake be corrected, and
+also what lets a folder be built and dissolved for ever on the same evidence."""
+
+MIN_CLASS_DOCUMENTS = 2
+"""A class of one document is a rename, not a class (``SINGLE_DOCUMENT``)."""
+
+MIN_REMAINDER_DOCUMENTS = 2
+"""What has to be left behind for a class to have divided anything (``NO_DIVISION``)."""
+
+MIN_GROUPING_MEMBERS = 2
+"""Fewer than two folders on a new shelf is a rename (``TOO_FEW_MEMBERS``)."""
+
+
+@dataclass(frozen=True, slots=True)
+class FolderShape:
+    """Everything the enumeration needs, and nothing that requires reading a document.
+
+    Counted from the filesystem and the folder note, so deciding what may be asked costs
+    no model call at all.
+    """
+
+    loose_documents: int
+    children: tuple[str, ...] = ()
+    ancestor_names: tuple[str, ...] = ()
+    siblings: tuple[str, ...] = ()
+    is_root: bool = False
+    last_operator: Operator | None = None
+    evidence_moved: bool = True
+    """Whether this folder's own evidence has moved since ``last_operator`` was applied."""
+
+
+def legal_operators(shape: FolderShape) -> frozenset[Operator]:
+    """Which operators could be applied here at all.
+
+    The same contracts :func:`validate_plan`, :func:`validate_grouping` and
+    :func:`validate_split` hold an answer to, read forwards: an operator that could only
+    be refused is never offered, so there is nothing to refuse. One 300-document run paid
+    for and threw away between 91% and 99% of its judgements, and the folders doing the
+    asking were mostly folders where no answer could have been accepted.
+
+    ``KEEP`` is always here, which is what makes the result a closed choice rather than a
+    question about whether to act.
+    """
+    legal = {Operator.KEEP}
+
+    # One class comes out at a time, so both halves of the division have to survive it:
+    # the class itself, and the pile it leaves behind.
+    if shape.loose_documents >= MIN_CLASS_DOCUMENTS + MIN_REMAINDER_DOCUMENTS:
+        legal.add(Operator.CREATE)
+
+    # Two or more folders move onto the shelf and at least one stays beside it, or the
+    # shelf has renamed this folder rather than tidying it (``TOOK_EVERY_FOLDER``).
+    if len(shape.children) > MIN_GROUPING_MEMBERS:
+        legal.add(Operator.MERGE)
+
+    # The name is not known yet, so the rest of the grouping contract cannot be checked
+    # here; splitting has no name to invent, so all of its contract can be.
+    if (
+        not shape.is_root
+        and validate_split(
+            promoted=shape.children,
+            ancestor_names=shape.ancestor_names,
+            taken=shape.siblings,
+            documents=shape.loose_documents,
+        ).accepted
+    ):
+        legal.add(Operator.SPLIT)
+
+    # A folder that was just merged can be split back apart, and the split folder merged
+    # again, for ever -- the same evidence answers both. Offering the reverse only after
+    # the evidence has moved makes that impossible rather than merely unlikely, and it
+    # costs nothing to check, because the schedule already measures the movement.
+    if not shape.evidence_moved and shape.last_operator in REVERSE_OF:
+        legal.discard(REVERSE_OF[shape.last_operator])
+
+    return frozenset(legal)
