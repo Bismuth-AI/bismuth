@@ -2,10 +2,12 @@ from pathlib import PurePosixPath
 
 from bismuth.domain.charter import Charter
 from bismuth.domain.maintenance import (
+    GroupingProblem,
     PlanProblem,
     ProposedClass,
     is_axis_label,
     restates,
+    validate_grouping,
     validate_plan,
 )
 
@@ -144,3 +146,38 @@ class TestAChildMayNotRestateItsAncestor:
     def test_different_words_are_not_a_restatement(self) -> None:
         assert not restates("나노기술", "과학기술")
         assert not restates("금융", "금융")
+
+
+class TestAShelfMayNotBeBuiltOverItsOwnName:
+    """The name contract, applied when a folder is moved under a shelf and not only when
+    it is created.
+
+    Checked at creation only, a shelf could be stood over a folder that restates it:
+    위반 행위 및 제재 was built over 위반 행위 및 제재 유형, a pair restates() refuses
+    outright between a parent and a child. The corridor of near-synonyms it started
+    reached six levels -- past the absolute ceiling -- and left a folder holding no
+    documents in the middle of it.
+    """
+
+    def test_a_member_that_restates_the_shelf_is_refused(self) -> None:
+        result = validate_grouping(
+            name="위반 행위 및 제재",
+            axis="규제 대상 행위",
+            members=("위반 행위 및 제재 유형", "과태료 부과 사유"),
+            siblings=("위반 행위 및 제재 유형", "과태료 부과 사유", "채무조정", "경영정상화"),
+            ancestor_names=("금융기관 또는 금융회사등", "금융 규제 및 감독 법령"),
+        )
+
+        assert GroupingProblem.MEMBER_RESTATES_NAME in result.problems
+
+    def test_folders_that_answer_the_shelf_still_stand_under_it(self) -> None:
+        """The contract refuses repetition, not grouping."""
+        result = validate_grouping(
+            name="금융 감독",
+            axis="규제 대상 행위",
+            members=("보험사기행위", "유사수신행위"),
+            siblings=("보험사기행위", "유사수신행위", "채무조정"),
+            ancestor_names=("금융기관 또는 금융회사등",),
+        )
+
+        assert result.accepted
