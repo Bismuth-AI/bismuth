@@ -480,8 +480,12 @@ class LibraryMaintenanceService:
                 documents=contents.subject_lines,
                 children=contents.children,
                 axis=axis,
+                # The same condition as the axis, deliberately. Split, the folder
+                # inherited a property with no question attached, the chain skipped the
+                # step that would have written one because the property was already
+                # there, and the plan was refused for having no question -- 69 times.
                 axis_question=(
-                    charter.split_question if charter is not None and established else ""
+                    charter.split_question if charter is not None and charter.divided else ""
                 ),
                 spent=spent,
                 language=contents.language,
