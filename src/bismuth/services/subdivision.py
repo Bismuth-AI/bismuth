@@ -474,7 +474,7 @@ class LibraryMaintenanceService:
         spent = self._axes_above(folder)
 
         with log_context(stage="subdivision.emerging"):
-            emerging = await self._find_emerging(
+            emerging, gathered = await self._find_emerging(
                 folder=folder,
                 purpose=purpose,
                 documents=contents.subject_lines,
@@ -681,66 +681,20 @@ class LibraryMaintenanceService:
             )
             return None
 
-        with log_context(stage="subdivision.members"):
-            members = await self._find_members(
-                folder=folder,
-                purpose=purpose,
-                documents=contents.lines,
-                name=emerging.name,
-                sign=emerging.sign,
-            )
-            log_trace(
-                "subdivide.members",
-                folder=str(folder),
-                name=emerging.name,
-                claimed=len(members.document_ids),
-                of=len(contents.documents),
-            )
-        if not members.document_ids:
-            return None
-
         # A sign copied out of the pile it is labelling names those documents, not the
         # class, so it degrades to the derived form like any other unusable sign.
         offered_sign = "" if _quotes_evidence(emerging.sign, contents.lines) else emerging.sign
-        proposed_groups = [
-            prompts.Group(
-                name=emerging.name,
-                note=_sign(
-                    offered_sign,
-                    axis=axis or emerging.axis.strip(),
-                    class_name=emerging.name,
-                    folder=folder,
-                ),
-                document_ids=members.document_ids,
-            )
-        ]
-        preview = validate_plan(
+        note = _sign(
+            offered_sign,
             axis=axis or emerging.axis.strip(),
-            axis_question=(
-                charter.split_question
-                if charter is not None and charter.split_question and established
-                else emerging.axis_question
-            ),
-            groups=tuple(
-                ProposedClass(name=group.name, document_ids=tuple(group.document_ids))
-                for group in proposed_groups
-            ),
-            available_document_ids=frozenset(
-                document_id for document_id, _, _ in contents.documents
-            ),
-            ancestor_names=folder.parts,
-            spent_axes=tuple(spent),
+            class_name=emerging.name,
+            folder=folder,
         )
-        if not preview.accepted:
-            log_trace(
-                "subdivide.rejected",
-                folder=str(folder),
-                reason="; ".join(problem.value for problem in preview.problems),
-                proposed=[group.name for group in proposed_groups],
-            )
-            return None
+        # The handles the grouping step picked, standing in for a membership answer that
+        # has not been asked yet. The audit is about the axis, the name and the sibling
+        # names; it never needed to know which documents ended up behind the sign.
         audit_documents = contents.lines
-        audit_groups = proposed_groups
+        audit_groups = [prompts.Group(name=emerging.name, note=note, document_ids=list(gathered))]
         if charter is not None and charter.divided and contents.children:
             # A new shelf changes the meaning of the whole list of signs. Checking it
             # alone cannot detect an overlapping sibling, a mixed axis, or another
@@ -761,7 +715,7 @@ class LibraryMaintenanceService:
                 path: document_id for document_id, _, path in review_contents.documents
             }
             converted_groups: list[prompts.Group] = []
-            for group in proposed_groups:
+            for group in audit_groups:
                 converted_ids: list[str] = []
                 for document_id in group.document_ids:
                     path = contents.path_of(document_id)
@@ -807,6 +761,57 @@ class LibraryMaintenanceService:
                     failed_checks=_failed_boundary_checks(audit),
                 )
                 return None
+
+        # Only now, once the boundary has survived every check that does not depend on it,
+        # is each document asked whether it belongs. This loop is one closed question per
+        # document and it used to run first: 84% of the questions it asked in one round
+        # were spent on proposals refused afterwards.
+        with log_context(stage="subdivision.members"):
+            members = await self._find_members(
+                folder=folder,
+                purpose=purpose,
+                documents=contents.lines,
+                name=emerging.name,
+                sign=emerging.sign,
+            )
+            log_trace(
+                "subdivide.members",
+                folder=str(folder),
+                name=emerging.name,
+                claimed=len(members.document_ids),
+                of=len(contents.documents),
+            )
+        if not members.document_ids:
+            return None
+
+        proposed_groups = [
+            prompts.Group(name=emerging.name, note=note, document_ids=members.document_ids)
+        ]
+        preview = validate_plan(
+            axis=axis or emerging.axis.strip(),
+            axis_question=(
+                charter.split_question
+                if charter is not None and charter.split_question and established
+                else emerging.axis_question
+            ),
+            groups=tuple(
+                ProposedClass(name=group.name, document_ids=tuple(group.document_ids))
+                for group in proposed_groups
+            ),
+            available_document_ids=frozenset(
+                document_id for document_id, _, _ in contents.documents
+            ),
+            ancestor_names=folder.parts,
+            spent_axes=tuple(spent),
+        )
+        if not preview.accepted:
+            log_trace(
+                "subdivide.rejected",
+                folder=str(folder),
+                reason="; ".join(problem.value for problem in preview.problems),
+                proposed=[group.name for group in proposed_groups],
+            )
+            return None
 
         return prompts.Division(
             # The axis, not a sentence about this one extraction. It is read back on the
@@ -903,7 +908,7 @@ class LibraryMaintenanceService:
         axis_question: str,
         spent: list[str],
         language: str = "",
-    ) -> prompts.Emerging:
+    ) -> tuple[prompts.Emerging, tuple[str, ...]]:
         """Group, then name, then sign -- and the axis only the first time.
 
         One call used to decide all five. To name a class it had to be shown the
@@ -939,7 +944,7 @@ class LibraryMaintenanceService:
                 folder=str(folder),
                 reason="direct signs require boundary review before another class can emerge",
             )
-            return prompts.Emerging(emerged=False)
+            return prompts.Emerging(emerged=False), ()
 
         gathered: list[prompts.Gathered] = []
         for packet in _document_packets(documents, build):
@@ -947,7 +952,7 @@ class LibraryMaintenanceService:
             if kept := self._kept_members(found, packet, folder=folder):
                 gathered.append(prompts.Gathered(members=kept, shared=found.shared.strip()))
         if not gathered:
-            return prompts.Emerging(emerged=False)
+            return prompts.Emerging(emerged=False), ()
 
         # The thickest, decided here rather than asked. The prompt already says to return
         # the thickest, and the reduce call that used to choose between candidates was one
@@ -968,7 +973,7 @@ class LibraryMaintenanceService:
             settled_axis, question = asked.axis.strip(), asked.axis_question.strip()
             if not question:
                 _guard_refused("axis_without_a_question", folder=folder)
-                return prompts.Emerging(emerged=False)
+                return prompts.Emerging(emerged=False), ()
 
         named = await self._llm.structured(
             prompts.build_class_name(
@@ -983,7 +988,7 @@ class LibraryMaintenanceService:
         name = " ".join(named.name.split()).strip()
         if not name:
             _guard_refused("class_name_empty", folder=folder)
-            return prompts.Emerging(emerged=False)
+            return prompts.Emerging(emerged=False), ()
 
         signed = await self._llm.structured(
             prompts.build_class_sign(shared=chosen.shared, language=language),
@@ -1000,12 +1005,15 @@ class LibraryMaintenanceService:
             name=name,
             axis_is_new=not axis,
         )
-        return prompts.Emerging(
-            emerged=True,
-            name=name,
-            sign=signed.sign.strip(),
-            axis=settled_axis,
-            axis_question=question,
+        return (
+            prompts.Emerging(
+                emerged=True,
+                name=name,
+                sign=signed.sign.strip(),
+                axis=settled_axis,
+                axis_question=question,
+            ),
+            tuple(chosen.members),
         )
 
     def _kept_members(
