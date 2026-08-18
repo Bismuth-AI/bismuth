@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from pathlib import PurePosixPath
+import shutil
+from pathlib import Path, PurePosixPath
 from unittest import mock
 
 import pytest
@@ -1389,3 +1390,52 @@ class TestTheNameIsAnAnswerNotTheQuestion:
         named = llm.prompts_for(subdivision_prompts.ClassName)
         assert named
         assert all("어느 주제 분야에 속하는가?" in prompt.user for prompt in named)
+
+
+class TestNothingIsAskedTwice:
+    """Every call in this class was made, answered, and thrown away in one 300-document
+    round -- 145 axes, 32 signs and 84 groups, none of which could have been used."""
+
+    async def test_a_folder_with_a_recorded_axis_is_not_asked_for_another(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """One child used to mean the axis was not settled, so it was asked again on every
+        arrival and refused for repeating an ancestor's."""
+        # The seeded folder would make the root two-childed and settle the axis for the
+        # wrong reason; this test is about the folder that has exactly one.
+        shutil.rmtree(Path(engine.vault.root) / "아폴로")
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야")
+        await engine.subdivision.consider(PurePosixPath())
+        charter = engine.charters.load(PurePosixPath())
+        assert charter is not None and charter.split_basis == "주제 분야"
+        llm.calls.clear()
+
+        # A new arrival, so the loose pile has changed and the folder is asked again.
+        _emerges(script, "과학", "실험과 관측을 모은다", ids[2:4], axis="완전히 다른 축")
+        await add(engine, "doc99.txt", "문서 99 내용")
+
+        assert not llm.prompts_for(subdivision_prompts.Axis)
+
+    async def test_the_sign_is_written_without_being_shown_the_name(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야")
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        asked = llm.prompts_for(subdivision_prompts.ClassSign)
+        assert asked
+        assert all("문학" not in prompt.user for prompt in asked)
+
+    async def test_the_group_is_given_its_bounds_as_numbers(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """ "At least two, never all of them" was ignored 84 times in 567 replies."""
+        await _fill(engine, script, 5)
+
+        asked = llm.prompts_for(subdivision_prompts.Gathered)
+        assert asked
+        assert any("BETWEEN 2 AND 4 OF THEM. NEVER ALL 5." in prompt.user for prompt in asked)
