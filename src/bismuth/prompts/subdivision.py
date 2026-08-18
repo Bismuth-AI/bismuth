@@ -34,156 +34,100 @@ from pydantic import BaseModel, Field, field_validator
 from bismuth.domain.maintenance import is_axis_label
 from bismuth.ports.llm import Prompt
 
+"""What a folder name has to do, shared by every prompt that asks for one.
+
+Each rule here was added after a measured failure, and the evidence for it lives in the
+git history rather than in the tokens: the compound-name rule after a folder called
+연구인프라 및 인력 지원 was given the child 국가연구인프라 및 인력 지원 with the rule already
+in the prompt; the sign-is-a-sentence rule after fifty notes in one 300-document round
+reached disk as the folder's own name written twice; the no-separator rule after names
+arrived as paths and landed a level up from where they were meant.
+
+Sent on every subdivision call and embedded in five system prompts, so a paragraph here
+costs five times its length. Rationale belongs in this docstring; the string below holds
+instructions only.
+"""
+
 _SIGNS = """\
 Think of folders as SIGNS, not as groups.
 
-Someone is looking for a document. Right now they see the list of documents in this \
-folder. If it is divided they see a few folder names INSTEAD, and must choose one \
-before they see any document at all. A division is worth making when those names let \
-them ignore most of the collection, and it is worth nothing otherwise.
+A reader who arrives sees the document list. Divided, they see a few folder names \
+INSTEAD, and must pick one before they see any document. The division is worth making \
+only if those names let them ignore most of the collection.
 
-A division fails when:
+So a division fails when there are nearly as many signs as documents, when a sign \
+points at one document, or when most documents fit no sign. A sign names a CLASS -- \
+something you expect more of -- never one document's subject.
 
-- **There are nearly as many signs as documents.** Reading a second list merely to \
-reach the first list adds navigation without narrowing it.
-- **A sign points at one document.** A sign in front of a single book is not a sign, \
-it is the book with a step in front of it.
-- **Most documents fit no sign.** Then the reader is back to scanning, and the \
-distinction drawn is not the one this collection is organised by.
+**One sign says one thing.** Several unrelated things strung together is an inventory \
+of what happened to land here: the reader cannot tell which part is meant, so they open \
+it anyway, and the next arrival either extends the list or forces a rewrite. If you can \
+only name the group by listing it, name instead the one thing they are all a case of, \
+or take the thickest alone and leave the rest loose.
 
-A sign names a CLASS -- something you expect more of -- never one document's subject. \
-If the only honest name for a group is the title of the document inside it, that group \
-should not exist.
+**Name a KIND of this folder, never this folder again.** Every document here already \
+answers to the folder's own name, so that name -- in other words, or with a qualifier \
+added in front or behind -- rules nothing out, and a class covering every document \
+moves the whole pile one level down to face the same list again. A kind is named by \
+what makes it that kind: different words, not more of the same ones. Some documents \
+must stay behind for a division to have happened. If nothing narrower than this folder \
+fits, nothing has emerged; say so.
 
-**One sign says one thing.** A name that strings several unrelated things together is \
-not a sign, it is an inventory of what happened to land there, and a reader cannot tell \
-which part of it is meant -- so they open it, which is the cost the sign exists to avoid. \
-It also cannot grow: the next document either extends the list or does not belong, and \
-either way the name has to be rewritten. If you can only name the group by listing its \
-contents, you have not found the class. Either name the one thing they are all a case \
-of, or take the thickest of them alone and leave the rest loose.
+**Nothing is named by what it is not.** "The ones that are not X" excludes nothing and \
+can never be split further, and a reader knows what they want, not what they do not. \
+Two habits produce it: splitting on a property nearly every document answers the same \
+way, which leaves one shelf and a remainder, and describing a class only against the \
+one beside it, which makes that other class the distinction. **Name the shelf, not the \
+sorting** -- the leftovers, the remainder, the ones sorted by subject are not groups. \
+If the honest name is "the rest", say nothing emerged.
 
-**A class that covers every document here is not a class, it is this folder.** Putting \
-all of them behind one new sign moves the whole pile down a level and leaves the reader \
-facing the same list one click further in; the folder below is then the same size with \
-the same problem, for ever. If everything here really does belong under one name, you \
-have not found the distinction yet -- look for the property that separates these \
-documents from each other, not the one they share. Some of them must stay behind for a \
-division to have happened at all.
+**Ask what the documents are ABOUT first.** Format, type, language, date and issuing \
+body are known for almost everything, so they fill a tree neatly and leave the reader \
+no better off; drawn first they scatter each subject across every branch. They are \
+usable LATER, inside a shelf that is already about something.
 
-**The folder you are inside already has a name, and your shelf goes underneath it.** \
-Every document here is already an answer to that name, so writing it again -- or writing \
-it in other words -- makes a folder that rules nothing out and a reader who has to open \
-it anyway. What you name is one KIND of what this folder already holds: narrower than \
-the folder's own name, and a name only SOME of these documents could take. If nothing \
-narrower than the folder itself fits, nothing has emerged; say so.
+**Every level costs the reader a correct guess.** A shelf here sits behind every choice \
+above it, and a wrong guess at any one of them never reaches it. Deep down the bar is \
+higher, not lower. **The name is one folder, not a path** -- a separator in it throws \
+the whole answer away.
 
-**Adding a word to the folder's name is not naming a kind of it.** A name that still \
-contains the folder's own name, with a qualifier stuck in front or behind, sorts nothing: \
-every document here would answer to it, which is exactly what made it the folder's name. \
-Observed live with this very instruction in the prompt -- a folder called \
-연구인프라 및 인력 지원 was given the child 국가연구인프라 및 인력 지원, and the level below \
-repeated the trick again. A kind of something is named by what makes it that kind: \
-different words, not more of the same ones.
+**The sign is a sentence; the name is a label.** You write the sign first, so there is \
+no name yet to repeat: if what you just wrote could itself serve as a folder name, it \
+is the name arriving early, not a sign. Write it to someone standing outside the folder \
+who cannot see these documents and does not care how you decided -- what would belong \
+here tomorrow, not what happens to be here today. Not what you noticed about the pile, \
+not why this class and not another. One sentence, two clauses at most; past that it is \
+thrown away and the folder is labelled with its own name twice. If you cannot say it in \
+one sentence, the class is not clear enough yet.
 
-**Every level costs the reader a correct guess.** Look at how deep the folder path \
-above already is: a shelf you add here sits behind all of those choices, and a reader \
-who guesses wrong at any one of them never reaches it. Deep down, the bar for another \
-level is higher than it was at the top, not lower. A wide shelf a reader can scan beats \
-a narrow one they have to find.
-
-**The name is one folder, not a path.** Write the single level you are adding. A name \
-with a separator in it is refused outright and the whole answer is thrown away.
-
-**Name the shelf, not the sorting.** A name that describes the act of arranging rather \
-than what stands on the shelf -- the leftovers, the remainder, the ones sorted by \
-subject -- leaves the reader with the same list and one more click to reach it. If the \
-only thing a group has in common is that it was left over, it is not a group.
-
-**Nothing is named by what it is not.** A shelf whose name says "the ones that are not X" \
-holds everything in the world except X, so it excludes nothing and can never be split \
-further -- what would its children be? A reader cannot use it either: they know what they \
-are looking for, not what they are not looking for. Two things produce such a name, and \
-both are the same mistake. Splitting on a property where almost every document here gives \
-the same answer leaves one shelf and a not-that remainder. And drawing a class you can \
-only describe against the class beside it means the distinction is that other class, not \
-this one. If the honest name is "the rest", nothing has emerged -- say so and leave them \
-where they are.
-
-**An attribute nearly every document has is not the first distinction to draw.** Format, \
-type, language, date, and issuing body are known for almost everything, so they fill a \
-tree neatly and leave the reader no better off: someone arrives wanting a subject, not a \
-format. Those attributes are usable LATER, inside a shelf that is already about \
-something, when there is still a reason to split it further. Drawn first, they scatter \
-each subject across every branch and the reader has to walk all of them.
-
-The first question is what the documents are ABOUT.
-
-**`sign` is the line printed under the folder name, and `name` is the folder name.** \
-They are not the same text. The reader has already read the name; the sign is what they \
-read next to decide whether to open the folder or walk past it, so it has to say \
-something the name did not. Write the sign first and name the folder after it.
-
-A broad name needs a sign more, not less. `name` is two or three words and cannot carry \
-scope; the sign is where the scope goes -- what kinds of documents fall under it, said in \
-a full line. That is not an inventory: an inventory lists what happens to be here today, \
-and scope says what would belong here tomorrow. If the sign you are about to write is the \
-name again, you have written the label twice and told the reader nothing.
-
-**The sign is a sentence, not a label.** You write it before the name, so there is no
-name yet to avoid repeating -- the test is on the sign alone: if what you just wrote could
-itself serve as a folder name, it is not a sign yet, it is the name arriving early. It was
-measured arriving early fifty times in one 300-document round, and each time the note that
-reached disk was the folder's own name written twice.
-
-**The sign is ONE sentence, and it is addressed to someone standing outside the folder.** \
-They cannot see the documents you are looking at and they are not interested in how you \
-decided. So write what belongs here -- not what you noticed about the pile, not what these \
-particular documents have in common, not why this class and not another. A sign that opens \
-by talking about the documents in front of you, or that explains the distinction you drew, \
-is an account of your reasoning; it goes past the length a folder note can hold, is thrown \
-away, and the folder ends up labelled with its own name repeated back. Two clauses at most. \
-If you cannot say it in one sentence, the class is not clear enough yet.
-
-Signs and notes in the DOCUMENTS' OWN LANGUAGE. If the documents are in one language, the \
-sign is in that language too.\
+Signs and notes in the DOCUMENTS' OWN LANGUAGE. If the documents are in one language, \
+the sign is in that language too.\
 """
 
 _EMERGING_SYSTEM = f"""\
-These documents have not been sorted, and this folder has no sub-folders yet. You are \
-deciding TWO things, and the first one outlives this answer.
+These documents have not been sorted and this folder has no sub-folders yet. You are \
+deciding TWO things, and both outlive this answer.
 
-**First, the CLASS** -- one group that has gathered here and is worth a shelf. Describe \
+**First the CLASS** -- one group that has gathered here and is worth a shelf. Describe \
 it, then name it.
 
-**Then the AXIS**: the one property that name is a value of. Every sub-folder this folder \
-ever gets will be an answer to it, so it outlives this reply. Prefer the property that \
-lets a reader rule out the most documents, keeps answers mutually exclusive, and stays \
-meaningful as the collection grows. Return the name of ONE property, not a comparison \
-between candidates and not an explanation. Do not use any domain rule that is not \
-evidenced by the documents.
+**Then the AXIS**, the one property that name is a value of. Every sub-folder this \
+folder ever gets will be an answer to it and nothing later can change it, so you are \
+fixing it now on a handful of files that may be an unrepresentative part of what this \
+folder ends up holding. Return ONE property: not a comparison between candidates, not \
+an explanation, and no domain rule the documents do not evidence.
 
-**The axis you choose here is permanent.** Every later question about this folder is asked \
-against it, and nothing after this can change it. You are choosing it from the documents \
-in front of you now, which may be a small and unrepresentative part of what this folder \
-will eventually hold.
-
-So look at what these documents do NOT have in common. A property they all share the same \
-value on cannot divide anything -- if the only thing two documents have in common is that \
-they are the same kind of document, "kind of document" is what they look like, not what \
-this collection is organised by. Choosing it now would fix it forever on the evidence of \
-a handful of files.
-
-**And a property they all answer DIFFERENTLY divides just as badly.** A name, a title, a \
-number, an identifier: everything has one and no two are alike, so every folder ends up \
-holding one document and the reader is back to reading the list, now with a step in front \
-of every entry. The property you want is the one where a handful of answers cover \
-everything here -- several documents sharing each answer, and no document left without \
-one.
+So look for what these documents do NOT have in common. A property they all answer the \
+same way divides nothing -- if the only thing two documents share is being the same kind \
+of document, that is what they look like, not what this collection is organised by. A \
+property they all answer DIFFERENTLY divides just as badly: a name, a title, a number, \
+an identifier gives every folder one document and hands the reader the same list with a \
+step in front of every entry. You want the property where a handful of answers cover \
+everything here, several documents to each answer and none left without one.
 
 If you cannot yet see which property will still matter when this folder is ten times \
-larger, say so: `emerged` is false, nothing is created, and you will be asked again with \
-every new document. Waiting costs one more question. Choosing wrong costs the archive.
+larger, say so: `emerged` is false, nothing is created, and you will be asked again on \
+the next arrival. Waiting costs one question. Choosing wrong costs the archive.
 
 {_SIGNS}
 
