@@ -327,16 +327,9 @@ markdown, or an answer wrapper.
 # conservative general cap rather than running unbounded.
 _SCHEMA_MAX_TOKENS: dict[str, int] = {
     "CharterDraft": 256,
-    "BoundaryAudit": 256,
-    "ReplacementAudit": 256,
-    "RoutingAudit": 256,
-    "Review": 256,
     "ExistingAssignments": 1024,
     "DensifiedSummary": 512,
     "Members": 512,
-    "ReplacementSketch": 2048,
-    "Replacement": 4096,
-    "ReplacementAssignments": 1024,
     "CardDraft": 2048,
     "CardUpdate": 2048,
     "Emerging": 4096,
