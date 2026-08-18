@@ -280,6 +280,215 @@ DOCUMENT EVIDENCE IN THIS ISOLATED PACKET ({loose}):
 """
 
 
+class Gathered(BaseModel):
+    """The documents in a folder that belong together, before anything is named.
+
+    Naming is not asked here. The old single call asked for the group, its name, the
+    folder's permanent axis, that axis as a question, and a verdict, all at once -- and
+    to name the group it had to be shown the enclosing folder's name, which is the one
+    string it must not return. gpt-5-nano returned it in 75 of 81 replies.
+
+    Members before the sentence: the sentence is about a group, and written first it is
+    written about nothing.
+    """
+
+    members: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The handles of the documents that belong together, exactly as shown. "
+            "Empty when no group has formed."
+        ),
+    )
+    shared: str = Field(
+        default="",
+        description=(
+            "One sentence: what a further document would have to be about to belong "
+            "with these. In the documents' own language."
+        ),
+    )
+
+
+class ClassName(BaseModel):
+    """A folder name for a group that has already been chosen.
+
+    The enclosing folder's name is deliberately absent from this prompt. It used to be
+    shown twice -- once as the address, once as a capitalised warning not to repeat it --
+    and three paragraphs of the system prompt argued against repeating it. A name that is
+    never shown cannot be returned. Narrowness is carried by the input instead: the group
+    is a strict subset, so a name that fits it fits fewer documents than the folder's own.
+    """
+
+    name: str = Field(default="", description="Two or three words, in the documents' own language.")
+
+
+class ClassSign(BaseModel):
+    """The line printed under a folder name, written once the name exists.
+
+    Separate from the name because it is written for a different reader: the name is an
+    address, the sign is what someone outside the folder reads to decide whether to open
+    it. Written in the same call, it arrived as the name again fifty times in one round.
+    """
+
+    sign: str = Field(default="", description="One sentence, in the documents' own language.")
+
+
+class Axis(BaseModel):
+    """The question a folder's children all answer, fixed the first time it divides.
+
+    Asked about the class that just emerged rather than about the folder, so the property
+    the enclosing folder was already divided on is not the salient answer. That means the
+    spent properties no longer have to be listed in order to be forbidden.
+    """
+
+    axis_question: str = Field(default="", description="Ends in a question mark.")
+    axis: str = Field(
+        default="", description="The property that question asks about, in a few words."
+    )
+
+
+_GROUP_SYSTEM = """\
+You are shown documents that sit together in one folder, described by their own cards. \
+Find the ONE group among them that belongs together.
+
+At least two documents, and never all of them. A group that takes everything is the \
+folder itself under another name, and creates a level the reader clicks through to \
+reach the same list. If no group has formed, return an empty list: nothing is created, \
+and you will be asked again when the next document arrives. In a young collection that \
+is the right answer more often than not.
+
+Group by what the documents are ABOUT. A reader arrives wanting a subject. The shape of \
+a document -- its format, the kind of instrument it is, who issued it, when -- is known \
+for almost everything, so it fills a tree neatly and scatters each subject across every \
+branch.
+
+If several groups have formed, return the thickest one. The others come out later, on \
+another arrival, and a group taken too narrow now leaves the rest to come out in slivers.
+
+Return the handles exactly as shown, and one sentence saying what a further document \
+would have to be about to belong with them. Say what they share, not what they are not, \
+and not how you decided.\
+"""
+
+_CLASS_NAME_SYSTEM = """\
+Name a folder for the documents you are shown. Two or three words, in their own language.
+
+Name what they are about, in the words these documents use. A name that describes the \
+act of arranging rather than what stands on the shelf -- the leftovers, the remainder, \
+the ones grouped by subject -- leaves the reader with the same list and one more click \
+to reach it. Nothing is named by what it is not: a shelf called "the ones that are not \
+X" excludes nothing and can never be split further.
+
+One folder, not a path. A name with a separator in it is thrown away.\
+"""
+
+_CLASS_SIGN_SYSTEM = """\
+Write the one line printed under a folder name. The reader has already read the name; \
+this is what they read next to decide whether to open the folder or walk past it, so it \
+has to say something the name did not.
+
+Write it to someone standing outside the folder. They cannot see the documents and are \
+not interested in how the folder was decided. So say what would belong here tomorrow, \
+not what happens to be here today -- not what these particular documents have in common, \
+not why this group and not another.
+
+One sentence, two clauses at most, in the documents' own language. Do not open with a \
+phrase about this folder or the documents in front of you.\
+"""
+
+_AXIS_SYSTEM = """\
+A folder name is one answer to a question. Write the question it answers.
+
+Every folder that ever sits beside this one will be another answer to the same question, \
+and nothing later can change it. So ask the one where a handful of answers cover a whole \
+collection: several documents to each answer, and none left without one. Not a question \
+every document answers the same way, which sorts nothing. Not one where every document \
+has its own answer, which gives every folder a single document and hands the reader the \
+same list with a step in front of every entry.
+
+A question a reader could ask of any document, ending in a question mark, in the \
+documents' own language. Not an instruction, not a rule about folders, not a description \
+of what you did.\
+"""
+
+
+_GROUP_ALONG_SYSTEM = """\
+You are shown documents that sit together in one folder, and the question that folder is \
+already divided by. Find the ONE group among them that gives the same answer to it -- an \
+answer that does not have a folder here yet.
+
+At least two documents, and never all of them. If no answer has gathered enough \
+documents, return an empty list: nothing is created, and you will be asked again when \
+the next document arrives.
+
+The question is not yours to change. A group that shares something else puts two kinds of \
+distinction side by side, and then no folder name here rules anything out -- a reader has \
+to open all of them, which is the cost the folders exist to avoid. If what has gathered is \
+real but answers a different question, return an empty list; a later look at another level \
+can take it.
+
+Return the handles exactly as shown, and one sentence saying what a further document would \
+have to be for this answer to fit it.\
+"""
+
+
+def build_group(
+    *,
+    documents: list[tuple[str, str]],
+    children: list[tuple[str, str]],
+    axis: str = "",
+    axis_question: str = "",
+    language: str = "",
+) -> Prompt:
+    """Step one: which of these belong together? No folder name, no name to write.
+
+    With an axis the folder is already divided and the question narrows to "another
+    answer to the same question?" -- which is a smaller question than "what do these
+    share", and the only one a divided folder is allowed to ask.
+    """
+    user = f"DOCUMENTS ({len(documents)}):\n{_render_documents(documents)}"
+    if children:
+        user += "\n\n" + _render_children(children)
+    if not axis:
+        return Prompt(system=_GROUP_SYSTEM, user=user + answer_in(language))
+    asked = axis_question or f"이 문서의 {axis}는 무엇인가?"
+    return Prompt(
+        system=_GROUP_ALONG_SYSTEM,
+        user=f"THIS FOLDER IS DIVIDED BY: {axis}\nTHE QUESTION ITS FOLDERS ANSWER: {asked}"
+        f"\n\n{user}" + answer_in(language),
+    )
+
+
+def build_class_name(
+    *,
+    shared: str,
+    documents: list[tuple[str, str]],
+    taken: list[str],
+    language: str = "",
+) -> Prompt:
+    """Step two: name the group. The enclosing folder's name is not in this prompt."""
+    user = f"WHAT THESE DOCUMENTS SHARE: {shared}\n\nTHEM:\n{_render_documents(documents)}"
+    if taken:
+        user += "\n\nNAMES ALREADY TAKEN BY FOLDERS BESIDE THIS ONE:\n  " + "\n  ".join(taken)
+    return Prompt(system=_CLASS_NAME_SYSTEM, user=user + answer_in(language))
+
+
+def build_class_sign(*, name: str, shared: str, language: str = "") -> Prompt:
+    """Step three: the line under the name."""
+    return Prompt(
+        system=_CLASS_SIGN_SYSTEM,
+        user=f"FOLDER NAME: {name}\n\nWHAT ITS DOCUMENTS SHARE: {shared}" + answer_in(language),
+    )
+
+
+def build_axis(*, name: str, shared: str, language: str = "") -> Prompt:
+    """Only when a folder divides for the first time. After that its axis is settled."""
+    return Prompt(
+        system=_AXIS_SYSTEM,
+        user=f"THE FOLDER JUST NAMED: {name}\n\nWHAT ITS DOCUMENTS SHARE: {shared}"
+        + answer_in(language),
+    )
+
+
 class Emerging(BaseModel):
     """One class that has grown thick enough to leave the pile.
 
