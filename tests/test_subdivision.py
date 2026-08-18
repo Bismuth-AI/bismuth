@@ -1508,3 +1508,17 @@ class TestTheCheapQuestionsComeFirst:
 
         asked = [prompt for prompt in llm.prompts_for(None) if "NEW SIGN:" in prompt.user]
         assert asked
+
+    async def test_a_name_code_can_refuse_never_buys_an_audit(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Whether a name repeats its axis is a string comparison; the audit is a model
+        call with the folder's documents in it. Run the other way round, 76 proposals in
+        one round paid for the audit before code refused them on the name alone."""
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "주제 분야", "소설과 시를 모은다", ids[:2], axis="주제 분야")
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert not llm.prompts_for(subdivision_prompts.BoundaryAudit)
