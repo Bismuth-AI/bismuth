@@ -945,11 +945,27 @@ class LibraryMaintenanceService:
         # more open question with one more way to answer it wrongly.
         chosen = max(gathered, key=lambda group: len(group.members))
         members = set(chosen.members)
+        theirs = [line for line in documents if line[0] in members]
+
+        # The question first, and asked from the group rather than from a name that does
+        # not exist yet. A folder that already has one inherits it: either way the name is
+        # then asked as an answer to a question, which is what a folder name is.
+        settled_axis, question = axis, axis_question
+        if not axis:
+            asked = await self._llm.structured(
+                prompts.build_axis(shared=chosen.shared, documents=theirs, language=language),
+                schema=prompts.Axis,
+            )
+            settled_axis, question = asked.axis.strip(), asked.axis_question.strip()
+            if not question:
+                _guard_refused("axis_without_a_question", folder=folder)
+                return prompts.Emerging(emerged=False)
 
         named = await self._llm.structured(
             prompts.build_class_name(
                 shared=chosen.shared,
-                documents=[line for line in documents if line[0] in members],
+                question=question,
+                documents=theirs,
                 taken=[name for name, _ in children],
                 language=language,
             ),
@@ -964,14 +980,8 @@ class LibraryMaintenanceService:
             prompts.build_class_sign(name=name, shared=chosen.shared, language=language),
             schema=prompts.ClassSign,
         )
-
-        settled_axis, question = axis, ""
-        if not axis:
-            asked = await self._llm.structured(
-                prompts.build_axis(name=name, shared=chosen.shared, language=language),
-                schema=prompts.Axis,
-            )
-            settled_axis, question = asked.axis.strip(), asked.axis_question.strip()
+        if not signed.sign.strip():
+            _guard_refused("sign_empty", folder=folder, name=name)
 
         log_trace(
             "subdivide.gathered",
