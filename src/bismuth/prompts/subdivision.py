@@ -370,13 +370,19 @@ and not how you decided.\
 """
 
 _CLASS_NAME_SYSTEM = """\
-Name a folder for the documents you are shown. Two or three words, in their own language.
+The documents you are shown all give the same answer to one question. Write that answer. \
+It becomes the name of the folder they go into, and every folder beside it will be a \
+different answer to the same question.
 
-Name what they are about, in the words these documents use. A name that describes the \
-act of arranging rather than what stands on the shelf -- the leftovers, the remainder, \
-the ones grouped by subject -- leaves the reader with the same list and one more click \
-to reach it. Nothing is named by what it is not: a shelf called "the ones that are not \
-X" excludes nothing and can never be split further.
+So write the answer, not the question back. A question about which industry a law \
+regulates is answered by naming the industry, never by "the industry it regulates" -- \
+that names the question, fits every document ever asked it, and sorts nothing.
+
+Two or three words, in the words these documents use. A name that describes the act of \
+arranging rather than what stands on the shelf -- the leftovers, the remainder, the ones \
+grouped by subject -- leaves the reader with the same list and one more click to reach \
+it. Nothing is named by what it is not: a shelf called "the ones that are not X" \
+excludes nothing and can never be split further.
 
 One folder, not a path. A name with a separator in it is thrown away.\
 """
@@ -391,15 +397,23 @@ not interested in how the folder was decided. So say what would belong here tomo
 not what happens to be here today -- not what these particular documents have in common, \
 not why this group and not another.
 
+This line is also what the next document is judged against. When one arrives, it is \
+shown the folder name and this line and asked whether it belongs. So it has to be usable \
+for that: concrete about what falls under the folder. A line that says why the folder \
+matters, or what its subject means for the future, answers nothing when a document is \
+held up against it.
+
 One sentence, two clauses at most, in the documents' own language. Do not open with a \
 phrase about this folder or the documents in front of you.\
 """
 
 _AXIS_SYSTEM = """\
-A folder name is one answer to a question. Write the question it answers.
+Some documents have been picked out of a folder because they share something. Write the \
+question they all answer the same way -- the question that separates them from the rest \
+of that folder.
 
-Every folder that ever sits beside this one will be another answer to the same question, \
-and nothing later can change it. So ask the one where a handful of answers cover a whole \
+Every folder that ever sits beside theirs will be another answer to this question, and \
+nothing later can change it. So ask the one where a handful of answers cover a whole \
 collection: several documents to each answer, and none left without one. Not a question \
 every document answers the same way, which sorts nothing. Not one where every document \
 has its own answer, which gives every folder a single document and hands the reader the \
@@ -407,7 +421,8 @@ same list with a step in front of every entry.
 
 A question a reader could ask of any document, ending in a question mark, in the \
 documents' own language. Not an instruction, not a rule about folders, not a description \
-of what you did.\
+of what you did. Then name the property it asks about, in a few words: a question about \
+which industry a law regulates is asking about the industry regulated.\
 """
 
 
@@ -461,14 +476,23 @@ def build_group(
 def build_class_name(
     *,
     shared: str,
+    question: str,
     documents: list[tuple[str, str]],
     taken: list[str],
     language: str = "",
 ) -> Prompt:
-    """Step two: name the group. The enclosing folder's name is not in this prompt."""
-    user = f"WHAT THESE DOCUMENTS SHARE: {shared}\n\nTHEM:\n{_render_documents(documents)}"
+    """Step three: the group's answer to the question, which becomes the folder name.
+
+    Neither the enclosing folder's name nor its own property phrase is in this prompt --
+    the first was echoed 75 times in 81 replies, the second 72 times in 80. What is here
+    is a question, and the reply is an answer to it.
+    """
+    user = (
+        f"THE QUESTION THESE DOCUMENTS ANSWER: {question}\n\n"
+        f"WHAT THEY SHARE: {shared}\n\nTHEM:\n{_render_documents(documents)}"
+    )
     if taken:
-        user += "\n\nNAMES ALREADY TAKEN BY FOLDERS BESIDE THIS ONE:\n  " + "\n  ".join(taken)
+        user += "\n\nANSWERS ALREADY TAKEN BY FOLDERS BESIDE THIS ONE:\n  " + "\n  ".join(taken)
     return Prompt(system=_CLASS_NAME_SYSTEM, user=user + answer_in(language))
 
 
@@ -480,12 +504,16 @@ def build_class_sign(*, name: str, shared: str, language: str = "") -> Prompt:
     )
 
 
-def build_axis(*, name: str, shared: str, language: str = "") -> Prompt:
-    """Only when a folder divides for the first time. After that its axis is settled."""
+def build_axis(*, shared: str, documents: list[tuple[str, str]], language: str = "") -> Prompt:
+    """Step two, and only when a folder divides for the first time.
+
+    Before the name exists, so there is no name to hand back. Asked after the name, it
+    came back as the name itself in 72 of 80 replies and every division was refused.
+    """
     return Prompt(
         system=_AXIS_SYSTEM,
-        user=f"THE FOLDER JUST NAMED: {name}\n\nWHAT ITS DOCUMENTS SHARE: {shared}"
-        + answer_in(language),
+        user=f"WHAT THE PICKED DOCUMENTS SHARE: {shared}\n\n"
+        f"THEM:\n{_render_documents(documents)}" + answer_in(language),
     )
 
 
