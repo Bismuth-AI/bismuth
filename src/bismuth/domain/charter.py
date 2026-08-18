@@ -15,7 +15,7 @@ from bismuth.domain.maintenance import is_axis_label, normalise_label
 
 #: Filename of a folder's note; sorts to the top of a listing.
 CHARTER_FILENAME = "_folder.md"
-CHARTER_SCHEMA_VERSION = 6
+CHARTER_SCHEMA_VERSION = 7
 MAX_PURPOSE_CHARS = 220
 
 _GENERATED_BODY_NOTICE = "<!-- generated from frontmatter -->"
@@ -152,25 +152,6 @@ class Charter(BaseModel):
             "again however much grew beneath it."
         ),
     )
-    boundary_review_required: bool = Field(
-        default=False,
-        description="True when an older boundary must pass the current complete-review contract.",
-    )
-    last_review_at_documents: int = Field(
-        default=0,
-        ge=0,
-        description=(
-            "Subtree size at the last completed review attempt, including a rejected "
-            "repair. Prevents the same failed redesign from running on every arrival."
-        ),
-    )
-    repair_pending: bool = Field(
-        default=False,
-        description=(
-            "The current boundary failed review but no validated replacement was safe "
-            "to apply. Filing may continue while repair waits for materially new evidence."
-        ),
-    )
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("split_basis")
@@ -187,29 +168,6 @@ class Charter(BaseModel):
     def divided(self) -> bool:
         return bool(self.split_basis)
 
-    def due_for_review(self, documents_now: int) -> bool:
-        """Whether the evidence has doubled since this folder was divided.
-
-        ``documents_now`` is the count through the subtree, matching what was recorded.
-
-        This rations the one question that may move a document that is already filed.
-        Growing a new class out of the loose pile is not rationed at all: it was, on a
-        power-of-two schedule, and a thirty-document archive got four questions -- all
-        of them early, all correctly declined, and none after the sixteenth document.
-
-        Scheduling, not judgement: asking late costs a late fix, never a wrong tree
-        (SPEC.md 6.1). The ratio is to the folder's own history, so nothing here is
-        tuned to a corpus.
-        """
-        if not self.divided:
-            return False
-        if self.boundary_review_required and self.last_review_at_documents <= 0:
-            return True
-        baseline = max(self.split_at_documents, self.last_review_at_documents)
-        if baseline <= 0:
-            return False
-        return documents_now >= baseline * 2
-
     def to_markdown(self) -> str:
         meta: dict[str, Any] = {
             "bismuth_charter": CHARTER_SCHEMA_VERSION,
@@ -222,12 +180,6 @@ class Charter(BaseModel):
             meta["split_basis"] = self.split_basis
             meta["split_question"] = self.split_question
             meta["split_at_documents"] = self.split_at_documents
-            if self.boundary_review_required:
-                meta["boundary_review_required"] = True
-            if self.last_review_at_documents:
-                meta["last_review_at_documents"] = self.last_review_at_documents
-            if self.repair_pending:
-                meta["repair_pending"] = True
         front = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False, default_flow_style=False)
         return f"---\n{front}---\n\n{self._render_body()}\n"
 
@@ -255,11 +207,6 @@ class Charter(BaseModel):
                 f"than this Bismuth understands. Upgrade Bismuth."
             )
 
-        # Older schemas did not guarantee that changing an axis also replaced the old
-        # child tree. Preserve the evidence, but force it through the complete review
-        # contract before treating the boundary as settled.
-        legacy_basis = str(meta.get("split_basis") or "")
-
         try:
             return cls(
                 path=path,
@@ -268,15 +215,9 @@ class Charter(BaseModel):
                 holds=tuple(str(x) for x in meta.get("holds") or ()),
                 answers=tuple(str(x) for x in meta.get("answers") or ()),
                 managed=bool(meta.get("managed", True)),
-                split_basis=legacy_basis,
+                split_basis=str(meta.get("split_basis") or ""),
                 split_question=str(meta.get("split_question") or ""),
                 split_at_documents=int(meta.get("split_at_documents") or 0),
-                boundary_review_required=bool(
-                    meta.get("boundary_review_required", False)
-                    or (version < CHARTER_SCHEMA_VERSION and legacy_basis)
-                ),
-                last_review_at_documents=int(meta.get("last_review_at_documents") or 0),
-                repair_pending=bool(meta.get("repair_pending", False)),
                 updated_at=_parse_datetime(meta.get("updated_at")),
             )
         except (KeyError, TypeError, ValueError) as exc:

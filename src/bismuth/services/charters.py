@@ -128,7 +128,6 @@ class CharterService:
             split_basis="",
             split_question="",
             split_at_documents=0,
-            boundary_review_required=False,
         )
 
     def _history(self, folder: PurePosixPath) -> Charter | None:
