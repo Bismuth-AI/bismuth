@@ -2,10 +2,13 @@ from pathlib import PurePosixPath
 
 from bismuth.domain.charter import Charter
 from bismuth.domain.maintenance import (
+    FolderShape,
     GroupingProblem,
+    Operator,
     PlanProblem,
     ProposedClass,
     is_axis_label,
+    legal_operators,
     restates,
     validate_grouping,
     validate_plan,
@@ -181,3 +184,87 @@ class TestAShelfMayNotBeBuiltOverItsOwnName:
         )
 
         assert result.accepted
+
+
+class TestWhatMayBeAsked:
+    """ADR-0018: code enumerates what is possible here, the model picks one."""
+
+    def test_keep_is_always_offered(self) -> None:
+        """Without it the reply would be about whether to act, not about what to do."""
+        assert legal_operators(FolderShape(loose_documents=0, is_root=True)) == frozenset(
+            {Operator.KEEP}
+        )
+
+    def test_a_pile_too_small_to_divide_is_not_asked_to_divide(self) -> None:
+        """Two documents make a class and leave no remainder, so the plan is refused
+        either way -- NO_DIVISION. Asking is what used to be paid for."""
+        assert Operator.CREATE not in legal_operators(FolderShape(loose_documents=3, is_root=True))
+
+    def test_a_pile_that_can_lose_a_class_and_still_be_a_pile_is_asked(self) -> None:
+        assert Operator.CREATE in legal_operators(FolderShape(loose_documents=4, is_root=True))
+
+    def test_two_folders_cannot_be_grouped(self) -> None:
+        """Both would move, which renames this folder rather than tidying it."""
+        shape = FolderShape(loose_documents=0, children=("문학", "역사"), is_root=True)
+
+        assert Operator.MERGE not in legal_operators(shape)
+
+    def test_three_folders_can(self) -> None:
+        shape = FolderShape(loose_documents=0, children=("문학", "역사", "과학"), is_root=True)
+
+        assert Operator.MERGE in legal_operators(shape)
+
+    def test_the_root_is_never_dissolved(self) -> None:
+        """It has nowhere to promote to."""
+        shape = FolderShape(loose_documents=9, children=("문학",), is_root=True)
+
+        assert Operator.SPLIT not in legal_operators(shape)
+
+    def test_a_level_holding_something_can_be_dissolved(self) -> None:
+        shape = FolderShape(
+            loose_documents=2,
+            children=("현상학",),
+            ancestor_names=("인문",),
+            siblings=("역사",),
+        )
+
+        assert Operator.SPLIT in legal_operators(shape)
+
+    def test_a_level_whose_children_collide_upstairs_cannot_be(self) -> None:
+        """The promotion would land beside a folder of the same name, so it is not
+        offered rather than proposed and refused."""
+        shape = FolderShape(
+            loose_documents=0,
+            children=("현상학",),
+            ancestor_names=("인문",),
+            siblings=("현상학", "역사"),
+        )
+
+        assert Operator.SPLIT not in legal_operators(shape)
+
+    def test_the_reverse_of_the_last_operator_waits_for_new_evidence(self) -> None:
+        """Merge and split undo each other, so on unchanged evidence they would undo each
+        other for ever. The reverse is not enumerated rather than watched for."""
+        shape = FolderShape(
+            loose_documents=0,
+            children=("문학", "역사", "과학"),
+            ancestor_names=("인문",),
+            siblings=("사회",),
+            last_operator=Operator.SPLIT,
+            evidence_moved=False,
+        )
+
+        assert Operator.MERGE not in legal_operators(shape)
+        assert Operator.SPLIT in legal_operators(shape)
+
+    def test_once_the_evidence_moves_it_is_offered_again(self) -> None:
+        shape = FolderShape(
+            loose_documents=0,
+            children=("문학", "역사", "과학"),
+            ancestor_names=("인문",),
+            siblings=("사회",),
+            last_operator=Operator.SPLIT,
+            evidence_moved=True,
+        )
+
+        assert Operator.MERGE in legal_operators(shape)
