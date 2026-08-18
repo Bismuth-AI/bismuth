@@ -1326,3 +1326,66 @@ class TestEveryMoveNamesItsDocument:
         assert len(moves) == 2
         assert {m["document_id"] for m in moves} == {"D0001", "D0002"}
         assert all(m["to_folder"] == "문학" for m in moves)
+
+
+class TestTheNameIsAnAnswerNotTheQuestion:
+    """The failure the chain was rebuilt around, twice.
+
+    Emergence used to ask one call for the class, its name, the folder's axis and that
+    axis as a question. Hiding the enclosing folder's name from the naming step stopped
+    it being echoed there -- and the axis step, which was still asked from the name it
+    had just produced, handed the same string straight back: "1인 창조기업 육성" as both
+    the name and the property, 72 times in 80, and validate_plan refused every one of
+    them for repeating the axis instead of answering it. Nothing was built in 75
+    documents.
+
+    So neither step may see what the other must not repeat. The question is asked from
+    the group's own sentence, and the name is asked as an answer to that question.
+    """
+
+    async def test_the_question_is_asked_before_any_name_exists(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 4)
+        # A note that does not contain the name, so the name is the only thing the
+        # assertion can be seeing.
+        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야")
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        asked = llm.prompts_for(subdivision_prompts.Axis)
+        assert asked
+        assert all("문학" not in prompt.user for prompt in asked)
+
+    async def test_the_naming_step_is_given_a_question_and_not_the_property(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야")
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        asked = llm.prompts_for(subdivision_prompts.ClassName)
+        assert asked
+        # The question is there to be answered; the property phrase on its own is what
+        # came back as the name, so it is not offered.
+        assert all("어느 주제 분야에 속하는가?" in prompt.user for prompt in asked)
+
+    async def test_a_divided_folder_hands_its_own_question_to_the_naming_step(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """One path for both: inherited or new, the name answers a question."""
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야")
+        await engine.subdivision.consider(PurePosixPath())
+        llm.calls.clear()
+
+        _emerges(script, "과학", "과학 자료", ids[2:4], axis="주제 분야")
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert not llm.prompts_for(subdivision_prompts.Axis)
+        named = llm.prompts_for(subdivision_prompts.ClassName)
+        assert named
+        assert all("어느 주제 분야에 속하는가?" in prompt.user for prompt in named)
