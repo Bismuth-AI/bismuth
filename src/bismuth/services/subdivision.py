@@ -88,9 +88,20 @@ class _Contents:
     languages: list[str] = field(default_factory=list)
     """The language each card reported, so a prompt can name it back."""
 
+    subjects: list[tuple[str, str]] = field(default_factory=list)
+    """The same documents without their doc_type, for the one question that must not be
+    answered with it. Grouping by the kind of instrument a document is fills a tree
+    neatly and separates nothing a reader needs, and the old prompt argued against it in
+    prose while the column sat in the evidence: gpt-5-nano grouped the three 시행규칙 out
+    of seven documents whose subjects were unrelated."""
+
     @property
     def lines(self) -> list[tuple[str, str]]:
         return [(document_id, line) for document_id, line, _ in self.documents]
+
+    @property
+    def subject_lines(self) -> list[tuple[str, str]]:
+        return list(self.subjects)
 
     @property
     def language(self) -> str:
@@ -461,9 +472,12 @@ class LibraryMaintenanceService:
             emerging = await self._find_emerging(
                 folder=folder,
                 purpose=purpose,
-                documents=contents.lines,
+                documents=contents.subject_lines,
                 children=contents.children,
                 axis=axis,
+                axis_question=(
+                    charter.split_question if charter is not None and established else ""
+                ),
                 spent=spent,
                 language=contents.language,
             )
@@ -877,17 +891,36 @@ class LibraryMaintenanceService:
         documents: list[tuple[str, str]],
         children: list[tuple[str, str]],
         axis: str,
+        axis_question: str,
         spent: list[str],
         language: str = "",
     ) -> prompts.Emerging:
+        """Group, then name, then sign -- and the axis only the first time.
+
+        One call used to decide all five. To name a class it had to be shown the
+        enclosing folder's name, which is the one string it must not return, and the
+        prompt spent three paragraphs and a capitalised line arguing against returning it
+        anyway. gpt-5-nano returned it in 75 of 81 replies and the folder never divided;
+        every refusal was correct and none of them built anything.
+
+        So the steps are separated by what each may see. Grouping sees the documents
+        without their doc_type, because that is the property it must not group on. Naming
+        sees the chosen group and not the folder it sits in: a name that is never shown
+        cannot be echoed, and narrowness comes from the input instead, the group being a
+        strict subset. The axis is asked about the class rather than the folder, so the
+        property already spent above is not the salient answer and no longer has to be
+        listed in order to be forbidden.
+
+        The guards behind all of this stay, and each says which guard it was when it
+        fires. They are a backstop now rather than the mechanism.
+        """
+
         def build(packet: list[tuple[str, str]]):  # type: ignore[no-untyped-def]
-            return prompts.build_emerging(
-                path=str(folder),
-                purpose=purpose,
+            return prompts.build_group(
                 documents=packet,
                 children=children,
                 axis=axis,
-                spent=spent,
+                axis_question=axis_question,
                 language=language,
             )
 
@@ -899,46 +932,88 @@ class LibraryMaintenanceService:
             )
             return prompts.Emerging(emerged=False)
 
-        packets = _document_packets(documents, build)
-        if len(packets) == 1:
-            return await self._llm.structured(build(packets[0]), schema=prompts.Emerging)
-        candidates = [
-            await self._llm.structured(build(packet), schema=prompts.Emerging) for packet in packets
-        ]
-        candidates = [candidate for candidate in candidates if candidate.emerged]
-        if not candidates:
+        gathered: list[prompts.Gathered] = []
+        for packet in _document_packets(documents, build):
+            found = await self._llm.structured(build(packet), schema=prompts.Gathered)
+            if kept := self._kept_members(found, packet, folder=folder):
+                gathered.append(prompts.Gathered(members=kept, shared=found.shared.strip()))
+        if not gathered:
             return prompts.Emerging(emerged=False)
-        while len(candidates) > 1:
-            batches = _emerging_packets(
-                folder=folder,
-                purpose=purpose,
-                axis=axis,
-                children=children,
-                candidates=candidates,
+
+        # The thickest, decided here rather than asked. The prompt already says to return
+        # the thickest, and the reduce call that used to choose between candidates was one
+        # more open question with one more way to answer it wrongly.
+        chosen = max(gathered, key=lambda group: len(group.members))
+        members = set(chosen.members)
+
+        named = await self._llm.structured(
+            prompts.build_class_name(
+                shared=chosen.shared,
+                documents=[line for line in documents if line[0] in members],
+                taken=[name for name, _ in children],
+                language=language,
+            ),
+            schema=prompts.ClassName,
+        )
+        name = " ".join(named.name.split()).strip()
+        if not name:
+            _guard_refused("class_name_empty", folder=folder)
+            return prompts.Emerging(emerged=False)
+
+        signed = await self._llm.structured(
+            prompts.build_class_sign(name=name, shared=chosen.shared, language=language),
+            schema=prompts.ClassSign,
+        )
+
+        settled_axis, question = axis, ""
+        if not axis:
+            asked = await self._llm.structured(
+                prompts.build_axis(name=name, shared=chosen.shared, language=language),
+                schema=prompts.Axis,
             )
-            if all(len(batch) == 1 for batch in batches):
-                return prompts.Emerging(emerged=False)
-            reduced: list[prompts.Emerging] = []
-            for batch in batches:
-                if len(batch) == 1:
-                    reduced.extend(batch)
-                else:
-                    reduced.append(
-                        await self._llm.structured(
-                            prompts.build_emerging_reduce(
-                                path=str(folder),
-                                purpose=purpose,
-                                axis=axis,
-                                children=children,
-                                candidates=batch,
-                            ),
-                            schema=prompts.Emerging,
-                        )
-                    )
-            candidates = [candidate for candidate in reduced if candidate.emerged]
-            if not candidates:
-                return prompts.Emerging(emerged=False)
-        return candidates[0]
+            settled_axis, question = asked.axis.strip(), asked.axis_question.strip()
+
+        log_trace(
+            "subdivide.gathered",
+            folder=str(folder),
+            of=len(documents),
+            took=len(members),
+            name=name,
+            axis_is_new=not axis,
+        )
+        return prompts.Emerging(
+            emerged=True,
+            name=name,
+            sign=signed.sign.strip(),
+            axis=settled_axis,
+            axis_question=question,
+        )
+
+    def _kept_members(
+        self, group: prompts.Gathered, packet: list[tuple[str, str]], *, folder: PurePosixPath
+    ) -> list[str]:
+        """The handles a group may keep: real, distinct, at least two, not all of them.
+
+        Structural, not semantic. The model is not second-guessed about which documents
+        belong together, only about whether it answered with documents that were shown
+        and left something behind.
+        """
+        shown = [handle for handle, _ in packet]
+        kept = [handle for handle in dict.fromkeys(group.members) if handle in shown]
+        if invented := len(group.members) - len(kept):
+            _guard_refused("group_handle_unknown", folder=folder, count=invented)
+        if not kept:
+            return []
+        if len(kept) < 2:
+            _guard_refused("group_too_small", folder=folder, count=len(kept))
+            return []
+        if len(kept) == len(shown):
+            _guard_refused("group_took_everything", folder=folder, count=len(kept))
+            return []
+        if not group.shared.strip():
+            _guard_refused("group_without_a_sentence", folder=folder)
+            return []
+        return kept
 
     async def _find_members(
         self,
@@ -2398,10 +2473,13 @@ class LibraryMaintenanceService:
             # execute the plan, so every maintenance prompt can use compact D#### names.
             document_id = f"D{len(contents.documents) + 1:04d}"
             description = _describe(card)
+            subject = _describe(card, with_type=False)
             if recursive:
                 relative = path.relative_to(folder) if folder.parts else path
                 description = f"current={relative} | {description}"
+                subject = f"current={relative} | {subject}"
             contents.documents.append((document_id, description, path))
+            contents.subjects.append((document_id, subject))
             if script := _writing_system(card.title):
                 contents.scripts.append(script)
             if code := card.language.strip():
@@ -2616,10 +2694,21 @@ def _boundary_wording_problem(contents: _Contents, plan: prompts.Division) -> st
 SubdivisionService = LibraryMaintenanceService
 
 
-def _describe(card: DocumentCard) -> str:
+def _guard_refused(guard: str, *, folder: PurePosixPath, **fields: object) -> None:
+    """One line per safety net that fired, under one event name.
+
+    A guard that only refuses is invisible: a run where nothing was built and a run where
+    everything was built look the same in a folder count. Named here so a finished run can
+    be asked which nets caught what, and how often -- a net that catches on most calls is
+    not protecting the design, it is the design.
+    """
+    log_trace("guard.refused", guard=guard, folder=str(folder), **fields)
+
+
+def _describe(card: DocumentCard, *, with_type: bool = True) -> str:
     """The card evidence used for grouping; never the original document bytes."""
     topics = ", ".join(card.topics)
-    parts = [card.title, card.doc_type]
+    parts = [card.title, card.doc_type] if with_type else [card.title]
     if topics:
         parts.append(topics)
     if card.summary:
