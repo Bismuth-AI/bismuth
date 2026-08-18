@@ -162,44 +162,8 @@ class ScriptedModel:
             # Same default, for the same reason: existing folders stay where they are
             # unless a test asks for them to be stood together.
             subdivision_prompts.Grouping: subdivision_prompts.Grouping(emerged=False),
-            subdivision_prompts.Review: subdivision_prompts.Review(
-                one_axis=True,
-                coherent_membership=True,
-                useful_navigation=True,
-            ),
-            subdivision_prompts.Replacement: subdivision_prompts.Replacement(
-                basis="",
-                basis_question="",
-                groups=[],
-            ),
-            subdivision_prompts.ReplacementSketch: subdivision_prompts.ReplacementSketch(
-                basis="문서 종류",
-                basis_question="이 문서의 종류는 무엇인가?",
-                signs=[
-                    subdivision_prompts.ReplacementSign(name="자료", note="자료 문서"),
-                    subdivision_prompts.ReplacementSign(name="기록", sign="기록 문서"),
-                ],
-            ),
-            subdivision_prompts.ReplacementAssignments: (
-                subdivision_prompts.ReplacementAssignments(groups=[])
-            ),
-            subdivision_prompts.BoundaryAudit: subdivision_prompts.BoundaryAudit(
-                one_property=True,
-                names_answer_question=True,
-                mutually_exclusive=True,
-                useful_for_navigation=True,
-                notes_are_routing_signs=True,
-            ),
-            subdivision_prompts.ReplacementAudit: subdivision_prompts.ReplacementAudit(
-                fixes_observed_failure=True,
-                better_navigation=True,
-            ),
             subdivision_prompts.ExistingAssignments: subdivision_prompts.ExistingAssignments(
                 groups=[],
-            ),
-            subdivision_prompts.RoutingAudit: subdivision_prompts.RoutingAudit(
-                assignments_match_signs=True,
-                no_forced_fit=True,
             ),
             charter_prompts.CharterDraft: charter_prompts.CharterDraft(
                 purpose="아폴로 사업의 2023년 문서를 모아둡니다.",
@@ -208,7 +172,6 @@ class ScriptedModel:
         self.responses[None] = self.responses.pop(placement_prompts.PlacementDecision)
         # Default: nothing joins a newly named class, matching the Emerging default.
         self._members: set[str] = set()
-        self._assignments: dict[str, str] = {}
         self._routes: dict[str, str] = {}
         self._shelved: set[str] = set()
         self._dissolve: set[str] = set()
@@ -236,10 +199,6 @@ class ScriptedModel:
         """Script which existing sub-folders move onto a proposed broader shelf."""
         self._shelved = set(folder_names)
 
-    def set_assignments(self, by_document: dict[str, str]) -> None:
-        """Script closed-choice assignment to a fixed replacement sign, as ``{id: G###}``."""
-        self._assignments = dict(by_document)
-
     def set_routes(self, by_document: dict[str, str]) -> None:
         """Script routing a loose document into an existing direct child, as ``{id: F###}``."""
         self._routes = dict(by_document)
@@ -257,22 +216,11 @@ class ScriptedModel:
     def _plain_choice(self, prompt: Prompt) -> str | None:
         """Route one closed choice to its own script.
 
-        Three different questions share the plain-choice call and are only told apart by
-        what they offer: a placement descent, membership in a new class, and assignment
-        to a fixed replacement sign. One shared slot sent all three to the placement
-        chooser.
+        Several different questions share the plain-choice call and are only told apart
+        by what they offer: a placement descent, membership in a new class, routing into
+        an existing sign, dissolving a level, moving onto a shelf. One shared slot sent
+        them all to the placement chooser.
         """
-        if "HOLDS or FAILS" in prompt.system:
-            # Review and the boundary audit became one closed question per check. Tests
-            # still script the objects; answer each check from the field it is about.
-            for schema, table in ((subdivision_prompts.Review, subdivision_prompts.REVIEW_CHECKS),):
-                for name, question in table:
-                    if question in prompt.system:
-                        scripted = self.responses[schema]
-                        if callable(scripted):
-                            scripted = scripted(prompt, schema)
-                        return "HOLDS" if getattr(scripted, name) else "FAILS"
-            return "HOLDS"
         if "THE LEVEL IN QUESTION: " in prompt.user:
             # Dissolving a level is asked about a folder, not a document, so it answers
             # from its own script. KEEP by default: a test that wants a level removed
@@ -288,10 +236,6 @@ class ScriptedModel:
         document_id = _shown_document(prompt)
         if "NEW SIGN:" in prompt.user:
             return "SHELF" if document_id in self._members else "STAY"
-        if "\n  [G" in prompt.user:
-            # STAY by default, matching production: a replacement no longer has to take
-            # every document, and one that fits no new sign keeps the folder it is in.
-            return self._assignments.get(document_id or "", "STAY")
         if "CURRENT FOLDER:" not in prompt.user and "\n  [F" in prompt.user:
             # Routing a loose document into an existing sign. Shares the F### handle
             # shape with a placement descent, so the descent marker is what tells them

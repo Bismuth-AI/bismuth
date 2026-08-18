@@ -104,7 +104,10 @@ def test_a_complete_review_cannot_leave_documents_behind() -> None:
     assert PlanProblem.UNASSIGNED_DOCUMENT in result.problems
 
 
-def test_an_older_boundary_requires_the_complete_review_contract() -> None:
+def test_an_older_note_keeps_the_boundary_it_recorded() -> None:
+    """Nothing re-audits it on the way in any more: the whole-collection pass is what
+    looks at an old boundary, and it looks at every folder rather than at whichever one
+    happened to be written by an older Bismuth."""
     old_note = """---
 bismuth_charter: 3
 managed: true
@@ -120,8 +123,9 @@ split_at_documents: 10
 
     charter = Charter.from_markdown(old_note, path=PurePosixPath())
 
-    assert charter.boundary_review_required
-    assert charter.due_for_review(10)
+    assert charter.divided
+    assert charter.split_basis == "old property"
+    assert charter.split_at_documents == 10
 
 
 class TestAChildMayNotRestateItsAncestor:

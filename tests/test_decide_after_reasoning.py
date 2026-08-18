@@ -15,23 +15,17 @@ def test_emerging_forms_the_candidate_before_the_verdict() -> None:
     assert fields == ["sign", "name", "axis", "axis_question", "emerged"]
 
 
-def test_review_contains_only_checks_that_gate_the_decision() -> None:
-    fields = list(subdivision_prompts.Review.model_json_schema()["properties"])
-
-    assert fields == ["one_axis", "coherent_membership", "useful_navigation"]
-
-
 def test_maintenance_schemas_have_no_free_form_reason_metadata() -> None:
     schemas = (
         subdivision_prompts.Emerging,
         subdivision_prompts.Members,
         subdivision_prompts.Division,
-        subdivision_prompts.Review,
-        subdivision_prompts.Replacement,
-        subdivision_prompts.BoundaryAudit,
-        subdivision_prompts.ReplacementAudit,
+        subdivision_prompts.Gathered,
+        subdivision_prompts.ClassName,
+        subdivision_prompts.ClassSign,
+        subdivision_prompts.Axis,
+        subdivision_prompts.Grouping,
         subdivision_prompts.ExistingAssignments,
-        subdivision_prompts.RoutingAudit,
     )
 
     assert all("reason" not in schema.model_fields for schema in schemas)
