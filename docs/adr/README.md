@@ -30,6 +30,7 @@ decision should be revisited. Superseded records stay; they are not deleted.
 | [0015](0015-run-scoped-diagnostics.md) | Keep run-scoped joinable diagnostics; a compact timeline over exact artifacts |
 | [0016](0016-signs-that-discriminate-and-names-that-fit.md) | Signs that discriminate, names that fit, and a boundary torn down only on agreement |
 | [0017](0017-small-model-contract.md) | One judgement per call; every contract in the prompt, not only in the schema |
+| [0018](0018-maintenance-is-four-operators.md) | Maintenance is four operators, scheduled by drift |
 
 An earlier line of work — a global planner agent, then a per-document placement agent — was
 measured and abandoned. Nothing in it governs this branch; ADR-0007 through ADR-0009 record
