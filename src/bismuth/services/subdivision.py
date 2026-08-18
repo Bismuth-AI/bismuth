@@ -38,6 +38,7 @@ from bismuth.domain.maintenance import (
     validate_grouping,
     validate_names,
     validate_plan,
+    validate_split,
 )
 from bismuth.domain.paths import sanitize_segment
 from bismuth.domain.progress import Progress, ProgressSink, Stage, report
@@ -222,6 +223,15 @@ class LibraryMaintenanceService:
             # because "nothing happened here" should never need the source to explain.
             log_trace("subdivide.skipped", folder=str(folder), reason="folder note is not managed")
             return []
+
+        # Before asking what could come out of this folder, ask whether the folder should
+        # be here at all. It runs first and unconditionally, because the folders that most
+        # need the question are the ones that have stopped dividing -- grouping sits after
+        # a successful division and so can only ever widen a tree that is already moving.
+        # If the level goes, there is nothing left here to divide.
+        with log_context(stage="subdivision.split"):
+            if await self._consider_split(folder, filename=filename, on_progress=on_progress):
+                return []
 
         # Which folder is being judged is the first thing anyone reading these lines
         # needs, and it is not derivable from the document that triggered the call.
@@ -2259,6 +2269,153 @@ class LibraryMaintenanceService:
             ),
             payloads={folder / CHARTER_FILENAME: reviewed.to_markdown().encode("utf-8")},
         )
+
+    async def _consider_split(
+        self,
+        folder: PurePosixPath,
+        *,
+        filename: str,
+        on_progress: ProgressSink | None,
+    ) -> bool:
+        """Ask whether this level earns the guess it costs, and dissolve it if not.
+
+        The reverse of :meth:`_consider_grouping`, and the operator this library did not
+        have. Without it a level, once drawn, is permanent: one branch reached seven
+        levels, six of whose seven segments contained 금융, and every one of them had been
+        locally justified when it was drawn (ADR-0018).
+
+        Like grouping it moves folders, never documents. Every document keeps the folder
+        it is in and the path above it gets shorter by one, so a wrong answer here costs a
+        level rather than a scrambled collection -- which is why it can be asked at all.
+        """
+        if not folder.parts:
+            return False
+        parent = folder.parent
+        charter = self._charters.load(folder)
+        if charter is None or not charter.managed or self._has_protected_descendant(folder):
+            return False
+
+        contents = self._read(folder)
+        children = [
+            (name, note, self._count_documents(folder / name, recursive=True))
+            for name, note in contents.children
+            if name != INBOX.parts[0]
+        ]
+        promoted = tuple(name for name, _, _ in children)
+        here = len(contents.documents)
+        if not promoted and not here:
+            return False
+
+        parent_contents = self._read(parent)
+        siblings = [(name, note) for name, note in parent_contents.children if name != folder.name]
+        parent_charter = self._charters.load(parent)
+
+        validation = validate_split(
+            promoted=promoted,
+            ancestor_names=parent.parts,
+            taken=tuple(name for name, _ in siblings),
+            documents=here,
+        )
+        if not validation.accepted:
+            _guard_refused(
+                "split_unsafe",
+                folder=folder,
+                reason="; ".join(problem.value for problem in validation.problems),
+            )
+            return False
+
+        answer = await self._llm.choose(
+            prompts.build_split_check(
+                path=str(folder),
+                note=charter.purpose,
+                children=children,
+                documents=here,
+                parent=str(parent),
+                parent_note=parent_charter.purpose if parent_charter else "",
+                siblings=siblings,
+                language=contents.language,
+            ),
+            choices=("DISSOLVE", "KEEP"),
+        )
+        log_trace(
+            "subdivide.split_asked",
+            folder=str(folder),
+            children=len(children),
+            documents=here,
+            answer=answer,
+        )
+        if answer.strip().upper() != "DISSOLVE":
+            return False
+
+        report(on_progress, Progress(stage=Stage.DIVIDING, filename=filename, note=str(parent)))
+        return self._apply_split(folder, children)
+
+    def _apply_split(self, folder: PurePosixPath, children: list[tuple[str, str, int]]) -> bool:
+        """Move everything one step up and remove the level, in one undoable batch."""
+        parent = folder.parent
+        operations: list[Operation] = []
+        moved = 0
+
+        for child_name, _, _ in children:
+            source = folder / child_name
+            subtree = sorted(
+                (f for f in self._vault.iter_folders() if _within(f, source)),
+                key=lambda f: len(f.parts),
+            )
+            for sub in subtree:
+                destination = (
+                    parent / child_name
+                    if sub == source
+                    else parent / child_name / sub.relative_to(source)
+                )
+                operations.append(Operation(kind=OperationKind.MKDIR, target=destination))
+                for path in sorted(self._vault.iter_files(sub, recursive=False)):
+                    operations.extend(self._move_document(path, destination))
+                    moved += 1
+                note = sub / CHARTER_FILENAME
+                if self._vault.exists(note):
+                    operations.append(
+                        Operation(
+                            kind=OperationKind.MOVE,
+                            source=note,
+                            target=destination / CHARTER_FILENAME,
+                            note="folder note",
+                        )
+                    )
+            operations.extend(
+                Operation(kind=OperationKind.RMDIR, target=path) for path in reversed(subtree)
+            )
+
+        # This level's own documents come up too; nothing is left behind to strand the
+        # rmdir, and no document is ever staged anywhere.
+        for path in sorted(self._vault.iter_files(folder, recursive=False)):
+            operations.extend(self._move_document(path, parent))
+            moved += 1
+        note = folder / CHARTER_FILENAME
+        if self._vault.exists(note):
+            operations.append(
+                Operation(kind=OperationKind.REMOVE, target=note, note="retired folder note")
+            )
+        operations.append(Operation(kind=OperationKind.RMDIR, target=folder))
+
+        self._transactor.execute(
+            JournalEntry(
+                actor=Actor.BISMUTH,
+                reason=(
+                    f"dissolve {folder} into {parent or '/'}: "
+                    f"{len(children)} folder(s), {moved} file(s) move up"
+                ),
+                operations=tuple(operations),
+            )
+        )
+        log_trace(
+            "subdivide.split",
+            folder=str(folder),
+            into=str(parent),
+            promoted=[name for name, _, _ in children],
+            files=moved,
+        )
+        return True
 
     async def _consider_grouping(
         self,

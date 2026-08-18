@@ -350,3 +350,57 @@ def validate_grouping(
     elif len(unique) >= len(sibling_keys):
         problems.append(GroupingProblem.TOOK_EVERY_FOLDER)
     return GroupingValidation(tuple(dict.fromkeys(problems)))
+
+
+class SplitProblem(StrEnum):
+    """Why a level may not be dissolved and its contents promoted."""
+
+    IS_THE_ROOT = "the root has nowhere to promote to"
+    NOTHING_TO_PROMOTE = "the level holds nothing that could stand one step up"
+    NAME_TAKEN = "something of that name already stands where it would be promoted to"
+    PROMOTED_RESTATES_ANCESTOR = "a promoted name would say what its new ancestor says"
+
+
+@dataclass(frozen=True, slots=True)
+class SplitValidation:
+    problems: tuple[SplitProblem, ...] = ()
+
+    @property
+    def accepted(self) -> bool:
+        return not self.problems
+
+
+def validate_split(
+    *,
+    promoted: tuple[str, ...],
+    ancestor_names: tuple[str, ...],
+    taken: tuple[str, ...],
+    documents: int = 0,
+) -> SplitValidation:
+    """Whether a level may be dissolved, its children and documents moved one step up.
+
+    The reverse of :func:`validate_grouping`, and the operator that lets a level drawn
+    early be undone -- without one, a folder named after a single law keeps its documents
+    for good and a corridor of near-synonyms can only lengthen (ADR-0018).
+
+    Like grouping, this moves folders and never re-files a document: every document keeps
+    the folder it is in and the path above it shortens. So the contracts are about the
+    shape of the result, not about membership.
+
+    ``ancestor_names`` is where the promotion lands -- the parent's own path. A child that
+    was fine one level down can restate that parent once it stands beside it, which is the
+    same contract a name is held to when it is created.
+    """
+    problems: list[SplitProblem] = []
+    if not ancestor_names and not promoted and not documents:
+        problems.append(SplitProblem.IS_THE_ROOT)
+    if not promoted and not documents:
+        problems.append(SplitProblem.NOTHING_TO_PROMOTE)
+
+    taken_keys = {normalise_label(item) for item in taken}
+    for name in promoted:
+        if normalise_label(name) in taken_keys:
+            problems.append(SplitProblem.NAME_TAKEN)
+        if any(restates(name, item) for item in ancestor_names):
+            problems.append(SplitProblem.PROMOTED_RESTATES_ANCESTOR)
+    return SplitValidation(tuple(dict.fromkeys(problems)))
