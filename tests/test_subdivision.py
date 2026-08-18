@@ -1461,3 +1461,50 @@ class TestNothingIsAskedTwice:
         named = llm.prompts_for(subdivision_prompts.ClassName)
         assert named
         assert all("어느 주제 분야에 속하는가?" in prompt.user for prompt in named)
+
+
+class TestTheCheapQuestionsComeFirst:
+    """Membership is one closed question per document, so it is the loop that has to run
+    last.
+
+    Measured over one 300-document round: 2,446 membership questions, 2,060 of them --
+    84% -- spent on proposals refused afterwards, and 1,446 of those refused by an audit
+    that ran after the loop. None of the six audit checks reads the membership answer;
+    they are about the axis, the proposed name and the sibling names.
+    """
+
+    async def test_a_refused_boundary_never_reaches_the_membership_loop(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야")
+        script.set(
+            subdivision_prompts.BoundaryAudit,
+            subdivision_prompts.BoundaryAudit(
+                one_property=True,
+                names_answer_question=True,
+                mutually_exclusive=True,
+                useful_for_navigation=False,
+                notes_are_routing_signs=True,
+            ),
+        )
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert llm.prompts_for(subdivision_prompts.BoundaryAudit)
+        asked = [prompt for prompt in llm.prompts_for(None) if "NEW SIGN:" in prompt.user]
+        assert not asked
+
+    async def test_a_boundary_that_holds_still_asks_every_document(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The loop was moved, not removed."""
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야")
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        asked = [prompt for prompt in llm.prompts_for(None) if "NEW SIGN:" in prompt.user]
+        assert asked
