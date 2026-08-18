@@ -1708,6 +1708,73 @@ one: a list that is merely long is better than a level that is merely wrong.\
 """
 
 
+_SPLIT_SYSTEM = """\
+EVERY VALUE YOU RETURN IS WRITTEN IN THE DOCUMENTS' OWN LANGUAGE.
+
+A reader walking to a document must guess right at every level on the way. You are looking \
+at one level and deciding whether it earns that guess. Answer with exactly DISSOLVE or \
+KEEP and nothing else. Do not explain.
+
+DISSOLVE means this folder goes away and everything standing in it moves up one step, \
+beside what already stands there. Nothing is thrown away and no document leaves the folder \
+it is in -- the path above it gets shorter by one.
+
+Answer DISSOLVE when the level adds a guess and rules nothing out:
+
+- its name says again what the folder above it already said, in other words;
+- a reader who wanted anything inside it would have had to open it anyway, because its \
+name does not separate it from what stands beside it;
+- it holds one thing, so choosing it is not a choice;
+- its name describes the sorting rather than what stands on the shelf.
+
+Answer KEEP when a reader can look at its name beside its siblings' and rule it out \
+without opening it. A level that does that is worth the guess, however few documents are \
+behind it.\
+"""
+
+
+def build_split_check(
+    *,
+    path: str,
+    note: str,
+    children: list[tuple[str, str, int]],
+    documents: int,
+    parent: str,
+    parent_note: str,
+    siblings: list[tuple[str, str]],
+    language: str = "",
+) -> Prompt:
+    """One closed question: does this level earn a reader's guess?
+
+    The reverse of :func:`build_grouping`. Shown what would land beside what, because that
+    is the whole question -- a name can only rule something out next to the names it would
+    stand with.
+    """
+    inside = (
+        "\n".join(
+            f"  {name}/  ({count})" + (f" — {note}" if note else "")
+            for name, note, count in children
+        )
+        or "  (하위 폴더 없음)"
+    )
+    beside = (
+        "\n".join(f"  {name}/" + (f" — {note}" if note else "") for name, note in siblings)
+        or "  (없음)"
+    )
+    return Prompt(
+        system=_SPLIT_SYSTEM,
+        user=(
+            f"THE LEVEL IN QUESTION: {path}\n"
+            + (f"ITS SIGN: {note}\n" if note else "")
+            + f"IT HOLDS {documents} document(s) of its own, and these folders:\n{inside}\n\n"
+            f"IF DISSOLVED, ALL OF THAT MOVES UP INTO: {parent or '(root)'}\n"
+            + (f"WHOSE SIGN IS: {parent_note}\n" if parent_note else "")
+            + f"AND WOULD STAND BESIDE:\n{beside}"
+            + answer_in(language)
+        ),
+    )
+
+
 def build_grouping(
     *, path: str, children: list[tuple[str, str, int]], axis: str, language: str = ""
 ) -> Prompt:
