@@ -228,6 +228,7 @@ class GroupingProblem(StrEnum):
     NAME_IS_A_SCHEMA_FIELD = "the broader name is a field of the answer schema"
     NAME_EXISTS = "a sub-folder of that name already stands here"
     NAME_IS_A_MEMBER = "the broader name is one of the folders it would contain"
+    MEMBER_RESTATES_NAME = "a folder moving onto the shelf says the shelf's name again"
     NAME_RESTATES_AXIS = "the broader name repeats the question instead of answering it"
     ANCESTOR_NAME = "the broader name carries an ancestor's name"
     TOO_FEW_MEMBERS = "fewer than two folders would move onto the shelf"
@@ -279,6 +280,13 @@ def validate_grouping(
         problems.append(GroupingProblem.NAME_IS_A_MEMBER)
     elif key in sibling_keys:
         problems.append(GroupingProblem.NAME_EXISTS)
+    # The same contract a name is held to when it is created, applied again when a folder
+    # is moved underneath one. It was only checked at creation, so a shelf could be built
+    # over a folder that restates it: 위반 행위 및 제재 was stood over 위반 행위 및 제재
+    # 유형, which restates() refuses outright between a parent and a child. That corridor
+    # of near-synonyms reached six levels and left an empty folder in the middle of it.
+    if any(restates(member, cleaned) for member in members):
+        problems.append(GroupingProblem.MEMBER_RESTATES_NAME)
     if key in {normalise_label(item) for item in ancestor_names} or any(
         restates(cleaned, item) for item in ancestor_names
     ):
