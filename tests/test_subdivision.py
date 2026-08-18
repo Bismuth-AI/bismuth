@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from bismuth.container import Bismuth
 from bismuth.domain.charter import CHARTER_SCHEMA_VERSION, Charter
+from bismuth.ports.llm import Prompt
 from bismuth.prompts import placement as placement_prompts
 from bismuth.prompts import subdivision as subdivision_prompts
 from bismuth.services import subdivision as subdivision_service
@@ -1580,3 +1581,40 @@ class TestALevelThatDoesNotEarnItsGuess:
         asked = [p for p in llm.prompts_for(None) if "THE LEVEL IN QUESTION: \n" in p.user]
         assert not asked
         assert Path(engine.vault.root).is_dir()
+
+
+class TestTheLanguageInstruction:
+    """SPEC 2.1: an instruction is read when it is generated, and the reply is last."""
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            subdivision_prompts.build_group(
+                documents=[("a", "ko doc")], children=[], language="ko"
+            ),
+            subdivision_prompts.build_axis(shared="같은 법령을 다룬다", language="ko"),
+            subdivision_prompts.build_class_sign(shared="같은 법령을 다룬다", language="ko"),
+            subdivision_prompts.build_class_name(
+                shared="같은 법령을 다룬다",
+                question="이 문서의 규제 대상은?",
+                documents=[("a", "ko doc")],
+                taken=[],
+                language="ko",
+            ),
+            subdivision_prompts.build_emerging(
+                path="", purpose="", documents=[("a", "ko doc")], children=[], language="ko"
+            ),
+            subdivision_prompts.build_grouping(
+                path="", children=[("문학", "", 3)], axis="주제", language="ko"
+            ),
+        ],
+    )
+    def test_it_comes_before_the_evidence(self, prompt: Prompt) -> None:
+        """Six of thirteen replies came back in English with this line at the end."""
+        assert prompt.user.startswith("These documents are written in `ko`")
+
+    def test_a_collection_with_no_language_is_told_nothing(self) -> None:
+        """The code comes off the cards, so this file never names a language itself."""
+        prompt = subdivision_prompts.build_axis(shared="one subject")
+
+        assert "These documents are written in" not in prompt.user
