@@ -464,8 +464,13 @@ class LibraryMaintenanceService:
             on_progress, Progress(stage=Stage.DIVIDING, filename=filename, note=str(folder) or "/")
         )
 
+        # A charter that carries an axis has answered this already. Asking again while a
+        # folder had fewer than two children put the question to the model 152 times in
+        # one 300-document round and refused 145 of the answers for repeating an
+        # ancestor's axis -- the documents had not changed, so neither had the answer.
+        # Two children is what makes a boundary reviewable, not what makes an axis real.
         established = len(contents.children) >= 2
-        axis = charter.split_basis if charter is not None and established else ""
+        axis = charter.split_basis if charter is not None and charter.divided else ""
         spent = self._axes_above(folder)
 
         with log_context(stage="subdivision.emerging"):
@@ -953,7 +958,7 @@ class LibraryMaintenanceService:
         settled_axis, question = axis, axis_question
         if not axis:
             asked = await self._llm.structured(
-                prompts.build_axis(shared=chosen.shared, documents=theirs, language=language),
+                prompts.build_axis(shared=chosen.shared, language=language),
                 schema=prompts.Axis,
             )
             settled_axis, question = asked.axis.strip(), asked.axis_question.strip()
@@ -977,7 +982,7 @@ class LibraryMaintenanceService:
             return prompts.Emerging(emerged=False)
 
         signed = await self._llm.structured(
-            prompts.build_class_sign(name=name, shared=chosen.shared, language=language),
+            prompts.build_class_sign(shared=chosen.shared, language=language),
             schema=prompts.ClassSign,
         )
         if not signed.sign.strip():
