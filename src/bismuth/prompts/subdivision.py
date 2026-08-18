@@ -388,9 +388,9 @@ One folder, not a path. A name with a separator in it is thrown away.\
 """
 
 _CLASS_SIGN_SYSTEM = """\
-Write the one line printed under a folder name. The reader has already read the name; \
-this is what they read next to decide whether to open the folder or walk past it, so it \
-has to say something the name did not.
+Write the one line printed under a folder name. The reader has already read that name, \
+which is two or three words; this is what they read next to decide whether to open the \
+folder or walk past it, so it has to say what those words could not.
 
 Write it to someone standing outside the folder. They cannot see the documents and are \
 not interested in how the folder was decided. So say what would belong here tomorrow, \
@@ -460,7 +460,15 @@ def build_group(
     answer to the same question?" -- which is a smaller question than "what do these
     share", and the only one a divided folder is allowed to ask.
     """
-    user = f"DOCUMENTS ({len(documents)}):\n{_render_documents(documents)}"
+    # The bounds as numbers rather than as prose. "At least two, never all of them" was
+    # ignored 84 times in 567 replies -- one document returned as a group 51 times, the
+    # whole packet 33 times -- and a bound a model has to count out is a bound it does
+    # not check.
+    most = max(2, len(documents) - 1)
+    user = (
+        f"DOCUMENTS ({len(documents)}):\n{_render_documents(documents)}\n\n"
+        f"RETURN 0 HANDLES, OR BETWEEN 2 AND {most} OF THEM. NEVER ALL {len(documents)}."
+    )
     if children:
         user += "\n\n" + _render_children(children)
     if not axis:
@@ -496,24 +504,36 @@ def build_class_name(
     return Prompt(system=_CLASS_NAME_SYSTEM, user=user + answer_in(language))
 
 
-def build_class_sign(*, name: str, shared: str, language: str = "") -> Prompt:
-    """Step three: the line under the name."""
+def build_class_sign(*, shared: str, language: str = "") -> Prompt:
+    """Step four: the line under the name, written without being shown the name.
+
+    Shown it, the sign came back as the name again 22 times in 349, empty 9 more, and
+    once past the note budget -- the same failure as every other step handed the string
+    it must not produce. It does not need the name: a sign written from what the group
+    shares is longer and more specific than two or three words can be, which is what the
+    line is for.
+    """
     return Prompt(
         system=_CLASS_SIGN_SYSTEM,
-        user=f"FOLDER NAME: {name}\n\nWHAT ITS DOCUMENTS SHARE: {shared}" + answer_in(language),
+        user=f"WHAT THE DOCUMENTS IN THIS FOLDER SHARE: {shared}" + answer_in(language),
     )
 
 
-def build_axis(*, shared: str, documents: list[tuple[str, str]], language: str = "") -> Prompt:
+def build_axis(*, shared: str, language: str = "") -> Prompt:
     """Step two, and only when a folder divides for the first time.
 
     Before the name exists, so there is no name to hand back. Asked after the name, it
     came back as the name itself in 72 of 80 replies and every division was refused.
+
+    The documents are not shown either. With them, one root chose 시행규칙이 규정한 거래
+    유형 -- an axis naming the kind of instrument, read straight off the titles -- and
+    every folder underneath became an answer to it, down to a spine of 법령 및 정책
+    목적별 거래 유형 holding 243 of 300 documents. The group's own sentence is the
+    evidence this question needs, and the only piece already about the subject.
     """
     return Prompt(
         system=_AXIS_SYSTEM,
-        user=f"WHAT THE PICKED DOCUMENTS SHARE: {shared}\n\n"
-        f"THEM:\n{_render_documents(documents)}" + answer_in(language),
+        user=f"WHAT THE PICKED DOCUMENTS SHARE: {shared}" + answer_in(language),
     )
 
 
