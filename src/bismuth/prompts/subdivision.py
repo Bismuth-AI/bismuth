@@ -472,12 +472,15 @@ def build_group(
     if children:
         user += "\n\n" + _render_children(children)
     if not axis:
-        return Prompt(system=_GROUP_SYSTEM, user=user + answer_in(language))
+        return Prompt(system=_GROUP_SYSTEM, user=in_their_language(user, language))
     asked = axis_question or f"이 문서의 {axis}는 무엇인가?"
     return Prompt(
         system=_GROUP_ALONG_SYSTEM,
-        user=f"THIS FOLDER IS DIVIDED BY: {axis}\nTHE QUESTION ITS FOLDERS ANSWER: {asked}"
-        f"\n\n{user}" + answer_in(language),
+        user=in_their_language(
+            f"THIS FOLDER IS DIVIDED BY: {axis}\nTHE QUESTION ITS FOLDERS ANSWER: {asked}"
+            f"\n\n{user}",
+            language,
+        ),
     )
 
 
@@ -501,7 +504,7 @@ def build_class_name(
     )
     if taken:
         user += "\n\nANSWERS ALREADY TAKEN BY FOLDERS BESIDE THIS ONE:\n  " + "\n  ".join(taken)
-    return Prompt(system=_CLASS_NAME_SYSTEM, user=user + answer_in(language))
+    return Prompt(system=_CLASS_NAME_SYSTEM, user=in_their_language(user, language))
 
 
 def build_class_sign(*, shared: str, language: str = "") -> Prompt:
@@ -515,7 +518,7 @@ def build_class_sign(*, shared: str, language: str = "") -> Prompt:
     """
     return Prompt(
         system=_CLASS_SIGN_SYSTEM,
-        user=f"WHAT THE DOCUMENTS IN THIS FOLDER SHARE: {shared}" + answer_in(language),
+        user=in_their_language(f"WHAT THE DOCUMENTS IN THIS FOLDER SHARE: {shared}", language),
     )
 
 
@@ -533,7 +536,7 @@ def build_axis(*, shared: str, language: str = "") -> Prompt:
     """
     return Prompt(
         system=_AXIS_SYSTEM,
-        user=f"WHAT THE PICKED DOCUMENTS SHARE: {shared}" + answer_in(language),
+        user=in_their_language(f"WHAT THE PICKED DOCUMENTS SHARE: {shared}", language),
     )
 
 
@@ -899,10 +902,10 @@ def build_emerging(
                 "\n\nPROPERTIES ALREADY USED ABOVE THIS FOLDER (do not reuse them here):\n  "
                 + "\n  ".join(spent)
             )
-        return Prompt(system=_EMERGING_SYSTEM, user=user + answer_in(language))
+        return Prompt(system=_EMERGING_SYSTEM, user=in_their_language(user, language))
     return Prompt(
         system=_EMERGING_ALONG_SYSTEM,
-        user=f"{user}\n\nTHE AXIS HERE: {axis}{answer_in(language)}",
+        user=in_their_language(f"{user}\n\nTHE AXIS HERE: {axis}", language),
     )
 
 
@@ -1562,19 +1565,26 @@ def build_routing_audit(
     )
 
 
-def answer_in(language: str) -> str:
-    """A closing line naming the collection's own language, when it has one.
+def in_their_language(user: str, language: str) -> str:
+    """Name the collection's own language first, then show the evidence.
 
-    Last, because that is the instruction a small model is most likely to still be
-    holding when it starts writing. The code comes off the cards, so an English archive
-    gets English back and this file names no language itself.
+    It used to be the closing line, on the theory that a small model still holds the last
+    instruction it read when it starts writing. Measured the other way round: six of
+    thirteen replies came back in English with the line at the end, none of nine with it
+    at the front. A prompt that ends in a hundred document titles already ends in the
+    documents' own language, so the instruction was competing with the evidence rather
+    than framing it.
+
+    Takes the body and returns it, rather than returning a fragment to concatenate, so
+    that no caller can put it back at the end. The code comes off the cards, so an
+    English archive gets English back and this file names no language itself.
     """
     if not language:
-        return ""
+        return user
     return (
-        f"\n\nThese documents are written in `{language}`. Write every value you return "
+        f"These documents are written in `{language}`. Write every value you return "
         f"-- the property, the question, each folder name and each sign -- in `{language}`, "
-        "using the words these documents use."
+        f"using the words these documents use.\n\n{user}"
     )
 
 
@@ -1763,14 +1773,14 @@ def build_split_check(
     )
     return Prompt(
         system=_SPLIT_SYSTEM,
-        user=(
+        user=in_their_language(
             f"THE LEVEL IN QUESTION: {path}\n"
             + (f"ITS SIGN: {note}\n" if note else "")
             + f"IT HOLDS {documents} document(s) of its own, and these folders:\n{inside}\n\n"
             f"IF DISSOLVED, ALL OF THAT MOVES UP INTO: {parent or '(root)'}\n"
             + (f"WHOSE SIGN IS: {parent_note}\n" if parent_note else "")
-            + f"AND WOULD STAND BESIDE:\n{beside}"
-            + answer_in(language)
+            + f"AND WOULD STAND BESIDE:\n{beside}",
+            language,
         ),
     )
 
@@ -1785,11 +1795,12 @@ def build_grouping(
     )
     return Prompt(
         system=_GROUPING_SYSTEM,
-        user=(
+        user=in_their_language(
             f"FOLDER: {path or '(root)'}\n"
             f"THE QUESTION THESE SUB-FOLDERS ANSWER: {axis or '(none recorded)'}\n"
             f"SUB-FOLDERS STANDING HERE ({len(children)} of them, all read before any "
-            f"document):\n{rendered}" + answer_in(language)
+            f"document):\n{rendered}",
+            language,
         ),
     )
 
