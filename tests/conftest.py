@@ -90,6 +90,24 @@ def _shown_document(prompt: Prompt) -> str | None:
     return None
 
 
+def _scripted_emergence(model: ScriptedModel) -> subdivision_prompts.Emerging:
+    """The Emerging a test scripted, which the chain's four steps are answered from."""
+    scripted = model.responses[subdivision_prompts.Emerging]
+    return scripted() if callable(scripted) else scripted
+
+
+def _subset_shown(prompt: Prompt) -> list[str]:
+    """Every handle in the prompt but the last -- a group has to leave something behind.
+
+    Production refuses a group that takes the whole folder, so a fake that returned all
+    of them would exercise the guard rather than the division the test is about.
+    """
+    shown = [
+        line.strip()[1:6] for line in prompt.user.splitlines() if line.strip().startswith("[D")
+    ]
+    return shown[:-1] if len(shown) > 2 else shown
+
+
 class ScriptedModel:
     """FakeLLM handler that returns a scripted response keyed by schema."""
 
@@ -123,6 +141,23 @@ class ScriptedModel:
             ),
             subdivision_prompts.Members: subdivision_prompts.Members(
                 document_ids=[],
+            ),
+            # Emergence is four calls now. Tests still script the one Emerging they mean;
+            # each step is answered from the field it is about, so an existing test keeps
+            # asserting what it was written to assert.
+            subdivision_prompts.Gathered: lambda prompt, schema: subdivision_prompts.Gathered(
+                members=_subset_shown(prompt) if _scripted_emergence(self).emerged else [],
+                shared=_scripted_emergence(self).sign or "같은 종류의 문서",
+            ),
+            subdivision_prompts.ClassName: lambda prompt, schema: subdivision_prompts.ClassName(
+                name=_scripted_emergence(self).name,
+            ),
+            subdivision_prompts.ClassSign: lambda prompt, schema: subdivision_prompts.ClassSign(
+                sign=_scripted_emergence(self).sign,
+            ),
+            subdivision_prompts.Axis: lambda prompt, schema: subdivision_prompts.Axis(
+                axis=_scripted_emergence(self).axis,
+                axis_question=_scripted_emergence(self).axis_question,
             ),
             # Same default, for the same reason: existing folders stay where they are
             # unless a test asks for them to be stood together.

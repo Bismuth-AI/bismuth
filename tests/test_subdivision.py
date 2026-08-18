@@ -123,7 +123,7 @@ class TestDivideDecision:
     ) -> None:
         await _fill(engine, script, 4)
 
-        prompts = llm.prompts_for(subdivision_prompts.Emerging)
+        prompts = llm.prompts_for(subdivision_prompts.Gathered)
         assert prompts
         assert all(not re.search(r"\[[0-9a-f]{16}(?:~\d+)?\]", item.user) for item in prompts)
         assert "[D0001]" in prompts[-1].user
@@ -898,7 +898,7 @@ class TestOneAxisPerFolder:
         await engine.subdivision.consider(PurePosixPath())
 
         # The second look is told the axis rather than asked for one...
-        asked = llm.prompts_for(subdivision_prompts.Emerging)[-1]
+        asked = llm.prompts_for(subdivision_prompts.Gathered)[-1]
         assert "주제 분야" in asked.user
         # ...and the folder keeps it, whatever the reply says.
         charter = engine.charters.load(PurePosixPath())
@@ -1026,7 +1026,12 @@ class TestAFolderBornFull:
 
         await engine.subdivision.consider(PurePosixPath())
 
-        asked = [p for p in llm.prompts_for(subdivision_prompts.Emerging) if "문학" in p.user]
+        # The shelf holds four of the six; the root keeps two. Neither prompt carries a
+        # folder name any more, so the one that is about the shelf is the one showing
+        # the documents that moved into it.
+        asked = [
+            p for p in llm.prompts_for(subdivision_prompts.Gathered) if "DOCUMENTS (4)" in p.user
+        ]
         assert asked
 
 
@@ -1145,8 +1150,9 @@ class TestWhereTheDocumentsWent:
 
         await engine.subdivision.consider(PurePosixPath())
 
+        # Six of the eight moved down, so the shelf is the prompt showing six.
         asked = [
-            p for p in llm.prompts_for(subdivision_prompts.Emerging) if "FOLDER: 문학" in p.user
+            p for p in llm.prompts_for(subdivision_prompts.Gathered) if "DOCUMENTS (6)" in p.user
         ]
         assert asked
 
