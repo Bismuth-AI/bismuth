@@ -128,9 +128,17 @@ class TestPlacement:
         await add(engine, "first.txt", "아폴로 계약서 내용 A")
         await add(engine, "second.txt", "아폴로 보고서 내용 B")
 
-        prompt = llm.prompts_for(placement_prompts.PlacementDecision)[-1]
-        assert "CURRENT FOLDER: 아폴로" in prompt.user
-        assert "[F001] 2023" in prompt.user
+        # The plain-choice channel carries several questions now -- a placement descent,
+        # membership, routing, and whether a level earns its guess -- so the descent is
+        # picked by its own marker rather than by being the last one asked.
+        descents = [
+            item
+            for item in llm.prompts_for(placement_prompts.PlacementDecision)
+            if "CURRENT FOLDER:" in item.user
+        ]
+        assert descents
+        assert "CURRENT FOLDER: 아폴로" in descents[-1].user
+        assert "[F001] 2023" in descents[-1].user
 
     async def test_a_second_document_reuses_an_existing_folder(
         self, engine: Bismuth, script: ScriptedModel

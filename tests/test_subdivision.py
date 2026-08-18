@@ -1522,3 +1522,61 @@ class TestTheCheapQuestionsComeFirst:
         await engine.subdivision.consider(PurePosixPath())
 
         assert not llm.prompts_for(subdivision_prompts.BoundaryAudit)
+
+
+class TestALevelThatDoesNotEarnItsGuess:
+    """The fourth operator (ADR-0018), and the one this library did not have.
+
+    Without it a level, once drawn, is permanent. One branch reached seven levels, six of
+    whose seven segments contained 금융, and every one had been locally justified when it
+    was drawn: nothing could ever look at the path and shorten it. Cobweb calls merge and
+    split reverse operators whose purpose is to correct mistakes made on earlier turns.
+    """
+
+    async def _two_levels(self, engine: Bismuth, script: ScriptedModel) -> list[str]:
+        shutil.rmtree(Path(engine.vault.root) / "아폴로")
+        ids = await _fill(engine, script, 8)
+        _emerges(script, "문학", "소설과 시를 모은다", ids[:4], axis="주제 분야")
+        await engine.subdivision.consider(PurePosixPath())
+        return ids
+
+    async def test_dissolving_a_level_moves_its_folders_up(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await self._two_levels(engine, script)
+        _emerges(script, "소설", "장편과 단편", ids[:2], axis="갈래")
+        await engine.subdivision.consider(PurePosixPath("문학"))
+        assert (Path(engine.vault.root) / "문학" / "소설").is_dir()
+
+        script.set_dissolve(["문학"])
+        # Asked of the folder itself: a document filed at the root never reaches 문학,
+        # and this operator is about the level, not about an arrival.
+        await engine.subdivision.consider(PurePosixPath("문학"))
+
+        root = Path(engine.vault.root)
+        assert not (root / "문학").exists()
+        assert (root / "소설").is_dir(), "그 안의 폴더는 한 단 위로 올라온다"
+
+    async def test_a_level_that_holds_up_is_left_alone(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """KEEP is the default; nothing is dissolved unless it answers DISSOLVE."""
+        await self._two_levels(engine, script)
+
+        await engine.subdivision.consider(PurePosixPath("문학"))
+
+        assert (Path(engine.vault.root) / "문학").is_dir()
+
+    async def test_the_root_is_never_dissolved(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """It has nowhere to promote to, so the question is never even asked."""
+        await self._two_levels(engine, script)
+        script.set_dissolve([""])
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        asked = [p for p in llm.prompts_for(None) if "THE LEVEL IN QUESTION: \n" in p.user]
+        assert not asked
+        assert Path(engine.vault.root).is_dir()

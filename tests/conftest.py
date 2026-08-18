@@ -211,6 +211,7 @@ class ScriptedModel:
         self._assignments: dict[str, str] = {}
         self._routes: dict[str, str] = {}
         self._shelved: set[str] = set()
+        self._dissolve: set[str] = set()
 
     def set(self, schema: type[BaseModel], response: object) -> None:
         key = None if schema is placement_prompts.PlacementDecision else schema
@@ -226,6 +227,10 @@ class ScriptedModel:
         per document, so scripting ``Members`` alone no longer reaches this path.
         """
         self._members = set(document_ids)
+
+    def set_dissolve(self, paths: list[str]) -> None:
+        """Script which levels answer DISSOLVE when asked whether they earn their guess."""
+        self._dissolve = set(paths)
 
     def set_shelved(self, folder_names: list[str]) -> None:
         """Script which existing sub-folders move onto a proposed broader shelf."""
@@ -268,6 +273,13 @@ class ScriptedModel:
                             scripted = scripted(prompt, schema)
                         return "HOLDS" if getattr(scripted, name) else "FAILS"
             return "HOLDS"
+        if "THE LEVEL IN QUESTION: " in prompt.user:
+            # Dissolving a level is asked about a folder, not a document, so it answers
+            # from its own script. KEEP by default: a test that wants a level removed
+            # says so, and every other test keeps the tree its assertions were written
+            # against.
+            level = prompt.user.split("THE LEVEL IN QUESTION: ", 1)[-1].splitlines()[0]
+            return "DISSOLVE" if level in self._dissolve else "KEEP"
         if "THE BROADER SHELF:" in prompt.user:
             # Standing existing folders on one shelf: the choice is about a folder, not
             # a document, so it is answered from its own script.
