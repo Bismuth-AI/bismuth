@@ -1439,3 +1439,25 @@ class TestNothingIsAskedTwice:
         asked = llm.prompts_for(subdivision_prompts.Gathered)
         assert asked
         assert any("BETWEEN 2 AND 4 OF THEM. NEVER ALL 5." in prompt.user for prompt in asked)
+
+    async def test_an_inherited_axis_arrives_with_its_question(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The property and its question are one answer and have to travel together.
+
+        Split, a folder with one child inherited the property, which made the chain skip
+        the step that writes the question, and the plan was refused for having no
+        question -- 69 times in 108 documents, one folder built.
+        """
+        shutil.rmtree(Path(engine.vault.root) / "아폴로")
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야")
+        await engine.subdivision.consider(PurePosixPath())
+        llm.calls.clear()
+
+        _emerges(script, "과학", "실험과 관측을 모은다", ids[2:4], axis="주제 분야")
+        await add(engine, "doc99.txt", "문서 99 내용")
+
+        named = llm.prompts_for(subdivision_prompts.ClassName)
+        assert named
+        assert all("어느 주제 분야에 속하는가?" in prompt.user for prompt in named)
