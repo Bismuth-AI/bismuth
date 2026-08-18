@@ -134,6 +134,53 @@ class PlanValidation:
         return not self.problems
 
 
+def validate_names(
+    *,
+    axis: str,
+    axis_question: str = "",
+    names: tuple[str, ...],
+    ancestor_names: tuple[str, ...] = (),
+    spent_axes: tuple[str, ...] = (),
+) -> PlanValidation:
+    """The contracts that read only the axis and the proposed names.
+
+    Every one of these is a string comparison, so they are worth running before anything
+    is paid for -- before the semantic audit, and long before each document is asked
+    whether it belongs. :func:`validate_plan` runs them again with the membership, which
+    is where the rest of its contracts live.
+    """
+    problems: list[PlanProblem] = []
+    if not is_axis_label(axis):
+        problems.append(PlanProblem.INVALID_AXIS)
+    if not axis_question.strip() or "\n" in axis_question or "\r" in axis_question:
+        problems.append(PlanProblem.MISSING_AXIS_QUESTION)
+    wanted_axis = normalise_label(axis)
+    if wanted_axis and any(wanted_axis == normalise_label(item) for item in spent_axes):
+        problems.append(PlanProblem.SPENT_AXIS)
+
+    seen: set[str] = set()
+    ancestor_keys = {normalise_label(item) for item in ancestor_names}
+    for proposed in names:
+        name = " ".join(proposed.split()).strip()
+        key = normalise_label(name)
+        if not name or not key:
+            problems.append(PlanProblem.INVALID_NAME)
+        if len(name) > MAX_SEGMENT:
+            problems.append(PlanProblem.NAME_TOO_LONG)
+        if any(separator in name.rstrip("/\\") for separator in ("/", "\\")):
+            problems.append(PlanProblem.NAME_IS_A_PATH)
+        if key in SCHEMA_FIELD_NAMES:
+            problems.append(PlanProblem.NAME_IS_A_SCHEMA_FIELD)
+        if key and key == wanted_axis:
+            problems.append(PlanProblem.AXIS_AS_NAME)
+        if key in ancestor_keys or any(restates(name, item) for item in ancestor_names):
+            problems.append(PlanProblem.ANCESTOR_NAME)
+        if key in seen:
+            problems.append(PlanProblem.DUPLICATE_NAME)
+        seen.add(key)
+    return PlanValidation(tuple(dict.fromkeys(problems)))
+
+
 def validate_plan(
     *,
     axis: str,

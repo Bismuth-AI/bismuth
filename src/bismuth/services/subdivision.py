@@ -36,6 +36,7 @@ from bismuth.domain.maintenance import (
     ProposedClass,
     normalise_label,
     validate_grouping,
+    validate_names,
     validate_plan,
 )
 from bismuth.domain.paths import sanitize_segment
@@ -695,6 +696,31 @@ class LibraryMaintenanceService:
         # names; it never needed to know which documents ended up behind the sign.
         audit_documents = contents.lines
         audit_groups = [prompts.Group(name=emerging.name, note=note, document_ids=list(gathered))]
+
+        # The free checks before the paid one. Whether a name repeats its axis, carries an
+        # ancestor's, spends an axis already used above, or is a path, is decided by
+        # comparing strings -- and the audit is a model call with the folder's documents
+        # in it. Run the other way round, 76 proposals in one round bought an audit before
+        # code refused them for something it could see from the name alone.
+        early = validate_names(
+            axis=axis or emerging.axis.strip(),
+            axis_question=(
+                charter.split_question
+                if charter is not None and charter.split_question and established
+                else emerging.axis_question
+            ),
+            names=(emerging.name,),
+            ancestor_names=folder.parts,
+            spent_axes=tuple(spent),
+        )
+        if not early.accepted:
+            log_trace(
+                "subdivide.rejected",
+                folder=str(folder),
+                reason="; ".join(problem.value for problem in early.problems),
+                proposed=[emerging.name],
+            )
+            return None
         if charter is not None and charter.divided and contents.children:
             # A new shelf changes the meaning of the whole list of signs. Checking it
             # alone cannot detect an overlapping sibling, a mixed axis, or another
