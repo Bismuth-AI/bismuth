@@ -378,6 +378,16 @@ every document answers the same way, which sorts nothing. Not one where every do
 has its own answer, which gives every folder a single document and hands the reader the \
 same list with a step in front of every entry.
 
+**The rest of the folder is listed below, and it has to be able to answer too.** Those \
+documents are not part of the group you were shown; they are what the question will be \
+asked about next, and every one of them will need an answer. A question that fits the \
+picked documents perfectly and none of the others is the worst outcome available here: \
+the folder is then divided by something almost nothing in it answers, and every later \
+class is refused for answering a different question. Measured -- a collection of 300 laws \
+was divided on 어떤 분야의 상생협력을 촉진하는가, which was exactly right for the four \
+documents that suggested it. 중대재해, 소상공인 and 규제자유특구 were then proposed and \
+refused, correctly and uselessly, 103 times.
+
 A question a reader could ask of any document, ending in a question mark, in the \
 documents' own language. Not an instruction, not a rule about folders, not a description \
 of what you did. Then name the property it asks about, in a few words: a question about \
@@ -549,21 +559,28 @@ def build_class_sign(
     )
 
 
-def build_axis(*, shared: str, language: str = "") -> Prompt:
+def build_axis(*, shared: str, rest: list[str], language: str = "") -> Prompt:
     """Step two, and only when a folder divides for the first time.
 
     Before the name exists, so there is no name to hand back. Asked after the name, it
     came back as the name itself in 72 of 80 replies and every division was refused.
 
-    The documents are not shown either. With them, one root chose 시행규칙이 규정한 거래
+    The documents are still not shown. With them, one root chose 시행규칙이 규정한 거래
     유형 -- an axis naming the kind of instrument, read straight off the titles -- and
-    every folder underneath became an answer to it, down to a spine of 법령 및 정책
-    목적별 거래 유형 holding 243 of 300 documents. The group's own sentence is the
-    evidence this question needs, and the only piece already about the subject.
+    every folder underneath became an answer to it. ``rest`` is not the documents: it is
+    the subject vocabulary of everything in the folder the group did not take, which is
+    what the question will have to be asked about next. Asked from the group alone, this
+    step chose a question the group answered and the other 290 documents could not, and
+    the folder could never divide again.
     """
+    listed = ", ".join(rest)
     return Prompt(
         system=_AXIS_SYSTEM,
-        user=in_their_language(f"WHAT THE PICKED DOCUMENTS SHARE: {shared}", language),
+        user=in_their_language(
+            f"WHAT THE PICKED DOCUMENTS SHARE: {shared}"
+            + (f"\n\nWHAT THE REST OF THE FOLDER IS ABOUT: {listed}" if listed else ""),
+            language,
+        ),
     )
 
 
