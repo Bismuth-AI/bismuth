@@ -274,6 +274,7 @@ class GroupingProblem(StrEnum):
     NAME_IS_A_PATH = "the broader name contains a path separator"
     NAME_IS_A_SCHEMA_FIELD = "the broader name is a field of the answer schema"
     NAME_EXISTS = "a sub-folder of that name already stands here"
+    SHELF_IS_NOT_HERE = "the folder they would move into does not stand here"
     NAME_IS_A_MEMBER = "the broader name is one of the folders it would contain"
     MEMBER_RESTATES_NAME = "a folder moving onto the shelf says the shelf's name again"
     NAME_RESTATES_AXIS = "the broader name repeats the question instead of answering it"
@@ -299,6 +300,7 @@ def validate_grouping(
     members: tuple[str, ...],
     siblings: tuple[str, ...],
     ancestor_names: tuple[str, ...] = (),
+    into_existing: bool = False,
 ) -> GroupingValidation:
     """Whether existing sub-folders may be stood together under one broader name.
 
@@ -306,6 +308,16 @@ def validate_grouping(
     in and only the path above it changes. So the contracts here are all about the shape
     of the move -- that it groups more than one thing, that it leaves something behind to
     be grouped away from, and that the new name is usable as one path segment.
+
+    ``into_existing`` is the same move with the shelf already built: the folders go under
+    a sibling that is standing here rather than under a new one. Cobweb's merge is this,
+    and ours was only ever the half that creates a parent -- so a root holding 금융 beside
+    가상자산, 벤처투자, 신용정보 and 신용협동조합 could not be tidied at all. The model
+    asked for it five times in one run and was refused five times: the name it wanted was
+    taken, by the very folder it wanted to move them into.
+
+    One folder is enough to move that way. Nothing is being created, so there is no level
+    to justify -- the list simply gets shorter by one.
     """
     problems: list[GroupingProblem] = []
     cleaned = " ".join(name.split()).strip()
@@ -325,7 +337,9 @@ def validate_grouping(
     member_keys = {normalise_label(item) for item in members}
     if key in member_keys:
         problems.append(GroupingProblem.NAME_IS_A_MEMBER)
-    elif key in sibling_keys:
+    elif into_existing and key not in sibling_keys:
+        problems.append(GroupingProblem.SHELF_IS_NOT_HERE)
+    elif key in sibling_keys and not into_existing:
         problems.append(GroupingProblem.NAME_EXISTS)
     # The same contract a name is held to when it is created, applied again when a folder
     # is moved underneath one. It was only checked at creation, so a shelf could be built
@@ -340,14 +354,16 @@ def validate_grouping(
         problems.append(GroupingProblem.ANCESTOR_NAME)
 
     unique = tuple(dict.fromkeys(member_keys))
-    if len(unique) < 2:
+    if len(unique) < (1 if into_existing else 2):
         problems.append(GroupingProblem.TOO_FEW_MEMBERS)
     if not member_keys <= sibling_keys:
         problems.append(GroupingProblem.UNKNOWN_MEMBER)
-    # Something has to stay beside the new shelf. Moving every folder under one name
-    # leaves this folder with a single child that rules nothing out -- the pass-through
-    # SPEC.md 3.3.1 counts as a defect, arrived at from the other direction.
-    elif len(unique) >= len(sibling_keys):
+    # Something has to stay beside the shelf. Moving every folder under one name leaves
+    # this folder with a single child that rules nothing out -- the pass-through
+    # SPEC.md 3.3.1 counts as a defect, arrived at from the other direction. Moving into
+    # an existing sibling, that sibling is itself one of the folders standing here, so it
+    # is what has to be left room beside.
+    elif len(unique) + (1 if into_existing else 0) >= len(sibling_keys):
         problems.append(GroupingProblem.TOOK_EVERY_FOLDER)
     return GroupingValidation(tuple(dict.fromkeys(problems)))
 

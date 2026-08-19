@@ -1390,11 +1390,20 @@ class LibraryMaintenanceService:
         if not proposal.emerged or not proposal.name.strip():
             return False
 
+        # Naming a folder that already stands here is not a collision, it is the cheaper
+        # answer: these folders move inside that one and no level is created. Asked for
+        # five times in one run and refused five times, because the name it wanted was
+        # held by the folder it wanted to move them into.
+        standing = {normalise_label(name): name for name, _, _ in children}
+        into = standing.get(normalise_label(proposal.name))
+        # A folder cannot stand inside itself, so it is not offered the question.
+        asked = [child for child in children if child[0] != into]
+
         members: list[tuple[str, str, int]] = []
-        for child in children:
+        for child in asked:
             answer = await self._llm.choose(
                 prompts.build_grouping_member(
-                    path=str(folder), name=proposal.name, sign=proposal.sign, child=child
+                    path=str(folder), name=into or proposal.name, sign=proposal.sign, child=child
                 ),
                 choices=("SHELF", "STAY"),
             )
@@ -1402,11 +1411,12 @@ class LibraryMaintenanceService:
                 members.append(child)
 
         validation = validate_grouping(
-            name=proposal.name,
+            name=into or proposal.name,
             axis=charter.split_basis,
             members=tuple(name for name, _, _ in members),
             siblings=tuple(name for name, _, _ in children),
             ancestor_names=folder.parts,
+            into_existing=into is not None,
         )
         if not validation.accepted:
             log_trace(
@@ -1419,9 +1429,11 @@ class LibraryMaintenanceService:
             return False
         report(
             on_progress,
-            Progress(stage=Stage.DIVIDING, filename=filename, note=str(folder / proposal.name)),
+            Progress(
+                stage=Stage.DIVIDING, filename=filename, note=str(folder / (into or proposal.name))
+            ),
         )
-        return self._apply_grouping(folder, charter, proposal, members)
+        return self._apply_grouping(folder, charter, proposal, members, into=into)
 
     def _apply_grouping(
         self,
@@ -1429,10 +1441,16 @@ class LibraryMaintenanceService:
         charter: Charter,
         proposal: prompts.Grouping,
         members: list[tuple[str, str, int]],
+        *,
+        into: str | None = None,
     ) -> bool:
-        """Move whole sub-folders under one new shelf, in a single undoable batch."""
+        """Move whole sub-folders onto one shelf, in a single undoable batch.
+
+        ``into`` names a folder that is already standing here, in which case nothing is
+        created: the folders move inside it and it keeps its own name, note and axis.
+        """
         try:
-            name = sanitize_segment(proposal.name)
+            name = into if into is not None else sanitize_segment(proposal.name)
         except ValueError:
             log_trace(
                 "subdivide.grouping_rejected",
@@ -1442,10 +1460,14 @@ class LibraryMaintenanceService:
             )
             return False
         target = folder / name
-        if self._vault.exists(target):
+        if into is None and self._vault.exists(target):
+            return False
+        if into is not None and not self._vault.exists(target):
             return False
 
-        operations: list[Operation] = [Operation(kind=OperationKind.MKDIR, target=target)]
+        operations: list[Operation] = []
+        if into is None:
+            operations.append(Operation(kind=OperationKind.MKDIR, target=target))
         payloads: dict[PurePosixPath, bytes] = {}
         emptied: list[PurePosixPath] = []
         moved = 0
@@ -1487,29 +1509,37 @@ class LibraryMaintenanceService:
         # The shelf answers the same question its contents answer, one step up, so it
         # carries the parent's axis rather than inventing one. It is divided from birth:
         # the folders standing in it are its boundary.
-        shelf = Charter(
-            path=target,
-            title=name,
-            purpose=_sign(proposal.sign, axis=charter.split_basis, class_name=name, folder=folder),
-            split_basis=charter.split_basis,
-            split_question=charter.split_question,
-            split_at_documents=moved,
-            holds=(),
-            answers=(),
-        )
-        operations.append(
-            Operation(
-                kind=OperationKind.WRITE, target=target / CHARTER_FILENAME, note="folder note"
+        #
+        # A folder that was already standing here keeps the note it has. It was written
+        # about its own documents and is still true of them; the folders arriving beside
+        # them do not make it false, and rewriting it here would be a boundary redrawn
+        # from inside a folder, which is the one thing this service no longer does.
+        if into is None:
+            shelf = Charter(
+                path=target,
+                title=name,
+                purpose=_sign(
+                    proposal.sign, axis=charter.split_basis, class_name=name, folder=folder
+                ),
+                split_basis=charter.split_basis,
+                split_question=charter.split_question,
+                split_at_documents=moved,
+                holds=(),
+                answers=(),
             )
-        )
-        payloads[target / CHARTER_FILENAME] = shelf.to_markdown().encode("utf-8")
+            operations.append(
+                Operation(
+                    kind=OperationKind.WRITE, target=target / CHARTER_FILENAME, note="folder note"
+                )
+            )
+            payloads[target / CHARTER_FILENAME] = shelf.to_markdown().encode("utf-8")
 
         self._transactor.execute(
             JournalEntry(
                 actor=Actor.BISMUTH,
                 reason=(
                     f"group {len(members)} folder(s) of {folder or '/'} under {name} "
-                    f"({moved} file(s))"
+                    f"({moved} file(s))" + (" (already standing)" if into is not None else "")
                 ),
                 operations=tuple(operations),
             ),
@@ -1521,6 +1551,7 @@ class LibraryMaintenanceService:
             shelf=str(target),
             members=[child_name for child_name, _, _ in members],
             files=moved,
+            into_existing=into is not None,
         )
         return True
 
