@@ -86,6 +86,21 @@ class _Standing:
     language: str = ""
 
 
+def _says_the_same(one: str, other: str) -> bool:
+    """Whether two names would leave a reader with the same expectation.
+
+    ``restates`` deliberately answers False for two names that are equal, because a
+    descendant repeating its ancestor is the case it was written for. Here equality is
+    the strongest form of the thing being asked about: 행정조직 was drawn beside
+    행정·조직 and both survived, since the two differ only by punctuation.
+    """
+    return (
+        normalise_label(one) == normalise_label(other)
+        or restates(one, other)
+        or restates(other, one)
+    )
+
+
 class RedesignService:
     """The whole-collection pass.
 
@@ -106,6 +121,8 @@ class RedesignService:
         self._charters = charters
         self._transactor = transactor
         self._llm = llm
+        self._looked_at = 0
+        """Documents held when this pass last reached a decision, whatever it decided."""
         # The maintenance service already knows how to read a folder as cards rather
         # than as bytes, and that reading is not this pass's business to reinvent.
         self._read = read_folder
@@ -132,9 +149,14 @@ class RedesignService:
         Scheduling, not judgement: asking late costs a late fix, never a wrong tree
         (SPEC.md 6.1).
         """
+        here = self._count(PurePosixPath())
+        # A look that moved nothing is still a look. Kept for the life of the process
+        # only: a restart looks once more, which costs one call and cannot compound.
+        if self._looked_at > 0 and here < self._looked_at * 2:
+            return False
         root = self._charters.load(PurePosixPath())
         if root is not None and root.redrawn_at_documents > 0:
-            return self._count(PurePosixPath()) >= root.redrawn_at_documents * 2
+            return here >= root.redrawn_at_documents * 2
         # Never drawn by this pass. The incremental path decides when a root has enough
         # evidence to divide at all; once it has drawn enough of a top level for a
         # question to be asked about, this pass can ask a better one.
@@ -152,9 +174,25 @@ class RedesignService:
             if len(standing.folders) + len(standing.documents) < MIN_CLASSES:
                 return Redesign(refused="there is not enough standing here to redraw")
 
+            # Whatever it decides, it has now looked. Without this a decision that moved
+            # nothing left the schedule true and the pass ran again on the very next
+            # arrival: 160 attempts in one 300-document run, 155 of which changed nothing.
+            self._looked_at = self._count(PurePosixPath())
+
             design = await self._design(standing)
             if design is None:
                 return Redesign(refused="no property this collection could be drawn on")
+            if not design.classes:
+                # Not a refusal. The one answer every other question in this program can
+                # give and this one could not, which is why it kept answering with the
+                # folders that already stood there and being turned down for it.
+                log_trace("redesign.left_alone", axis=design.axis, folders=len(standing.folders))
+                return Redesign(
+                    question=design.question,
+                    axis=design.axis,
+                    unsound=tuple(design.unsound),
+                    refused="the top level standing here is already a good one",
+                )
             if refusal := self._refuse(design, standing):
                 log_trace("redesign.refused", reason=refusal, axis=design.axis)
                 return Redesign(refused=refusal, unsound=tuple(design.unsound))
@@ -224,14 +262,26 @@ class RedesignService:
     # -- reading -----------------------------------------------------------------
 
     def _standing(self) -> _Standing:
-        """The root as it is: its folders, its loose documents, and its vocabulary."""
+        """The tree as it is: every folder, the root's loose documents, and the vocabulary.
+
+        Every folder, not only the root's children. A subject buried one level down could
+        otherwise never be pulled up beside the one it belongs with -- which is the whole
+        reason this pass exists. Measured: a redesign drew 금융·투자 at the root while
+        금융 및 보험 sat inside 산업·경제 규제, and 85 documents about finance ended in two
+        places because the second was never a candidate.
+
+        Still one question per folder, so the pass stays bounded by folders rather than
+        by documents.
+        """
         standing = _Standing()
-        contents = self._read(PurePosixPath())
-        for name, note in contents.children:
-            if name == INBOX.parts[0]:
+        for folder in sorted(self._vault.iter_folders(), key=lambda f: len(f.parts)):
+            if not folder.parts or folder.parts[0] == INBOX.parts[0]:
                 continue
-            folder = PurePosixPath(name)
-            standing.folders.append((name, note, self._count(folder)))
+            note = ""
+            if (loaded := self._charters.load(folder)) is not None:
+                note = loaded.purpose
+            standing.folders.append((str(folder), note, self._count(folder)))
+        contents = self._read(PurePosixPath())
         for _, description, path in contents.documents:
             standing.documents.append((path, description))
 
@@ -266,20 +316,11 @@ class RedesignService:
         validation = validate_names(axis=design.axis, axis_question=design.question, names=names)
         if not validation.accepted:
             return "; ".join(problem.value for problem in validation.problems)
-        # A new top level whose names are the old ones has redrawn nothing, and would
-        # spend the whole assignment loop discovering that.
-        standing_keys = {normalise_label(name) for name, _, _ in standing.folders}
-        if standing_keys and {normalise_label(name) for name in names} <= standing_keys:
-            return "the new top level is the folders that already stand here"
-        # A class that only restates a folder already standing here will collect that one
-        # folder and nothing else, which is a click that rules nothing out. Measured on
-        # the first real redesign: 금융 및 금융소비자 was drawn over 금융업 및 금융소비자
-        # and held 89 of its 90 documents in that one child, and two more classes wrapped
-        # a single folder each.
-        for name in names:
-            for standing_name, _, _ in standing.folders:
-                if restates(name, standing_name) or restates(standing_name, name):
-                    return f"{name} only says again what {standing_name} already says"
+        # Nothing here about names that repeat a folder standing at the root. A class
+        # broader than a folder it will hold is the whole point of the pass -- 연구개발
+        # 및 과학기술 over 연구개발 was refused 55 times for that, and 소비자 over
+        # 소비자 보호 28 more. Whether a class turned out to be a pass-through is a fact
+        # about what it collected, so it is decided after the assignment, not here.
         return ""
 
     async def _assign(
@@ -295,16 +336,18 @@ class RedesignService:
         taken = {normalise_label(name) for name, _ in classes}
 
         for name, note, count in standing.folders:
-            # A folder whose name the new top level also uses is that folder, already in
-            # its place. Moving it inside itself is the one answer that cannot be right.
-            if normalise_label(name) in taken:
+            folder = PurePosixPath(name)
+            # A folder the new top level names again IS that class, standing where it
+            # already stands. 행정조직 was drawn beside 행정·조직 and both survived,
+            # because the two are only equal once punctuation is taken out.
+            if normalise_label(folder.name) in taken:
                 continue
             answer = await self._llm.choose(
                 prompts.build_assignment(subject=name, note=note, count=count, classes=offered),
                 choices=(*by_handle, "STAY"),
             )
             if chosen := by_handle.get(answer.strip().upper()):
-                placed[chosen].append(PurePosixPath(name))
+                placed[chosen].append(folder)
 
         for path, description in standing.documents:
             answer = await self._llm.choose(
@@ -313,6 +356,29 @@ class RedesignService:
             )
             if chosen := by_handle.get(answer.strip().upper()):
                 placed[chosen].append(path)
+
+        # A folder inside another folder that is also moving travels with its parent, so
+        # asking for it twice would move it out from under itself.
+        moving = {item for items in placed.values() for item in items}
+        for name, items in placed.items():
+            placed[name] = [
+                item
+                for item in items
+                if not any(parent in moving for parent in item.parents if parent.parts)
+            ]
+
+        # Whether a class was a pass-through is a fact about what it collected: one
+        # folder, no documents, and a name that says what that folder already says. Three
+        # of those were built in one redesign -- 금융 및 금융소비자 over 금융업 및
+        # 금융소비자, holding 89 of its 90 documents in that single child.
+        for name, items in list(placed.items()):
+            if len(items) != 1:
+                continue
+            only = items[0].name
+            if not _says_the_same(name, only):
+                continue
+            log_trace("redesign.dropped", klass=name, folder=only, reason="one folder alone")
+            placed.pop(name)
 
         return {name: items for name, items in placed.items() if items}
 
