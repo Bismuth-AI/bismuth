@@ -28,6 +28,7 @@ from bismuth.services.deletion import DeletionService
 from bismuth.services.ingest import IngestService
 from bismuth.services.move import MoveService
 from bismuth.services.placement import PlacementService
+from bismuth.services.redesign import RedesignService
 from bismuth.services.subdivision import LibraryMaintenanceService
 from bismuth.services.transactor import Transactor
 
@@ -59,6 +60,8 @@ class Bismuth:
     deletion: DeletionService
     move: MoveService
     agent: AgentService
+    redesign: RedesignService
+    """The whole-collection pass. Asked for explicitly; never on the filing path."""
 
     def recover(self) -> int:
         """Roll back anything a crash left half-done. Returns the number of batches reversed."""
@@ -111,6 +114,15 @@ def build(
     maintenance = LibraryMaintenanceService(
         vault=vault, catalog=catalog, charters=charters, transactor=transactor, llm=model
     )
+    # Reading a folder as cards rather than as bytes already exists; the redesign pass
+    # borrows it rather than growing a second answer to the same question.
+    redesign = RedesignService(
+        vault=vault,
+        charters=charters,
+        transactor=transactor,
+        llm=model,
+        read_folder=maintenance.read,
+    )
 
     return Bismuth(
         settings=settings,
@@ -142,5 +154,6 @@ def build(
             vault=vault, catalog=catalog, transactor=transactor, charters=charters
         ),
         move=move,
+        redesign=redesign,
         agent=AgentService(model=chat, vault=vault, charters=charters),
     )

@@ -1728,6 +1728,14 @@ class LibraryMaintenanceService:
             )
         return operations
 
+    def read(self, folder: PurePosixPath, *, recursive: bool = False) -> _Contents:
+        """The folder as the model sees it: cards, not bytes.
+
+        Public because the whole-collection pass reads a folder the same way, and a
+        second answer to "what is in this folder" would drift from this one.
+        """
+        return self._read(folder, recursive=recursive)
+
     def _read(self, folder: PurePosixPath, *, recursive: bool = False) -> _Contents:
         """The folder as the model sees it, with a unique handle for every file."""
         contents = _Contents()

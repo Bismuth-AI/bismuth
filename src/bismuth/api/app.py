@@ -582,6 +582,28 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         return {"target": result.target, "moved": result.moved}
 
+    @app.post("/api/redesign")
+    async def redesign(engine: Engine) -> dict[str, Any]:
+        """Redraw the top of the tree from the whole collection, in one transaction.
+
+        The only operation that can see two folders on the same subject in different
+        branches, because it is the only one not asked from inside a folder.
+        """
+        try:
+            result = await engine.redesign.redesign()
+        except BismuthError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {
+            "applied": result.applied,
+            "question": result.question,
+            "axis": result.axis,
+            "classes": [{"name": name, "sign": sign} for name, sign in result.classes],
+            "moved_folders": list(result.moved_folders),
+            "moved_documents": result.moved_documents,
+            "unsound": list(result.unsound),
+            "refused": result.refused,
+        }
+
     @app.post("/api/organize/propose")
     async def organize_propose(body: OrganizeIn, engine: Engine) -> dict[str, Any]:
         """Let the agent inspect the vault and return a reorganisation plan. Moves nothing."""
