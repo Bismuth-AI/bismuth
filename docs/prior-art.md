@@ -89,8 +89,9 @@ drift 연구 쪽에서는 **클러스터 지름의 변화로 split과 merge를 �
 시스템이 제품인 이상(ADR-0001) 단일 계층이고, 그러면 개정은 남는다. 목표는 "개정이 필요 없는
 구조"가 아니라 **"개정이 감당 가능한 구조"**다.
 
-패싯은 검토하지 않았다. SPEC 수준의 질문이며 §5의 "여러 트리 동시 유지" 비목표와 정면으로
-맞닿아 있다.
+**결정: 패싯은 비목표다**(SPEC §5). 개정을 없애는 쪽이 아니라 감당 가능하게 만드는 쪽을
+골랐고, 둘은 같은 전제를 두고 다투므로 동시에 가질 수 없다. 읽는 쪽이 에이전트라는 것이
+그 선택을 싸게 만든다 — 아래 마지막 절이 그 이유다.
 
 - [Faceted Classification — The Discipline of Organizing](https://berkeley.pressbooks.pub/tdo4p/chapter/faceted-classification/)
 - [Ranganathan and the faceted classification theory](https://www.redalyc.org/journal/3843/384357586006/html/)

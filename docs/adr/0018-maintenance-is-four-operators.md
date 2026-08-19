@@ -122,7 +122,7 @@ that is navigable and honest, not one that is right.
 ## Revisit when
 
 - A drift schedule fires so often that maintenance dominates the run, or so rarely that
-  folders still freeze. Both are measurable in `scripts/guards.py`.
+  folders still freeze. Both are countable from a run's `timeline.jsonl`.
 - `split` and `merge` oscillate on the same folder across redesigns.
 - A collection outgrows a 75-document sample — that is, the sample stops producing the
   axis the whole corpus produces. Measured, not assumed.
