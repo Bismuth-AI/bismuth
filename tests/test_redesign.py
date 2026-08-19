@@ -36,7 +36,7 @@ async def _three_folders(engine: Bismuth, script: ScriptedModel) -> None:
 
 
 def _drawn_at(engine: Bismuth, documents: int) -> None:
-    """Say the top of this tree was last drawn when it held ``documents``."""
+    """Say this pass last drew the top of the tree when it held ``documents``."""
     from bismuth.domain.charter import Charter
 
     note = Charter(
@@ -46,6 +46,7 @@ def _drawn_at(engine: Bismuth, documents: int) -> None:
         split_basis="다루는 분야",
         split_question="이 문서의 다루는 분야는 무엇인가?",
         split_at_documents=documents,
+        redrawn_at_documents=documents,
     )
     (Path(engine.vault.root) / "_folder.md").write_text(note.to_markdown(), encoding="utf-8")
 
@@ -248,6 +249,9 @@ class TestThePropertyIsCheckedHereToo:
         await _three_folders(engine, script)
         _designed(script, "인문", "자연", "사회", axis="행정부처 관할")
         script.set_axis_fails()
+        # Filing those three already asked the schedule, and it answered yes: three
+        # folders stand here and this pass has never drawn any of them.
+        llm.calls.clear()
 
         await engine.redesign.redesign()
 
@@ -261,15 +265,44 @@ class TestWhenItRunsItself:
     """The product is that a person uploads documents and nothing else (SPEC 5), so a
     correction pass with a button and no schedule is not one."""
 
-    async def test_a_collection_nobody_has_drawn_yet_is_left_alone(
+    async def test_a_root_with_nothing_standing_on_it_is_left_alone(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         """The incremental path decides when a root first has enough to divide at all."""
-        await _three_folders(engine, script)
-
         assert not engine.redesign.due()
 
-    async def test_it_waits_for_the_collection_to_double(
+    async def test_the_first_draw_waits_for_a_top_level_to_exist(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Until this pass has drawn anything there is no count of its own to double, and
+        the one it would have to borrow is the one that keeps moving."""
+        await _three_folders(engine, script)
+
+        assert engine.redesign.due(), "three folders stand here and none was drawn by us"
+
+    async def test_the_clock_the_incremental_path_keeps_resetting_is_not_used(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Replayed against a real run, measuring against split_at_documents answered no
+        on all three hundred arrivals: the root divided eighteen times and reset it."""
+        await _three_folders(engine, script)
+        from bismuth.domain.charter import Charter
+
+        here = engine.vault.count_files(PurePosixPath(), recursive=True)
+        note = Charter(
+            path=PurePosixPath(),
+            title="/",
+            purpose="",
+            split_basis="다루는 분야",
+            split_question="이 문서의 다루는 분야는 무엇인가?",
+            split_at_documents=here,
+            redrawn_at_documents=max(1, here // 2),
+        )
+        (Path(engine.vault.root) / "_folder.md").write_text(note.to_markdown(), encoding="utf-8")
+
+        assert engine.redesign.due(), "our own record has doubled, whatever theirs says"
+
+    async def test_after_the_first_it_waits_for_the_collection_to_double(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         await _three_folders(engine, script)
@@ -280,6 +313,21 @@ class TestWhenItRunsItself:
 
         _drawn_at(engine, max(1, here // 2))
         assert engine.redesign.due(), "the collection has doubled since it was drawn"
+
+    async def test_drawing_it_records_when(self, engine: Bismuth, script: ScriptedModel) -> None:
+        """Otherwise it would be due again on the very next arrival, for ever."""
+        await _three_folders(engine, script)
+        _designed(script, "인문", "자연", "사회")
+        script.set_assigned({"문학": "C001", "역사": "C001", "과학": "C002"})
+
+        await engine.redesign.redesign()
+
+        note = engine.charters.load(PurePosixPath())
+        assert note is not None
+        assert note.redrawn_at_documents == engine.vault.count_files(
+            PurePosixPath(), recursive=True
+        )
+        assert not engine.redesign.due()
 
     async def test_an_arrival_that_crosses_it_redraws_the_top(
         self, engine: Bismuth, script: ScriptedModel
