@@ -346,3 +346,14 @@ class TestTheWizardDoesNotCarryAnEndpointForward:
         assert state["api_base"] is None
         assert state["native_schema"] is None
         assert json.loads(config.read_text(encoding="utf-8"))["api_headers"] == {}
+
+
+def test_redesign_reports_what_it_did(client: TestClient) -> None:
+    """The button has to be able to say "nothing changed" as clearly as "here is what did"."""
+    response = client.post("/api/redesign")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied"] is False
+    assert body["refused"]
+    assert body["classes"] == []
