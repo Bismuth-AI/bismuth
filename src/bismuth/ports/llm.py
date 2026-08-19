@@ -132,6 +132,30 @@ class LLM(Protocol):
         """
         ...
 
+    async def text(
+        self,
+        prompt: Prompt,
+        *,
+        max_tokens: int,
+        temperature: float = 0.0,
+    ) -> str:
+        """Return whatever the model wrote, with no format imposed on the way out.
+
+        For the one task that asks for several open fields at once. A JSON schema
+        compiled into a decoding grammar was measured to cost the answer rather than
+        shape it: over twelve documents it emptied a nested array in 21 of 36 replies and
+        cut eleven labels mid-word at the schema's own ceiling. The caller states the
+        shape in the prompt and parses what comes back, which is what a small model does
+        best (ADR-0013 reached the same conclusion for placement).
+
+        Unlike :meth:`choose`, the length is not known in advance, so the caller must
+        give a budget.
+
+        Raises:
+            ModelRequestError: if the model returned nothing usable.
+        """
+        ...
+
     async def choose(
         self,
         prompt: Prompt,

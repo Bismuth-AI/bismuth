@@ -18,6 +18,22 @@ def sidecar_name(document_filename: str) -> str:
     return f"{document_filename}.md"
 
 
+LABEL_MAX_CHARS = 40
+"""How long a topic or keyword may be. These are filing labels: they go on the card, into
+the sidecar, and into every placement prompt afterwards.
+
+Measured over 3,661 topics and 6,568 keywords from a real vault: the longest honest value
+is 40 characters and the 95th percentile is 23.
+"""
+
+NAME_MAX_CHARS = 60
+"""How long an entity name may be. Longer than a label because organisations have long
+legal names, short enough that a pasted author list is not one."""
+
+QUESTION_MAX_CHARS = 200
+"""How long a question may be. A sentence, not a paragraph."""
+
+
 class EntityKind(StrEnum):
     """The entity types Bismuth extracts."""
 

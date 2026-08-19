@@ -15,8 +15,17 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TypeVar
 
-from bismuth.domain.document import Coverage, DocumentCard, Entity, Extraction, Window
-from bismuth.domain.errors import StructuredOutputError
+from bismuth.domain.document import (
+    LABEL_MAX_CHARS,
+    NAME_MAX_CHARS,
+    QUESTION_MAX_CHARS,
+    Coverage,
+    DocumentCard,
+    Entity,
+    Extraction,
+    Window,
+)
+from bismuth.domain.errors import ModelRequestError, StructuredOutputError
 from bismuth.domain.progress import Progress, ProgressSink, Stage, report
 from bismuth.logging_setup import log_context, log_trace
 from bismuth.ports.llm import LLM
@@ -33,15 +42,14 @@ T = TypeVar("T")
 _EMPTY_SUMMARY = "—"
 _UNKNOWN_TYPE = "—"
 
-LABEL_MAX_CHARS = 40
-"""How long a topic or keyword may be. These are filing labels: they go on the card, into
-the sidecar, and into every placement prompt afterwards."""
+CARD_OUTPUT_TOKENS = 2048
+"""What one window may spend saying what it found.
 
-NAME_MAX_CHARS = 60
-"""How long an entity name may be. Longer than a label because organisations have long
-legal names, short enough that a pasted author list is not one."""
-
-QUESTION_MAX_CHARS = 200
+The only budget left on this path. Nothing constrains the shape of the reply any more --
+a grammar compiled from the schema was measured to empty the entities of 21 replies in 36
+and to cut eleven labels mid-word at its own ceiling (docs/prior-art.md), so the shape is
+asked for in the prompt and read back by :func:`~bismuth.prompts.cards.parse_card`.
+"""
 
 
 def _labels(values: Iterable[str], *, limit: int) -> tuple[list[str], list[str]]:
@@ -271,15 +279,16 @@ class CardService:
     ) -> DocumentCard:
         """The opening window. A failure here is fatal: there is no card to fall back on."""
         started = time.perf_counter()
-        draft = await self._llm.structured(
+        reply = await self._llm.text(
             card_prompts.build(filename=filename, window=window, truncated=truncated),
-            schema=card_prompts.CardDraft,
+            max_tokens=CARD_OUTPUT_TOKENS,
         )
+        draft = card_prompts.parse_card(reply)
         facts = _sift(
             topics=draft.topics,
             entities=draft.entities,
             keywords=draft.keywords,
-            questions=draft.answers_questions,
+            questions=draft.questions,
         )
         card = DocumentCard(
             title=draft.title.strip() or filename,
@@ -320,11 +329,12 @@ class CardService:
         """Revise the card with one further window."""
         started = time.perf_counter()
         try:
-            update = await self._llm.structured(
+            reply = await self._llm.text(
                 card_prompts.build_update(filename=filename, window=window, card=card, read=read),
-                schema=card_prompts.CardUpdate,
+                max_tokens=CARD_OUTPUT_TOKENS,
             )
-        except StructuredOutputError as exc:
+            update = card_prompts.parse_card(reply)
+        except (StructuredOutputError, ModelRequestError) as exc:
             # One unreadable window must not cost us the windows already read.
             log_trace(
                 "card.window_failed",
@@ -340,10 +350,10 @@ class CardService:
             return _Folded(card=card, found=(), contributed=False, failed=True)
 
         facts = _sift(
-            topics=update.new_topics,
-            entities=update.new_entities,
-            keywords=update.new_keywords,
-            questions=update.new_questions,
+            topics=update.topics,
+            entities=update.entities,
+            keywords=update.keywords,
+            questions=update.questions,
         )
         if facts.any_rejected:
             _report_rejects(document_id, filename, window, facts)
@@ -363,8 +373,8 @@ class CardService:
 
         revised = card.model_copy(
             update={
-                "title": (update.title or "").strip() or card.title,
-                "doc_type": (update.doc_type or "").strip() or card.doc_type,
+                "title": update.title.strip() or card.title,
+                "doc_type": update.doc_type.strip() or card.doc_type,
                 "summary": summary,
                 "topics": card.topics + tuple(topics),
                 "entities": card.entities + tuple(entities),
