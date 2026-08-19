@@ -150,22 +150,36 @@ class RedesignService:
         (SPEC.md 6.1).
         """
         here = self._count(PurePosixPath())
-        # A look that moved nothing is still a look. Kept for the life of the process
-        # only: a restart looks once more, which costs one call and cannot compound.
-        if self._looked_at > 0 and here < self._looked_at * 2:
-            return False
         root = self._charters.load(PurePosixPath())
-        if root is not None and root.redrawn_at_documents > 0:
-            return here >= root.redrawn_at_documents * 2
-        # Never drawn by this pass. The incremental path decides when a root has enough
-        # evidence to divide at all; once it has drawn enough of a top level for a
-        # question to be asked about, this pass can ask a better one.
+        redrawn = root.redrawn_at_documents if root is not None else 0
         standing = sum(
             1
             for child in self._vault.iter_folders()
             if child.parent == PurePosixPath() and child.parts and child.parts[0] != INBOX.parts[0]
         )
-        return standing >= MIN_CLASSES
+        # A look that moved nothing is still a look. Kept for the life of the process
+        # only: a restart looks once more, which costs one call and cannot compound.
+        if self._looked_at > 0 and here < self._looked_at * 2:
+            answer, why = False, "looked at this size already"
+        elif redrawn > 0:
+            answer = here >= redrawn * 2
+            why = "the collection has doubled" if answer else "not doubled since it was drawn"
+        else:
+            answer = standing >= MIN_CLASSES
+            why = "never drawn and a top level exists" if answer else "no top level to redraw"
+        # Traced on every arrival because a schedule that silently answers no is
+        # indistinguishable from one that is not wired up: this fired once where a replay
+        # of the same run says it should have fired five times, and nothing said why.
+        log_trace(
+            "redesign.due",
+            due=answer,
+            why=why,
+            documents=here,
+            looked_at=self._looked_at,
+            redrawn_at=redrawn,
+            standing=standing,
+        )
+        return answer
 
     async def redesign(self) -> Redesign:
         """Draw a new top level and move everything under it. One entry, or none."""
@@ -371,8 +385,12 @@ class RedesignService:
         # folder, no documents, and a name that says what that folder already says. Three
         # of those were built in one redesign -- 금융 및 금융소비자 over 금융업 및
         # 금융소비자, holding 89 of its 90 documents in that single child.
+        folder_paths = {PurePosixPath(name) for name, _, _ in standing.folders}
         for name, items in list(placed.items()):
-            if len(items) != 1:
+            # Only folders. A class that collected one document whose filename happens to
+            # repeat it has not built a pass-through: 공정거래 and 규제자유특구 were both
+            # dropped for holding a single PDF named after the law they are about.
+            if len(items) != 1 or items[0] not in folder_paths:
                 continue
             only = items[0].name
             if not _says_the_same(name, only):

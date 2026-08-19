@@ -581,6 +581,7 @@ class LibraryMaintenanceService:
         # in it. Run the other way round, 76 proposals in one round bought an audit before
         # code refused them for something it could see from the name alone.
         early = validate_names(
+            taken_anywhere=self._names_in_use(),
             axis=axis or emerging.axis.strip(),
             axis_question=(
                 charter.split_question
@@ -652,6 +653,7 @@ class LibraryMaintenanceService:
             ),
             ancestor_names=folder.parts,
             spent_axes=tuple(spent),
+            depth=len(folder.parts),
         )
         if not preview.accepted:
             log_trace(
@@ -1071,6 +1073,7 @@ class LibraryMaintenanceService:
             spent_axes=(
                 () if charter is not None and charter.divided else tuple(self._axes_above(folder))
             ),
+            depth=len(folder.parts),
         )
         if not validation.accepted:
             reasons = [problem.value for problem in validation.problems]
@@ -1521,6 +1524,7 @@ class LibraryMaintenanceService:
             siblings=tuple(name for name, _, _ in children),
             ancestor_names=folder.parts,
             into_existing=into is not None,
+            taken_anywhere=self._names_in_use(),
         )
         if not validation.accepted:
             log_trace(
@@ -1678,6 +1682,10 @@ class LibraryMaintenanceService:
             split_basis=plan.basis,
             split_question=plan.basis_question,
             split_at_documents=documents,
+            # Not ours to clear. The whole-collection pass records when it last drew the
+            # top of the tree here, and this note is rewritten on every root division --
+            # eighteen times in one run, which is how that record went missing.
+            redrawn_at_documents=charter.redrawn_at_documents if charter else 0,
         )
 
     def _stable_child_note_operations(
@@ -1735,6 +1743,25 @@ class LibraryMaintenanceService:
         second answer to "what is in this folder" would drift from this one.
         """
         return self._read(folder, recursive=recursive)
+
+    def _names_in_use(self, *, except_under: PurePosixPath | None = None) -> frozenset[str]:
+        """Every folder name standing in this vault, normalised.
+
+        A name in two branches is the one shape an agent cannot recover from: it opens the
+        first, judges the page, and never learns the second exists. Measured -- 금융 및
+        공정거래 stood at the root and again inside 산업 및 경제 분야 규제, holding 110
+        documents about finance between them.
+
+        ``except_under`` leaves out a subtree that is about to move or be replaced, so a
+        folder is not held to be a duplicate of itself.
+        """
+        return frozenset(
+            normalise_label(folder.name)
+            for folder in self._vault.iter_folders()
+            if folder.parts
+            and folder.parts[0] != INBOX.parts[0]
+            and not (except_under is not None and folder.is_relative_to(except_under))
+        )
 
     def _read(self, folder: PurePosixPath, *, recursive: bool = False) -> _Contents:
         """The folder as the model sees it, with a unique handle for every file."""
