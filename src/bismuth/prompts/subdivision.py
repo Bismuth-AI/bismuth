@@ -700,18 +700,20 @@ organised and narrows nothing.
 Sorting by what the documents are ABOUT does the opposite. A reader who wants one \
 subject opens one folder.
 
-FAILS if this folder is the ROOT and the property is one of those always-present ones \
--- the kind of document, its form, its issuer, its date, its language, or which single \
-law or work it is part of. At the root that property becomes the collection's first cut \
-and every subject is scattered evenly across it.
+FAILS, anywhere and at any depth, if the property is what the documents ARE rather than \
+what they are about: the kind of document, its form, its rank in a hierarchy of \
+instruments, who issued it, when, or in what language. These are known for almost every \
+document, so they fill a tree neatly and scatter each subject across all of it. A folder \
+that is already about a subject is not licensed to sort by form inside itself -- observed \
+live: a folder about 과학기술 divided on "법령의 법적 체계(법률 또는 시행령)" and grew \
+시행령, 부령 and 시행규칙 as its children, which tell a reader looking for a subject \
+nothing at all.
 
-Inside a folder that is already about something, the same property can be the right one. \
-A shelf holding one law's act, its decree and its rules is useful to a reader who has \
-already chosen the subject, and refusing it leaves the folder undivided for ever.
-
-Who issued the documents is the exception that stays dangerous everywhere. Inside a \
-subject folder they usually all have the same issuer -- that is often what made them a \
-subject -- so it draws one shelf and a remainder nobody can name.
+WHICH single law or work a document belongs to is the one exception, and only below the \
+root. At the root it gives every folder one document and hands the reader the same list \
+with a step in front of every entry. Inside a folder already about a subject, a shelf \
+holding one law's act, its decree and its rules is something a reader who has already \
+chosen that subject can use.
 
 FAILS if what is offered is not the NAME of a property at all: a sentence describing the \
 split, a comparison between two candidates, or an explanation of why it was chosen. A \
