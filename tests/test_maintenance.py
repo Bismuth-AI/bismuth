@@ -9,8 +9,11 @@ from bismuth.domain.maintenance import (
     ProposedClass,
     is_axis_label,
     legal_operators,
+    normalise_label,
     restates,
+    smallest_class,
     validate_grouping,
+    validate_names,
     validate_plan,
 )
 
@@ -331,3 +334,78 @@ class TestMovingUnderAFolderThatStandsHere:
         )
 
         assert GroupingProblem.TOOK_EVERY_FOLDER in result.problems
+
+
+class TestTheBarRisesWithDepth:
+    """Width costs almost nothing and depth compounds: at 90% per level, three levels are
+    73% and five are 59% (SPEC 3.3.1). The menu-depth literature has said breadth beats
+    depth since the 1980s, and one 300-document run went the other way -- 14 of 48 leaves
+    held two documents or fewer, one path five levels deep to separate two from two."""
+
+    def test_at_the_root_two_documents_are_a_class(self) -> None:
+        assert smallest_class(0) == 2
+
+    def test_five_levels_down_it_takes_six(self) -> None:
+        assert smallest_class(4) == 5
+        assert smallest_class(5) == 6
+
+    def test_a_deep_division_of_two_is_refused(self) -> None:
+        result = validate_plan(
+            axis="주제",
+            axis_question="어느 주제인가?",
+            groups=(ProposedClass(name="부보금융회사", document_ids=("a", "b")),),
+            available_document_ids=frozenset({"a", "b", "c", "d", "e", "f"}),
+            depth=4,
+        )
+
+        assert PlanProblem.SINGLE_DOCUMENT in result.problems
+
+    def test_the_same_division_at_the_root_is_fine(self) -> None:
+        result = validate_plan(
+            axis="주제",
+            axis_question="어느 주제인가?",
+            groups=(ProposedClass(name="부보금융회사", document_ids=("a", "b")),),
+            available_document_ids=frozenset({"a", "b", "c", "d", "e", "f"}),
+        )
+
+        assert result.accepted
+
+
+class TestOneNameBelongsToOnePlace:
+    """An agent opens the first folder of a name, judges the page, and never learns the
+    second exists. Measured: 금융 및 공정거래 stood at the root and again inside 산업 및
+    경제 분야 규제, holding 110 documents about finance between them."""
+
+    def test_a_class_named_after_a_folder_elsewhere_is_refused(self) -> None:
+        result = validate_names(
+            axis="주제",
+            axis_question="어느 주제인가?",
+            names=("금융 및 공정거래",),
+            taken_anywhere=frozenset({normalise_label("금융 및 공정거래")}),
+        )
+
+        assert PlanProblem.NAME_STANDS_ELSEWHERE in result.problems
+
+    def test_a_shelf_named_after_a_folder_elsewhere_is_refused(self) -> None:
+        result = validate_grouping(
+            name="금융 및 공정거래",
+            axis="주제",
+            members=("가맹사업", "하도급거래"),
+            siblings=("가맹사업", "하도급거래", "전통시장"),
+            taken_anywhere=frozenset({normalise_label("금융 및 공정거래")}),
+        )
+
+        assert GroupingProblem.NAME_STANDS_ELSEWHERE in result.problems
+
+    def test_moving_into_a_folder_that_stands_there_is_not_a_duplicate(self) -> None:
+        """That is the merge, and the name is supposed to be taken."""
+        result = validate_grouping(
+            name="금융",
+            axis="주제",
+            members=("가상자산", "벤처투자"),
+            siblings=("금융", "가상자산", "벤처투자", "소비자"),
+            into_existing=True,
+            taken_anywhere=frozenset({normalise_label("금융")}),
+        )
+
+        assert result.accepted

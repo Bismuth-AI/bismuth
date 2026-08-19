@@ -1370,3 +1370,27 @@ class TestTheQuestionCoversTheFolder:
         prompt = subdivision_prompts.build_axis(shared="같은 주제", rest=[])
 
         assert "WHAT THE REST OF THE FOLDER IS ABOUT:" not in prompt.user
+
+
+class TestTheOtherClockIsNotWiped:
+    """The whole-collection pass records when it last drew the top of the tree on the
+    root note, and this service rewrites that note on every root division -- eighteen
+    times in one 300-document run, which is how the record went missing and the pass
+    stopped firing."""
+
+    async def test_a_root_division_keeps_what_the_redesign_wrote(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await _fill(engine, script, 6)
+        root = engine.charters.load(PurePosixPath()) or Charter(path=PurePosixPath(), title="/")
+        (Path(engine.vault.root) / "_folder.md").write_text(
+            root.model_copy(update={"redrawn_at_documents": 42}).to_markdown(), encoding="utf-8"
+        )
+        _emerges(script, "문학", "문학 자료", ids[:2])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        after = engine.charters.load(PurePosixPath())
+        assert after is not None
+        assert after.divided, "the division did happen"
+        assert after.redrawn_at_documents == 42
