@@ -106,6 +106,7 @@ class PlanProblem(StrEnum):
     NAME_IS_A_SCHEMA_FIELD = "class name is a field of the schema, not an answer"
     AXIS_AS_NAME = "class name repeats the axis instead of answering it"
     ANCESTOR_NAME = "class carries an ancestor's name"
+    NAME_STANDS_ELSEWHERE = "a folder of that name already stands somewhere else"
     DUPLICATE_NAME = "duplicate class name"
     UNKNOWN_DOCUMENT = "unknown document"
     DUPLICATE_DOCUMENT = "document assigned to more than one class"
@@ -141,6 +142,7 @@ def validate_names(
     names: tuple[str, ...],
     ancestor_names: tuple[str, ...] = (),
     spent_axes: tuple[str, ...] = (),
+    taken_anywhere: frozenset[str] = frozenset(),
 ) -> PlanValidation:
     """The contracts that read only the axis and the proposed names.
 
@@ -177,6 +179,8 @@ def validate_names(
             problems.append(PlanProblem.ANCESTOR_NAME)
         if key in seen:
             problems.append(PlanProblem.DUPLICATE_NAME)
+        if key in taken_anywhere:
+            problems.append(PlanProblem.NAME_STANDS_ELSEWHERE)
         seen.add(key)
     return PlanValidation(tuple(dict.fromkeys(problems)))
 
@@ -192,6 +196,7 @@ def validate_plan(
     require_complete: bool = False,
     allow_single_document: bool = False,
     allow_no_division: bool = False,
+    depth: int = 0,
 ) -> PlanValidation:
     """Validate a complete proposal before the first filesystem operation is built."""
     problems: list[PlanProblem] = []
@@ -246,7 +251,7 @@ def validate_plan(
             problems.append(PlanProblem.DUPLICATE_DOCUMENT)
         if not members:
             problems.append(PlanProblem.NO_MEMBERS)
-        elif len(members) == 1 and not allow_single_document:
+        elif len(members) < smallest_class(depth) and not allow_single_document:
             problems.append(PlanProblem.SINGLE_DOCUMENT)
         for document_id in members:
             if document_id not in available_document_ids:
@@ -259,7 +264,11 @@ def validate_plan(
     # the reader pays an extra level that rules nothing out. Measured on 300 documents as
     # three folders holding a single document and a single child. SINGLE_DOCUMENT already
     # says a class of one document is not a class; the remainder deserves the same rule.
-    if not allow_no_division and len(groups) == 1 and len(available_document_ids - assigned) < 2:
+    if (
+        not allow_no_division
+        and len(groups) == 1
+        and len(available_document_ids - assigned) < smallest_class(depth)
+    ):
         problems.append(PlanProblem.NO_DIVISION)
     if require_complete and assigned != available_document_ids:
         problems.append(PlanProblem.UNASSIGNED_DOCUMENT)
@@ -274,6 +283,7 @@ class GroupingProblem(StrEnum):
     NAME_IS_A_PATH = "the broader name contains a path separator"
     NAME_IS_A_SCHEMA_FIELD = "the broader name is a field of the answer schema"
     NAME_EXISTS = "a sub-folder of that name already stands here"
+    NAME_STANDS_ELSEWHERE = "a folder of that name already stands somewhere else"
     SHELF_IS_NOT_HERE = "the folder they would move into does not stand here"
     NAME_IS_A_MEMBER = "the broader name is one of the folders it would contain"
     MEMBER_RESTATES_NAME = "a folder moving onto the shelf says the shelf's name again"
@@ -301,6 +311,7 @@ def validate_grouping(
     siblings: tuple[str, ...],
     ancestor_names: tuple[str, ...] = (),
     into_existing: bool = False,
+    taken_anywhere: frozenset[str] = frozenset(),
 ) -> GroupingValidation:
     """Whether existing sub-folders may be stood together under one broader name.
 
@@ -335,6 +346,8 @@ def validate_grouping(
 
     sibling_keys = {normalise_label(item) for item in siblings}
     member_keys = {normalise_label(item) for item in members}
+    if not into_existing and key in taken_anywhere:
+        problems.append(GroupingProblem.NAME_STANDS_ELSEWHERE)
     if key in member_keys:
         problems.append(GroupingProblem.NAME_IS_A_MEMBER)
     elif into_existing and key not in sibling_keys:
@@ -446,6 +459,26 @@ MIN_CLASS_DOCUMENTS = 2
 MIN_REMAINDER_DOCUMENTS = 2
 """What has to be left behind for a class to have divided anything (``NO_DIVISION``)."""
 
+
+def smallest_class(depth: int) -> int:
+    """How many documents a class must hold to be worth a level, at this depth.
+
+    A level costs the reader a correct guess, and that guess sits behind every guess
+    above it: at 90% per level, three levels are 73% and five are 59% (SPEC.md 3.3.1).
+    Width costs almost nothing by comparison -- fifty names in one listing is one tool
+    call and one judgement, and the menu-depth literature has said breadth beats depth
+    since the 1980s.
+
+    So the bar rises as the tree deepens rather than being one number everywhere. At the
+    root a class of two earns its place; five levels down it needs six. Measured on 300
+    documents without this: 14 of 48 leaves held two documents or fewer, and one path
+    reached five levels to separate two documents from two others.
+
+    Self-relative to the tree's own shape, not to a corpus.
+    """
+    return max(MIN_CLASS_DOCUMENTS, depth + 1)
+
+
 MIN_GROUPING_MEMBERS = 2
 """Fewer than two folders on a new shelf is a rename (``TOO_FEW_MEMBERS``)."""
 
@@ -459,6 +492,9 @@ class FolderShape:
     """
 
     loose_documents: int
+    depth: int = 0
+    """How many levels below the root this folder sits. The bar for a new class rises
+    with it, because a level here costs a guess behind every guess above."""
     children: tuple[str, ...] = ()
     ancestor_names: tuple[str, ...] = ()
     siblings: tuple[str, ...] = ()
@@ -483,8 +519,9 @@ def legal_operators(shape: FolderShape) -> frozenset[Operator]:
     legal = {Operator.KEEP}
 
     # One class comes out at a time, so both halves of the division have to survive it:
-    # the class itself, and the pile it leaves behind.
-    if shape.loose_documents >= MIN_CLASS_DOCUMENTS + MIN_REMAINDER_DOCUMENTS:
+    # the class itself, and the pile it leaves behind. Both bars rise with depth, because
+    # a level deep in the tree sits behind every guess above it.
+    if shape.loose_documents >= smallest_class(shape.depth) * 2:
         legal.add(Operator.CREATE)
 
     # Two or more folders move onto the shelf and at least one stays beside it, or the
