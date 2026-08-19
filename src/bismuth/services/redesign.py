@@ -314,7 +314,18 @@ class RedesignService:
         return standing
 
     def _count(self, folder: PurePosixPath) -> int:
-        return sum(1 for _ in self._vault.iter_files(folder, recursive=True))
+        """Documents the collection holds, which is not the same as files in the vault.
+
+        The inbox holds what has been uploaded and not yet filed, and a bulk upload puts
+        everything there at once. Counting it made the schedule see a complete collection
+        before a single document had been placed: it looked once, wrote 300 down, and its
+        own doubling rule then blocked the remaining 287 arrivals.
+        """
+        return sum(
+            1
+            for path in self._vault.iter_files(folder, recursive=True)
+            if not path.parts or path.parts[0] != INBOX.parts[0]
+        )
 
     # -- deciding ----------------------------------------------------------------
 

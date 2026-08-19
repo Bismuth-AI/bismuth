@@ -151,6 +151,9 @@ class LibraryMaintenanceService:
         self._llm = llm
         self._barren: dict[tuple[str, str], int] = {}
         self._merged: dict[str, int] = {}
+        self._declined: dict[tuple[str, str], set[str]] = {}
+        """Documents that answered STAY to a folder's signs, keyed by those signs: a new
+        sign invalidates the memory, and nothing else needs to."""
         self._dissolved: dict[tuple[str, str], int] = {}
 
     def _asked_before(self, folder: PurePosixPath, name: str, *, documents: int) -> bool:
@@ -689,6 +692,15 @@ class LibraryMaintenanceService:
     ) -> prompts.ExistingAssignments:
         merged: dict[str, list[str]] = {}
         handles = [f"F{index:03d}" for index in range(1, len(contents.children) + 1)]
+        # What the signs looked like when a document last said STAY. A document that did
+        # not belong behind any of these will not belong behind the same ones tomorrow,
+        # and the pile it sits in only grows: 8,416 of these questions placed twelve
+        # documents in one run, because every arrival asked the whole pile again.
+        signs = _signs_fingerprint(contents.children)
+        already = self._declined.setdefault((str(folder), signs), set())
+        asking = [line for line in contents.lines if line[0] not in already]
+        if not asking:
+            return prompts.ExistingAssignments(groups=[])
 
         async def decide(document: tuple[str, str]) -> tuple[str, str]:
             choice = await self._llm.choose(
@@ -703,9 +715,11 @@ class LibraryMaintenanceService:
             )
             return document[0], choice
 
-        for document_id, choice in await _bounded_gather(contents.lines, decide):
+        for document_id, choice in await _bounded_gather(asking, decide):
             if choice in handles:
                 merged.setdefault(choice, []).append(document_id)
+            else:
+                already.add(document_id)
         return prompts.ExistingAssignments(
             groups=[
                 prompts.ExistingAssignment(folder_id=folder_id, document_ids=document_ids)
@@ -2024,6 +2038,15 @@ def _vocabulary(contents: _Contents, *, taken: set[str], most: int = 40) -> list
             continue
         counted.update(topic.strip() for topic in topics if topic.strip())
     return [topic for topic, _ in counted.most_common(most)]
+
+
+def _signs_fingerprint(children: list[tuple[str, str]]) -> str:
+    """What a routing question offered, as one comparable string.
+
+    The answer a document gave depends on the signs it was shown and on nothing else, so
+    the memory of that answer lasts exactly as long as they do.
+    """
+    return "\u0000".join(f"{name}\u0001{note}" for name, note in sorted(children))
 
 
 def _describe(card: DocumentCard, *, with_type: bool = True) -> str:
