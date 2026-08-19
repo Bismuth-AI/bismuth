@@ -229,6 +229,7 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
   <span class="hstat"><b id="hs-docs">0</b> 문서 · <b id="hs-folders">0</b> 폴더<span id="hs-inbox"></span></span>
   <span class="hstat spend hidden" id="hs-spend" title="이 볼트에 지금까지 쓴 양 (.bismuth/spend.jsonl)"></span>
   <button class="ghost" id="btn-organize">구조 정리</button>
+  <button class="ghost" id="btn-redesign" title="장서 전체를 보고 최상위를 다시 그립니다. 한 번에 적용되고, 기록에서 한 번에 되돌립니다.">전체 재설계</button>
   <button class="ghost" id="btn-history">기록</button>
   <button class="ghost" id="btn-settings">설정</button>
 </header>
@@ -312,6 +313,12 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
       <button id="s-save" class="primary">저장하고 시작</button>
     </div>
   </div>
+</div></div>
+
+<!-- redesign -->
+<div id="redesign" class="overlay hidden"><div class="card">
+  <div style="display:flex;align-items:center"><h2 style="flex:1">전체 재설계</h2><button class="ghost" id="r-close">닫기</button></div>
+  <div id="r-body"></div>
 </div></div>
 
 <!-- organize -->
@@ -1255,6 +1262,38 @@ function renderPlan(plan) {
       await refresh();
     } catch (err) { alert(err.message); btn.disabled = false; btn.textContent = "이대로 적용"; }
   };
+}
+
+/* ---------------- redesign ---------------- */
+
+/* The one operation not asked from inside a folder, so it is the only one that can see
+   two folders on the same subject in different branches. It applies in a single batch:
+   there is nothing to approve first, and one entry in 기록 undoes all of it. */
+$("btn-redesign").addEventListener("click", async () => {
+  if (!confirm("장서 전체를 보고 최상위 폴더를 다시 그립니다.\n\n폴더는 통째로 움직이고 문서는 자기 폴더에 그대로 있습니다. 한 번에 적용되며, 마음에 안 들면 [기록]에서 한 번에 되돌릴 수 있습니다.\n\n진행할까요?")) return;
+  $("redesign").classList.remove("hidden");
+  $("r-body").innerHTML = `<div class="empty">장서 전체를 보고 최상위를 다시 그리는 중… (폴더 수만큼 걸립니다)</div>`;
+  try {
+    const result = await api("/redesign", { method: "POST" });
+    renderRedesign(result);
+    if (result.applied) await refresh();
+  } catch (err) { $("r-body").innerHTML = `<div class="err">${esc(err.message)}</div>`; }
+});
+$("r-close").addEventListener("click", () => $("redesign").classList.add("hidden"));
+
+function renderRedesign(result) {
+  if (!result.applied) {
+    $("r-body").innerHTML = `<div class="note-box">아무것도 바꾸지 않았습니다.<br><span class="sm">${esc(result.refused || "적용할 것이 없습니다.")}</span></div>`;
+    return;
+  }
+  const classes = result.classes || [];
+  $("r-body").innerHTML = `
+    <div class="note-box">${esc(result.question || "")}<br>
+      <span class="sm">폴더 ${(result.moved_folders || []).length}개, 문서 ${result.moved_documents || 0}건이 옮겨졌습니다. [기록]에서 한 번에 되돌릴 수 있습니다.</span></div>
+    <div class="sect">새 최상위 ${classes.length}개</div>
+    ${classes.map((c) => `<div class="doc"><div class="t"><span class="dest">${esc(c.name)}/</span></div><div class="sm">${esc(c.sign || "")}</div></div>`).join("")}
+    ${(result.unsound || []).length ? `<div class="sect">이름이 내용을 말해주지 않는 폴더 ${result.unsound.length}개</div>
+      <div class="note-box sm">${result.unsound.map(esc).join(", ")}</div>` : ""}`;
 }
 
 /* ---------------- history ---------------- */
