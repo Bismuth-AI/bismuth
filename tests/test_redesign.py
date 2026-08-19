@@ -35,6 +35,21 @@ async def _three_folders(engine: Bismuth, script: ScriptedModel) -> None:
         await add(engine, f"{name}.txt", f"{name} 문서 내용")
 
 
+def _drawn_at(engine: Bismuth, documents: int) -> None:
+    """Say the top of this tree was last drawn when it held ``documents``."""
+    from bismuth.domain.charter import Charter
+
+    note = Charter(
+        path=PurePosixPath(),
+        title="/",
+        purpose="",
+        split_basis="다루는 분야",
+        split_question="이 문서의 다루는 분야는 무엇인가?",
+        split_at_documents=documents,
+    )
+    (Path(engine.vault.root) / "_folder.md").write_text(note.to_markdown(), encoding="utf-8")
+
+
 class TestDrawingANewTopLevel:
     async def test_folders_move_whole_under_the_new_names(
         self, engine: Bismuth, script: ScriptedModel
@@ -177,3 +192,105 @@ class TestTheCostIsBoundedByFolders:
         # The folder holding four documents was asked exactly once, like every other.
         deep = [p for p in asked if "WHAT IS BEING PLACED: 문학" in p.user]
         assert len(deep) == 1
+
+
+class TestAClassThatOnlyWrapsAFolder:
+    """SPEC 6.2 counts pass-through folders and wants none. The first real redesign made
+    three: 금융 및 금융소비자 was drawn over 금융업 및 금융소비자 and held 89 of its 90
+    documents in that one child."""
+
+    async def test_a_name_that_says_a_standing_folder_again_is_refused(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _three_folders(engine, script)
+        _designed(script, "문학 및 예술", "자연", "사회")
+
+        result = await engine.redesign.redesign()
+
+        assert not result.applied
+        assert "문학" in result.refused
+        assert not (engine.vault.root / "자연").exists()
+
+    async def test_names_that_share_no_words_with_what_stands_here_are_fine(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _three_folders(engine, script)
+        _designed(script, "인문", "자연", "사회")
+        script.set_assigned({"문학": "C001", "역사": "C001", "과학": "C002"})
+
+        result = await engine.redesign.redesign()
+
+        assert result.applied
+
+
+class TestThePropertyIsCheckedHereToo:
+    """The pass drew 행정부처 관할 -- who administers the document -- which every division
+    inside a folder refuses. The names were subjects; the question was not, and the
+    question governs every later division of the root."""
+
+    async def test_a_refused_property_moves_nothing(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _three_folders(engine, script)
+        _designed(script, "인문", "자연", "사회")
+        script.set_assigned({"문학": "C001", "역사": "C001", "과학": "C002"})
+        script.set_axis_fails()
+
+        result = await engine.redesign.redesign()
+
+        assert not result.applied
+        assert not (engine.vault.root / "인문").exists()
+
+    async def test_the_second_ask_is_told_what_was_turned_down(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Refusing outright would leave the collection undrawn until it doubles again."""
+        await _three_folders(engine, script)
+        _designed(script, "인문", "자연", "사회", axis="행정부처 관할")
+        script.set_axis_fails()
+
+        await engine.redesign.redesign()
+
+        asked = llm.prompts_for(redesign_prompts.Design)
+        assert len(asked) == 2, "asked twice at most, and the second knows why"
+        assert "행정부처 관할" in asked[-1].user
+        assert "TURNED DOWN" in asked[-1].user
+
+
+class TestWhenItRunsItself:
+    """The product is that a person uploads documents and nothing else (SPEC 5), so a
+    correction pass with a button and no schedule is not one."""
+
+    async def test_a_collection_nobody_has_drawn_yet_is_left_alone(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """The incremental path decides when a root first has enough to divide at all."""
+        await _three_folders(engine, script)
+
+        assert not engine.redesign.due()
+
+    async def test_it_waits_for_the_collection_to_double(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _three_folders(engine, script)
+        here = engine.vault.count_files(PurePosixPath(), recursive=True)
+
+        _drawn_at(engine, here)
+        assert not engine.redesign.due(), "a top level drawn over this many is not stale"
+
+        _drawn_at(engine, max(1, here // 2))
+        assert engine.redesign.due(), "the collection has doubled since it was drawn"
+
+    async def test_an_arrival_that_crosses_it_redraws_the_top(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Nobody pressed anything: a document arrived and the tree was redrawn."""
+        await _three_folders(engine, script)
+        _drawn_at(engine, 1)
+        _designed(script, "인문", "자연", "사회")
+        script.set_assigned({"문학": "C001", "역사": "C001", "과학": "C002"})
+        script.set(placement_prompts.PlacementDecision, place_at(""))
+
+        await add(engine, "새문서.txt", "새로 올린 문서")
+
+        assert (engine.vault.root / "인문/문학").is_dir()
