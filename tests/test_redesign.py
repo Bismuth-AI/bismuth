@@ -384,3 +384,22 @@ class TestWhenItRunsItself:
         await add(engine, "새문서.txt", "새로 올린 문서")
 
         assert (engine.vault.root / "인문/문학").is_dir()
+
+
+class TestTheInboxIsNotTheCollection:
+    """A bulk upload stages every file in the inbox before the first is filed. Counting
+    those made the schedule see a full collection on arrival one: it looked once, wrote
+    300 down, and its own doubling rule blocked the remaining 287 arrivals."""
+
+    async def test_staged_files_do_not_count_as_a_collection(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _three_folders(engine, script)
+        engine.redesign._looked_at = 0  # type: ignore[attr-defined]
+        _drawn_at(engine, engine.vault.count_files(PurePosixPath(), recursive=True))
+        assert not engine.redesign.due(), "nothing has doubled yet"
+
+        for index in range(40):
+            engine.ingest.stage(f"아직 처리 안 된 문서 {index}".encode(), f"staged{index}.txt")
+
+        assert not engine.redesign.due(), "forty files waiting to be read are not filed"

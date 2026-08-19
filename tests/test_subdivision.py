@@ -1394,3 +1394,56 @@ class TestTheOtherClockIsNotWiped:
         assert after is not None
         assert after.divided, "the division did happen"
         assert after.redrawn_at_documents == 42
+
+
+def _routing(prompt) -> bool:  # type: ignore[no-untyped-def]
+    """A loose document being offered the signs that already stand in its folder.
+
+    Shares the F### handle shape with a placement descent, so the descent marker is what
+    tells them apart -- the same rule the scripted model routes on.
+    """
+    return "\n  [F" in prompt.user and "CURRENT FOLDER:" not in prompt.user
+
+
+class TestRoutingRemembersWhatItAsked:
+    """8,416 routing questions placed twelve documents in one run -- 0.14% -- because
+    every arrival asked the whole loose pile again, and the pile only grew."""
+
+    async def test_a_document_that_said_stay_is_not_asked_again(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 8)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
+        await engine.subdivision.consider(PurePosixPath())
+        first = [p for p in llm.prompts_for(None) if _routing(p)]
+        assert first, "routing did run once"
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        again = [p for p in llm.prompts_for(None) if _routing(p)]
+        assert not again
+
+    async def test_a_new_sign_makes_it_ask_again(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The answer depended on the signs it was shown, so the memory lasts as long as
+        they do and not one arrival longer."""
+        ids = await _fill(engine, script, 8)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
+        await engine.subdivision.consider(PurePosixPath())
+        llm.calls.clear()
+        # A second shelf goes up, so every document is looking at a different list.
+        _emerges(script, "과학", "과학 자료", ids[2:4])
+        await engine.subdivision.consider(PurePosixPath())
+        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        again = [p for p in llm.prompts_for(None) if _routing(p)]
+        assert again
