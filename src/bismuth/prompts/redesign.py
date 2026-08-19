@@ -97,13 +97,21 @@ class Design(BaseModel):
 
 
 def build_design(
-    *, vocabulary: list[str], folders: list[tuple[str, str, int]], language: str = ""
+    *,
+    vocabulary: list[str],
+    folders: list[tuple[str, str, int]],
+    refused: list[str] | None = None,
+    language: str = "",
 ) -> Prompt:
     """The one call that decides the top of the tree.
 
     Vocabulary rather than documents: the same evidence the axis step reads, for the same
     reason. Shown titles, that step chose 시행규칙이 규정한 거래 유형 -- the kind of
     instrument, read straight off the names.
+
+    ``refused`` carries the properties this collection has already been turned down for.
+    The first real redesign answered 행정부처 관할 -- who administers the document -- and
+    a second ask that does not know that is likely to answer it again in other words.
     """
     listed = ", ".join(vocabulary)
     standing = (
@@ -113,11 +121,17 @@ def build_design(
         )
         or "  (none)"
     )
+    turned_down = (
+        "\n\nPROPERTIES ALREADY TURNED DOWN FOR THIS COLLECTION -- do not offer them "
+        "again, nor anything that asks the same thing in other words:\n  " + "\n  ".join(refused)
+        if refused
+        else ""
+    )
     return Prompt(
         system=_DESIGN_SYSTEM,
         user=in_their_language(
             f"WHAT THIS COLLECTION IS ABOUT ({len(vocabulary)} subjects, most common "
-            f"first):\n{listed}\n\nWHAT STANDS AT THE TOP NOW:\n{standing}",
+            f"first):\n{listed}\n\nWHAT STANDS AT THE TOP NOW:\n{standing}{turned_down}",
             language,
         ),
     )
