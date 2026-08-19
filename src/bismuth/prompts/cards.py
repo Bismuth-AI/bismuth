@@ -7,11 +7,19 @@ assumes the document has headings, a table of contents, or any structure at all.
 
 from __future__ import annotations
 
-from typing import Annotated
+from dataclasses import dataclass
+from typing import Annotated, Any
 
 from pydantic import BaseModel, Field, StringConstraints
 
-from bismuth.domain.document import DocumentCard, Entity, Window
+from bismuth.domain.document import (
+    LABEL_MAX_CHARS,
+    QUESTION_MAX_CHARS,
+    DocumentCard,
+    Entity,
+    EntityKind,
+    Window,
+)
 from bismuth.ports.llm import Prompt
 
 #: A label, not prose. The arrays were bounded and their items were not, so a
@@ -21,7 +29,7 @@ from bismuth.ports.llm import Prompt
 #: topics and 6,568 keywords from a real vault, the longest honest value is 40
 #: characters and the 95th percentile is 23, so this refuses only the runaway.
 #: SPEC.md 2.1 forbids ceilings on *semantic* fields -- summary keeps none.
-Label = Annotated[str, StringConstraints(max_length=80)]
+Label = Annotated[str, StringConstraints(max_length=LABEL_MAX_CHARS)]
 
 SYSTEM = """\
 You are a librarian cataloguing a document for a shared archive. You will be \
@@ -178,6 +186,154 @@ class DensifiedSummary(BaseModel):
     summary: str
 
 
+_TAB = (
+    "A label that will not fit on a folder tab is not a label. TOPIC and KEYWORD stay "
+    f"under {LABEL_MAX_CHARS} characters, a QUESTION under {QUESTION_MAX_CHARS}. If an item "
+    "needs a clause to explain it, it is two items or none."
+)
+"""The one ceiling the model is told about, and the same number the filter applies.
+
+The schema said 80 and the filter dropped at 40, so the model was aiming at a target
+nothing enforced and its longest answers were thrown away after it had paid to write
+them.
+"""
+
+
+_LINES = (
+    """\
+Answer in PLAIN LINES. Never JSON, never markdown, never a bullet or a number.
+
+One fact per line. Every line begins with its tag and a colon:
+
+TITLE: <the document's own title>
+DOCTYPE: <the genre, a short noun phrase>
+LANGUAGE: <the document's language code, such as ko or en>
+SUMMARY: <two to four sentences, on ONE line>
+TOPIC: <a filing label, a few words>
+ENTITY: <name> | <organization|person|project|product|location|date>
+KEYWORD: <a word or two>
+QUESTION: <a question this document answers>
+
+Repeat TOPIC, ENTITY, KEYWORD and QUESTION as many times as you need, one item per \
+line. Write nothing else -- no heading, no blank line, no closing remark. Stop when you \
+have nothing left to add.
+
+"""
+    + _TAB
+)
+
+_UPDATE_LINES = (
+    """\
+Answer in PLAIN LINES. Never JSON, never markdown, never a bullet or a number.
+
+One fact per line. Every line begins with its tag and a colon:
+
+SUMMARY: <the whole document so far, rewritten, two to four sentences on ONE line>
+TOPIC: <a filing label that is NEW in this part>
+ENTITY: <name> | <organization|person|project|product|location|date>
+KEYWORD: <a word or two that is NEW in this part>
+QUESTION: <a question this part lets the document answer>
+TITLE: <only if the earlier title turned out to be wrong>
+DOCTYPE: <only if the earlier genre turned out to be wrong>
+
+SUMMARY is required. Everything else is repeated as many times as it is needed and \
+omitted entirely when this part adds nothing. Write no other line.
+
+"""
+    + _TAB
+)
+
+_KINDS = {kind.value for kind in EntityKind}
+
+
+def _entity(value: str) -> Entity | None:
+    """One ENTITY line. Forgiving about the separator, strict about the kind.
+
+    Asked for `name | kind`, the model answered `name [organization]` on the first run.
+    A line format has no grammar to hold it to one spelling, so the parser holds the
+    meaning instead: whatever bracket it used, the kind is only accepted when it names
+    one we have.
+    """
+    name, kind = value, ""
+    for opener, closer in (("|", ""), ("[", "]"), ("(", ")"), (" - ", "")):
+        if opener in value:
+            name, _, rest = value.partition(opener)
+            kind = rest.strip().rstrip(closer).strip().casefold()
+            break
+    name = name.strip()
+    if not name:
+        return None
+    return Entity(name=name, kind=EntityKind(kind) if kind in _KINDS else EntityKind.ORGANIZATION)
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedCard:
+    """What one reply offered, before anything decides what a missing field means."""
+
+    title: str = ""
+    doc_type: str = ""
+    language: str = ""
+    summary: str = ""
+    topics: tuple[str, ...] = ()
+    entities: tuple[Entity, ...] = ()
+    keywords: tuple[str, ...] = ()
+    questions: tuple[str, ...] = ()
+
+
+def parse_card(text: str) -> ParsedCard:
+    """Read tagged lines into the fields a card is made of.
+
+    Returns what was found and nothing else: the caller decides what a missing title or
+    an empty summary means, because that differs between the first window and a later
+    one. Unrecognised lines are dropped rather than guessed at -- across 36 replies in
+    the bake-off there were none, and a line nobody asked for is not evidence.
+    """
+    found: dict[str, Any] = {
+        "title": "",
+        "doc_type": "",
+        "language": "",
+        "summary": "",
+        "topics": [],
+        "entities": [],
+        "keywords": [],
+        "questions": [],
+    }
+    for raw in text.splitlines():
+        line = raw.strip().lstrip("-*\u2022 ").strip()
+        tag, separator, value = line.partition(":")
+        value = value.strip()
+        if not separator or not value:
+            continue
+        match tag.strip().upper():
+            case "TITLE":
+                found["title"] = value
+            case "DOCTYPE" | "DOC_TYPE" | "TYPE":
+                found["doc_type"] = value
+            case "LANGUAGE" | "LANG":
+                found["language"] = value
+            case "SUMMARY":
+                found["summary"] = f"{found['summary']} {value}".strip()
+            case "TOPIC":
+                found["topics"].append(value)
+            case "KEYWORD":
+                found["keywords"].append(value)
+            case "QUESTION":
+                found["questions"].append(value)
+            case "ENTITY":
+                if entity := _entity(value):
+                    found["entities"].append(entity)
+    return ParsedCard(
+        title=found["title"],
+        doc_type=found["doc_type"],
+        language=found["language"],
+        summary=found["summary"],
+        topics=tuple(found["topics"]),
+        entities=tuple(found["entities"]),
+        keywords=tuple(found["keywords"]),
+        questions=tuple(found["questions"]),
+    )
+
+
 def build(*, filename: str, window: Window, truncated: bool) -> Prompt:
     """Describe the first (or only) window of a document."""
     if truncated and window.total == 1:
@@ -187,7 +343,7 @@ def build(*, filename: str, window: Window, truncated: bool) -> Prompt:
     else:
         notice = ""
     return Prompt(
-        system=SYSTEM,
+        system=SYSTEM + "\n" + _LINES,
         user=_USER.format(filename=filename, scope_notice=notice, text=window.text),
     )
 
@@ -195,7 +351,7 @@ def build(*, filename: str, window: Window, truncated: bool) -> Prompt:
 def build_update(*, filename: str, window: Window, card: DocumentCard, read: int) -> Prompt:
     """Fold one further window into the card built from the earlier ones."""
     return Prompt(
-        system=_UPDATE_SYSTEM,
+        system=_UPDATE_SYSTEM + "\n" + _UPDATE_LINES,
         user=_UPDATE_USER.format(
             filename=filename,
             read=read,

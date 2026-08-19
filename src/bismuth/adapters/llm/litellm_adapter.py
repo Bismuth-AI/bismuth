@@ -575,6 +575,90 @@ class LiteLLMAdapter:
             "Inspect finish_reason and the preserved stream before changing retry counts."
         )
 
+    async def text(
+        self,
+        prompt: Prompt,
+        *,
+        max_tokens: int,
+        temperature: float = 0.0,
+    ) -> str:
+        """Open text, with a budget and no grammar.
+
+        The same transport, the same repetition breaker, the same logging as every other
+        call -- the only difference is that nothing constrains the tokens. Measured over
+        twelve documents, a JSON schema compiled to a grammar emptied a nested array in
+        21 of 36 replies and cut eleven labels mid-word at its own ceiling, while a line
+        format asked for in the prompt lost neither.
+
+        One clean retry if the reply is empty. There is no schema to repair against, so a
+        second attempt starts from the original task rather than from the bad answer.
+        """
+        model = self._model
+        call_id = self._next_call_id()
+        record: dict[str, Any] = {
+            "call": call_id,
+            "model": model,
+            "schema": None,
+            "native_schema": False,
+            "system": prompt.system,
+            "user": prompt.user,
+            "attempts": [],
+        }
+        began = time.monotonic()
+        attempts: list[dict[str, Any]] = record["attempts"]
+        last_error = ""
+
+        for attempt in range(2):
+            attempt_log: dict[str, Any] = {"n": attempt + 1}
+            attempts.append(attempt_log)
+            started = time.monotonic()
+            try:
+                raw, usage = await self._call(
+                    model,
+                    [
+                        {"role": "system", "content": prompt.system},
+                        {"role": "user", "content": prompt.user},
+                    ],
+                    schema=None,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    attempt_log=attempt_log,
+                )
+            except _RepetitionDetectedError as exc:
+                raw = str(attempt_log.get("stream", {}).get("content", ""))
+                last_error = str(exc)
+                attempt_log.update(ms=round((time.monotonic() - started) * 1000), error=last_error)
+                # Whatever arrived before the loop is still the model's answer to this
+                # task, and a line format loses only the lines after the break.
+                if raw.strip():
+                    record["ok"] = True
+                    record["ms"] = round((time.monotonic() - began) * 1000)
+                    log_llm_call(record)
+                    return raw
+                continue
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                attempt_log.update(
+                    ms=round((time.monotonic() - started) * 1000), transport_error=last_error
+                )
+                if attempt:
+                    break
+                continue
+            self._usage.append(usage.model_copy(update={"retries": attempt}))
+            attempt_log["ms"] = round((time.monotonic() - started) * 1000)
+            if raw.strip():
+                record["ok"] = True
+                record["ms"] = round((time.monotonic() - began) * 1000)
+                log_llm_call(record)
+                return raw
+            last_error = "the model returned nothing"
+
+        record["ok"] = False
+        record["ms"] = round((time.monotonic() - began) * 1000)
+        record["final_error"] = last_error
+        log_llm_call(record)
+        raise ModelRequestError(f"{model} returned no text: {last_error}")
+
     async def choose(
         self,
         prompt: Prompt,

@@ -7,7 +7,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from bismuth.domain.errors import StructuredOutputError
+from bismuth.domain.errors import ModelRequestError, StructuredOutputError
 from bismuth.ports.llm import CURRENT_DOCUMENT, Prompt, Usage
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -65,6 +65,32 @@ class FakeLLM:
                 f"asked for {schema.__name__}"
             )
         return response
+
+    async def text(
+        self,
+        prompt: Prompt,
+        *,
+        max_tokens: int,
+        temperature: float = 0.0,
+    ) -> str:
+        """Whatever the script offers, as a string. ``None`` is the open-text key."""
+        del max_tokens, temperature
+        self.calls.append((prompt, None))
+        self._usage.append(
+            Usage(
+                model="fake/model",
+                document_id=CURRENT_DOCUMENT.get(""),
+                input_tokens=0,
+                output_tokens=0,
+            )
+        )
+        if self._handler is not None:
+            response = self._handler(prompt, None)
+        elif self._queue:
+            response = self._queue.pop(0)
+        else:
+            raise ModelRequestError("FakeLLM ran out of scripted responses (wanted open text)")
+        return response if isinstance(response, str) else str(response)
 
     async def choose(
         self,
