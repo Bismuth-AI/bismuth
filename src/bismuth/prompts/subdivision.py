@@ -700,9 +700,18 @@ organised and narrows nothing.
 Sorting by what the documents are ABOUT does the opposite. A reader who wants one \
 subject opens one folder.
 
-FAILS if this folder is the root, or has no boundary yet, and the property is one of \
-those always-present ones -- the kind of document, its form, its issuer, its date, its \
-language, or which single law or work it is part of.
+FAILS if this folder is the ROOT and the property is one of those always-present ones \
+-- the kind of document, its form, its issuer, its date, its language, or which single \
+law or work it is part of. At the root that property becomes the collection's first cut \
+and every subject is scattered evenly across it.
+
+Inside a folder that is already about something, the same property can be the right one. \
+A shelf holding one law's act, its decree and its rules is useful to a reader who has \
+already chosen the subject, and refusing it leaves the folder undivided for ever.
+
+Who issued the documents is the exception that stays dangerous everywhere. Inside a \
+subject folder they usually all have the same issuer -- that is often what made them a \
+subject -- so it draws one shelf and a remainder nobody can name.
 
 FAILS if what is offered is not the NAME of a property at all: a sentence describing the \
 split, a comparison between two candidates, or an explanation of why it was chosen. A \
@@ -1007,6 +1016,12 @@ of them that the list actually gets shorter.
 
 **Not everything.** Some folders must stay where they are, or you have renamed this \
 folder rather than tidied it, and the reader gains a level that rules nothing out.
+
+**The shelf may be a folder that already stands here.** If one of these folders is \
+already the broader class the others belong under, name it: they move inside it and no \
+new level is created at all. That is the cheapest answer available to you -- the reader \
+loses a name from the list and gains nothing to click through. A folder cannot stand \
+inside itself, so do not also list it among the ones that move.
 
 **The broader name must be a real class, not a container word.** It is the answer to the \
 same question the folders under it answer, one step up. If the only name that covers them \
