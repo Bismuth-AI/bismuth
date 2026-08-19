@@ -109,6 +109,38 @@ def _subset_shown(prompt: Prompt) -> list[str]:
     return shown[:-1] if len(shown) > 2 else shown
 
 
+def _as_lines(card: BaseModel) -> str:
+    """Render a scripted ``CardDraft``/``CardUpdate`` in the line format the reader now asks for.
+
+    Tests script the card as an object because that is what they assert about. The
+    contract on the wire changed, not what a test means, so the object is written out as
+    the model would have written it and parsed back by the same code production uses.
+    """
+    lines: list[str] = []
+    for tag, field in (("TITLE", "title"), ("DOCTYPE", "doc_type"), ("LANGUAGE", "language")):
+        if value := (getattr(card, field, "") or "").strip():
+            lines.append(f"{tag}: {value}")
+    lines.append(f"SUMMARY: {getattr(card, 'summary', '')}")
+    for tag, field in (
+        ("TOPIC", "topics"),
+        ("KEYWORD", "keywords"),
+        ("QUESTION", "answers_questions"),
+    ):
+        for item in getattr(card, field, ()) or ():
+            lines.append(f"{tag}: {item}")
+    for tag, field in (
+        ("TOPIC", "new_topics"),
+        ("KEYWORD", "new_keywords"),
+        ("QUESTION", "new_questions"),
+    ):
+        for item in getattr(card, field, ()) or ():
+            lines.append(f"{tag}: {item}")
+    for field in ("entities", "new_entities"):
+        for entity in getattr(card, field, ()) or ():
+            lines.append(f"ENTITY: {entity.name} | {entity.kind.value}")
+    return "\n".join(lines)
+
+
 class ScriptedModel:
     """FakeLLM handler that returns a scripted response keyed by schema."""
 
@@ -231,6 +263,8 @@ class ScriptedModel:
         self._routes = dict(by_document)
 
     def __call__(self, prompt: Prompt, schema: type[BaseModel] | None) -> BaseModel | str:
+        if schema is None and (card := self._card(prompt)) is not None:
+            return card
         if schema is None and (choice := self._plain_choice(prompt)) is not None:
             return choice
         try:
@@ -239,6 +273,19 @@ class ScriptedModel:
         except KeyError as exc:  # pragma: no cover
             wanted = schema.__name__ if schema is not None else "PlainChoice"
             raise AssertionError(f"nothing scripted for {wanted}") from exc
+
+    def _card(self, prompt: Prompt) -> str | None:
+        """Reading a document is open text now, so it arrives with no schema to key on."""
+        if "PLAIN LINES" not in prompt.system:
+            return None
+        scripted = self.responses[
+            card_prompts.CardUpdate
+            if "SUMMARY is required" in prompt.system
+            else card_prompts.CardDraft
+        ]
+        if callable(scripted):
+            scripted = scripted(prompt, None)
+        return scripted if isinstance(scripted, str) else _as_lines(scripted)
 
     def _plain_choice(self, prompt: Prompt) -> str | None:
         """Route one closed choice to its own script.

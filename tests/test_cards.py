@@ -9,6 +9,7 @@ import pytest
 from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.domain.document import Entity, EntityKind, Extraction, Section
 from bismuth.domain.errors import StructuredOutputError
+from bismuth.ports.llm import Prompt
 from bismuth.prompts import cards as card_prompts
 from bismuth.services.cards import (
     LABEL_MAX_CHARS,
@@ -17,6 +18,21 @@ from bismuth.services.cards import (
 )
 
 from .conftest import ScriptedModel
+
+
+def _reads(llm: FakeLLM, *, later: bool = False) -> list[Prompt]:
+    """The prompts that asked a window to be read.
+
+    Reading is open text now (no schema to key on), so the two kinds are told apart by
+    the contract each one carries: only the update contract makes SUMMARY compulsory.
+    """
+    return [
+        prompt
+        for prompt, schema in llm.calls
+        if schema is None
+        and "PLAIN LINES" in prompt.system
+        and ("SUMMARY is required" in prompt.system) is later
+    ]
 
 
 def _extraction(text: str, *, truncated: bool = False) -> Extraction:
@@ -120,7 +136,7 @@ class TestDescribe:
         assert not coverage.whole_document
 
         # The point of striding: the end of the document is read, not just the top.
-        read = [p.user for p in llm.prompts_for(card_prompts.CardUpdate)]
+        read = [p.user for p in _reads(llm, later=True)]
         last = coverage.windows_total
         assert f"This is part {last}/{last}" in read[-1]
         assert f"This is part 2/{last}" not in read[0]
@@ -130,7 +146,7 @@ class TestDescribe:
         script = ScriptedModel()
 
         def flaky(prompt, schema):  # type: ignore[no-untyped-def]
-            if schema is card_prompts.CardUpdate:
+            if "SUMMARY is required" in prompt.system:
                 calls["n"] += 1
                 if calls["n"] == 2:
                     raise StructuredOutputError("scripted failure")
@@ -148,22 +164,20 @@ class TestDescribe:
         await CardService(llm, context_chars=10_000).describe(
             _extraction("짧고 온전한 문서"), filename="짧은.pdf"
         )
-        sent = llm.prompts_for(card_prompts.CardDraft)[0].user
+        sent = _reads(llm)[0].user
         assert "NOTE:" not in sent
 
     async def test_a_cut_off_document_says_so_in_the_prompt(self, llm: FakeLLM) -> None:
         await CardService(llm, context_chars=10_000).describe(
             _extraction("잘린 문서", truncated=True), filename="잘린.pdf"
         )
-        assert (
-            "stopped before the end of the file" in llm.prompts_for(card_prompts.CardDraft)[0].user
-        )
+        assert "stopped before the end of the file" in _reads(llm)[0].user
 
     async def test_later_windows_are_announced_as_parts(self, llm: FakeLLM) -> None:
         await CardService(llm, context_chars=100).describe(
             _extraction(_long(500)), filename="긴문서.pdf"
         )
-        assert "part 1 of" in llm.prompts_for(card_prompts.CardDraft)[0].user
+        assert "part 1 of" in _reads(llm)[0].user
 
     async def test_extraction_truncation_is_still_reported(self, llm: FakeLLM) -> None:
         card = await CardService(llm, context_chars=10_000).describe(
