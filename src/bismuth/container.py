@@ -61,7 +61,8 @@ class Bismuth:
     move: MoveService
     agent: AgentService
     redesign: RedesignService
-    """The whole-collection pass. Asked for explicitly; never on the filing path."""
+    """The whole-collection pass. Runs itself when the collection has doubled since the
+    top of it was last drawn; the button is a way to ask for it early."""
 
     def recover(self) -> int:
         """Roll back anything a crash left half-done. Returns the number of batches reversed."""
@@ -148,6 +149,7 @@ def build(
             charters=charters,
             transactor=transactor,
             subdivision=maintenance,
+            redesign=redesign,
             extraction_max_chars=settings.extraction_max_chars,
         ),
         deletion=DeletionService(

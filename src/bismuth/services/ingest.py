@@ -24,6 +24,7 @@ from bismuth.ports.vault import INBOX, Vault
 from bismuth.services.cards import CardService
 from bismuth.services.charters import ROOT_NOTE, CharterService
 from bismuth.services.placement import PlacementService
+from bismuth.services.redesign import RedesignService
 from bismuth.services.sidecar import read_sidecar_meta, render_sidecar
 from bismuth.services.subdivision import LibraryMaintenanceService
 from bismuth.services.transactor import Transactor
@@ -74,9 +75,11 @@ class IngestService:
         charters: CharterService,
         transactor: Transactor,
         subdivision: LibraryMaintenanceService | None = None,
+        redesign: RedesignService | None = None,
         extraction_max_chars: int = 200_000,
     ) -> None:
         self._subdivision = subdivision
+        self._redesign = redesign
         self._vault = vault
         self._catalog = catalog
         self._parsers = parsers
@@ -289,6 +292,27 @@ class IngestService:
                     error=f"{type(exc).__name__}: {exc}",
                 )
         clock.mark("subdivide")
+
+        # A folder can only ever fix itself, and the top of the tree is nobody's folder.
+        # Asked here because this is where documents arrive and so where the collection
+        # doubles; the schedule inside decides whether anything happens, and on all but a
+        # handful of arrivals nothing does.
+        if self._redesign is not None and self._redesign.due():
+            try:
+                drawn = await self._redesign.redesign()
+                if drawn.applied:
+                    structure_changed = True
+                    say(Stage.DIVIDED, note=f"전체 재설계 → {len(drawn.classes)}개")
+            except Exception as exc:
+                # Same contract as maintenance above: filing is committed and journalled
+                # independently, and a redesign that failed rolled itself back.
+                logger.exception("redesign failed after filing %s", source.filename)
+                log_trace(
+                    "redesign.failed",
+                    filename=source.filename,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            clock.mark("redesign")
 
         # Avoid an O(collection) sidecar scan on ordinary ingests. It is needed only
         # when maintenance actually moved some part of the tree.

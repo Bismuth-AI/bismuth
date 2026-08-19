@@ -24,6 +24,10 @@ speak for them.
 1960s ran out of budget mid-project and were left with one collection in two schemes.
 Every move here is in a single journal entry: it applies completely or the vault is
 exactly as it was.
+
+Nobody asks for it. The product is that a person uploads documents and nothing else
+(SPEC.md 5), so a correction pass with a button and no schedule is not one. :meth:`due`
+is that schedule.
 """
 
 from __future__ import annotations
@@ -36,12 +40,13 @@ from typing import Any
 from bismuth.domain.charter import CHARTER_FILENAME, Charter
 from bismuth.domain.document import sidecar_name
 from bismuth.domain.journal import Actor, JournalEntry, Operation, OperationKind
-from bismuth.domain.maintenance import normalise_label, validate_names
+from bismuth.domain.maintenance import normalise_label, restates, validate_names
 from bismuth.domain.paths import sanitize_segment
 from bismuth.logging_setup import log_context, log_trace
 from bismuth.ports.llm import LLM
 from bismuth.ports.vault import INBOX, Vault
 from bismuth.prompts import redesign as prompts
+from bismuth.prompts import subdivision as subdivision_prompts
 from bismuth.services.charters import CharterService
 from bismuth.services.transactor import Transactor
 
@@ -82,7 +87,11 @@ class _Standing:
 
 
 class RedesignService:
-    """The whole-collection pass. Asked for explicitly; never on the filing path."""
+    """The whole-collection pass.
+
+    :meth:`due` puts it on the same self-relative schedule as everything else here, and
+    ingest asks that question on every arrival. It answers yes on a handful of them.
+    """
 
     def __init__(
         self,
@@ -101,6 +110,27 @@ class RedesignService:
         # than as bytes, and that reading is not this pass's business to reinvent.
         self._read = read_folder
 
+    def due(self) -> bool:
+        """Whether the top of the tree is worth drawing again.
+
+        The same doubling every other schedule in this program uses, applied to the
+        collection instead of to one folder: a top level decided over a hundred documents
+        is not worth redrawing at a hundred and one. The count it is measured against is
+        written by whatever last drew the top -- this pass, or the first division of the
+        root before it ever ran.
+
+        Scheduling, not judgement: asking late costs a late fix, never a wrong tree
+        (SPEC.md 6.1), and the ratio is to the collection's own history so nothing here
+        is tuned to a corpus.
+        """
+        root = self._charters.load(PurePosixPath())
+        drawn_at = root.split_at_documents if root is not None else 0
+        if drawn_at <= 0:
+            # Never drawn. The incremental path is still building the first tree, and it
+            # is the one that decides when a root has enough evidence to divide at all.
+            return False
+        return self._count(PurePosixPath()) >= drawn_at * 2
+
     async def redesign(self) -> Redesign:
         """Draw a new top level and move everything under it. One entry, or none."""
         with log_context(stage="redesign"):
@@ -108,24 +138,9 @@ class RedesignService:
             if len(standing.folders) + len(standing.documents) < MIN_CLASSES:
                 return Redesign(refused="there is not enough standing here to redraw")
 
-            design = await self._llm.structured(
-                prompts.build_design(
-                    vocabulary=standing.vocabulary,
-                    folders=standing.folders,
-                    language=standing.language,
-                ),
-                schema=prompts.Design,
-            )
-            log_trace(
-                "redesign.designed",
-                axis=design.axis,
-                question=design.question,
-                classes=[item.name for item in design.classes],
-                unsound=design.unsound,
-                folders=len(standing.folders),
-                documents=len(standing.documents),
-                vocabulary=len(standing.vocabulary),
-            )
+            design = await self._design(standing)
+            if design is None:
+                return Redesign(refused="no property this collection could be drawn on")
             if refusal := self._refuse(design, standing):
                 log_trace("redesign.refused", reason=refusal, axis=design.axis)
                 return Redesign(refused=refusal, unsound=tuple(design.unsound))
@@ -141,6 +156,56 @@ class RedesignService:
                     refused="nothing found a place under the new top level",
                 )
             return self._apply(design, classes, placed, standing)
+
+    async def _design(self, standing: _Standing) -> prompts.Design | None:
+        """The one call that decides the top of the tree, held to the same property
+        contract as every division inside a folder.
+
+        Asked twice at most. The first real redesign came back with 행정부처 관할 -- who
+        administers the document -- and drew good subject names under a question that
+        would have made every later root class a ministry. Refusing outright would leave
+        the collection undrawn until it doubles again, so the second ask is told what was
+        turned down.
+        """
+        refused: list[str] = []
+        for attempt in range(2):
+            design = await self._llm.structured(
+                prompts.build_design(
+                    vocabulary=standing.vocabulary,
+                    folders=standing.folders,
+                    refused=refused,
+                    language=standing.language,
+                ),
+                schema=prompts.Design,
+            )
+            log_trace(
+                "redesign.designed",
+                attempt=attempt + 1,
+                axis=design.axis,
+                question=design.question,
+                classes=[item.name for item in design.classes],
+                unsound=design.unsound,
+                folders=len(standing.folders),
+                documents=len(standing.documents),
+                vocabulary=len(standing.vocabulary),
+            )
+            if not design.axis.strip() or not design.classes:
+                return design
+            verdict = await self._llm.choose(
+                subdivision_prompts.build_axis_check(
+                    path="",
+                    axis=design.axis,
+                    axis_question=design.question,
+                    name=design.classes[0].name,
+                    spent=[],
+                ),
+                choices=("FAILS", "HOLDS"),
+            )
+            if verdict.strip().upper() != "FAILS":
+                return design
+            log_trace("redesign.axis_refused", attempt=attempt + 1, axis=design.axis)
+            refused.append(design.axis.strip())
+        return None
 
     # -- reading -----------------------------------------------------------------
 
@@ -192,6 +257,15 @@ class RedesignService:
         standing_keys = {normalise_label(name) for name, _, _ in standing.folders}
         if standing_keys and {normalise_label(name) for name in names} <= standing_keys:
             return "the new top level is the folders that already stand here"
+        # A class that only restates a folder already standing here will collect that one
+        # folder and nothing else, which is a click that rules nothing out. Measured on
+        # the first real redesign: 금융 및 금융소비자 was drawn over 금융업 및 금융소비자
+        # and held 89 of its 90 documents in that one child, and two more classes wrapped
+        # a single folder each.
+        for name in names:
+            for standing_name, _, _ in standing.folders:
+                if restates(name, standing_name) or restates(standing_name, name):
+                    return f"{name} only says again what {standing_name} already says"
         return ""
 
     async def _assign(
