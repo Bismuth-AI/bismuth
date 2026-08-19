@@ -1157,3 +1157,70 @@ class TestMovingIntoAFolderThatAlreadyStands:
 
         assert (engine.vault.root / "역사").is_dir()
         assert not (engine.vault.root / "문학/역사").exists()
+
+
+class TestAShelfCanDivideAfterAll:
+    """A folder built by grouping carries its parent's property on purpose -- the folders
+    standing in it are answers to it. Holding that against the ancestors refused every
+    class the shelf went on to propose: 76 refusals in one run, and 77 documents left
+    loose in a shelf that could not divide."""
+
+    async def _three_shelves(self, engine: Bismuth, script: ScriptedModel) -> None:
+        for name in ("문학", "과학", "역사"):
+            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"])
+            await engine.subdivision.consider(PurePosixPath())
+
+    async def test_a_settled_property_is_not_held_against_its_own_ancestors(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _fill(engine, script, 10)
+        script.set(
+            subdivision_prompts.Grouping,
+            subdivision_prompts.Grouping(emerged=True, name="인문", sign="문학과 역사"),
+        )
+        script.set_shelved(["문학", "역사"])
+        await self._three_shelves(engine, script)
+        assert (engine.vault.root / "인문").is_dir()
+        # Grouping moves folders, so the shelf starts with no loose pile of its own; what
+        # arrives afterwards is what it could grow a class from.
+        script.set(placement_prompts.PlacementDecision, place_at("인문"))
+        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
+        for index in range(4):
+            await add(engine, f"more{index}.txt", f"추가 문서 {index}")
+        # The shelf carries the root's property, which is exactly the one a new class
+        # inside it has to answer.
+        _emerges(script, "철학", "철학 자료", ["D0001", "D0002"], axis="주제")
+
+        await engine.subdivision.consider(PurePosixPath("인문"))
+
+        assert (engine.vault.root / "인문/철학").is_dir()
+
+
+class TestAShelfIsNotDissolvedTheMomentItIsBuilt:
+    """Merge and split are reverse operators, so on unchanged evidence they undo each
+    other. Measured: a shelf holding 52 files was grouped at 03:30:52 and dissolved at
+    03:31:05, and the same happened again fourteen seconds apart elsewhere in the run."""
+
+    async def _three_shelves(self, engine: Bismuth, script: ScriptedModel) -> None:
+        for name in ("문학", "과학", "역사"):
+            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"])
+            await engine.subdivision.consider(PurePosixPath())
+
+    async def test_the_reverse_waits_for_the_evidence_to_move(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _fill(engine, script, 8)
+        script.set(
+            subdivision_prompts.Grouping,
+            subdivision_prompts.Grouping(emerged=True, name="인문", sign="문학과 역사"),
+        )
+        script.set_shelved(["문학", "역사"])
+        await self._three_shelves(engine, script)
+        assert (engine.vault.root / "인문").is_dir()
+        # Everything answers DISSOLVE from here on.
+        script.set_dissolve(["인문"])
+
+        await engine.subdivision.consider(PurePosixPath("인문"))
+
+        assert (engine.vault.root / "인문").is_dir()
+        assert (engine.vault.root / "인문/문학").is_dir()
