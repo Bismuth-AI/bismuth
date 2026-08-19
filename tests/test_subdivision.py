@@ -1224,3 +1224,81 @@ class TestAShelfIsNotDissolvedTheMomentItIsBuilt:
 
         assert (engine.vault.root / "인문").is_dir()
         assert (engine.vault.root / "인문/문학").is_dir()
+
+
+class TestABroaderNameIsCheckedBeforeAnythingMoves:
+    """Grouping is the one operator that invents a name without choosing a property, so
+    nothing the axis check refuses ever reached it. Unchecked it put 283 of 300 documents
+    behind a single folder called 개별 법률 및 시행령 -- true of almost every document in
+    the collection, and so excluding nothing."""
+
+    async def _three_shelves(self, engine: Bismuth, script: ScriptedModel) -> None:
+        for name in ("문학", "과학", "역사"):
+            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"])
+            await engine.subdivision.consider(PurePosixPath())
+
+    async def test_a_container_name_moves_nothing(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _fill(engine, script, 8)
+        script.set(
+            subdivision_prompts.Grouping,
+            subdivision_prompts.Grouping(emerged=True, name="개별 자료", sign="여러 자료"),
+        )
+        script.set_shelved(["문학", "역사"])
+        script.set_shelf_is_container()
+
+        await self._three_shelves(engine, script)
+
+        assert not (engine.vault.root / "개별 자료").exists()
+        assert (engine.vault.root / "문학").is_dir()
+
+    async def test_it_is_asked_before_the_folders_are(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The membership loop costs one call per folder standing here."""
+        await _fill(engine, script, 8)
+        script.set(
+            subdivision_prompts.Grouping,
+            subdivision_prompts.Grouping(emerged=True, name="개별 자료", sign="여러 자료"),
+        )
+        script.set_shelf_is_container()
+
+        await self._three_shelves(engine, script)
+
+        assert not [p for p in llm.prompts_for(None) if "THE BROADER SHELF:" in p.user]
+
+
+class TestGroupingDoesNotRebuildWhatSplittingTookDown:
+    """The other direction of the reverse-operator rule. Measured: the same shelf was
+    grouped and dissolved fifteen times in one run, twice within three seconds, because
+    one document arriving between the two answers counted as the evidence moving."""
+
+    async def _three_shelves(self, engine: Bismuth, script: ScriptedModel) -> None:
+        for name in ("문학", "과학", "역사"):
+            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"])
+            await engine.subdivision.consider(PurePosixPath())
+
+    async def test_a_dissolved_shelf_is_not_built_again(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _fill(engine, script, 8)
+        await self._three_shelves(engine, script)
+        # Dissolve one, which is what the reverse operator is for.
+        script.set_dissolve(["문학"])
+        await engine.subdivision._consider_split(  # type: ignore[attr-defined]
+            PurePosixPath("문학"), filename="", on_progress=None
+        )
+        assert not (engine.vault.root / "문학").exists()
+        # And now grouping asks for it back, by name. It is only asked after a division
+        # succeeds, so one has to succeed.
+        script.set(
+            subdivision_prompts.Grouping,
+            subdivision_prompts.Grouping(emerged=True, name="문학", sign="문학 자료"),
+        )
+        script.set_shelved(["과학", "역사"])
+        _emerges(script, "시가", "시가 자료", ["D0001", "D0002"])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert not (engine.vault.root / "문학").exists()

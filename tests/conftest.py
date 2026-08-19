@@ -176,6 +176,7 @@ class ScriptedModel:
         self._shelved: set[str] = set()
         self._dissolve: set[str] = set()
         self._axis_fails = False
+        self._shelf_is_container = False
 
     def set(self, schema: type[BaseModel], response: object) -> None:
         key = None if schema is placement_prompts.PlacementDecision else schema
@@ -199,6 +200,10 @@ class ScriptedModel:
     def set_axis_fails(self, fails: bool = True) -> None:
         """Script the one check on the property a folder is about to be fixed on."""
         self._axis_fails = fails
+
+    def set_shelf_is_container(self, container: bool = True) -> None:
+        """Script the one check on a broader name before folders are moved under it."""
+        self._shelf_is_container = container
 
     def set_shelved(self, folder_names: list[str]) -> None:
         """Script which existing sub-folders move onto a proposed broader shelf."""
@@ -226,6 +231,10 @@ class ScriptedModel:
         an existing sign, dissolving a level, moving onto a shelf, checking a property.
         One shared slot sent them all to the placement chooser.
         """
+        if "THE BROADER NAME: " in prompt.user:
+            # Whether a broader name is a class or a word for what the documents are.
+            # CLASS by default, so the tests about grouping itself keep working.
+            return "CONTAINER" if self._shelf_is_container else "CLASS"
         if "QUESTION IT ASKS: " in prompt.user:
             # The property a folder is about to be divided on. HOLDS by default, so the
             # tests that are about something else keep the trees their assertions expect.
