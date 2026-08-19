@@ -89,6 +89,10 @@ class _Contents:
     languages: list[str] = field(default_factory=list)
     """The language each card reported, so a prompt can name it back."""
 
+    topics: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
+    """What each card says its document is about, for the one question that has to cover
+    the whole folder rather than the handful that prompted it."""
+
     subjects: list[tuple[str, str]] = field(default_factory=list)
     """The same documents without their doc_type, for the one question that must not be
     answered with it. Grouping by the kind of instrument a document is fills a tree
@@ -777,7 +781,11 @@ class LibraryMaintenanceService:
         settled_axis, question = axis, axis_question
         if not axis:
             asked = await self._llm.structured(
-                prompts.build_axis(shared=chosen.shared, language=language),
+                prompts.build_axis(
+                    shared=chosen.shared,
+                    rest=_vocabulary(self._read(folder), taken=members),
+                    language=language,
+                ),
                 schema=prompts.Axis,
             )
             settled_axis, question = asked.axis.strip(), asked.axis_question.strip()
@@ -1742,6 +1750,7 @@ class LibraryMaintenanceService:
                 subject = f"current={relative} | {subject}"
             contents.documents.append((document_id, description, path))
             contents.subjects.append((document_id, subject))
+            contents.topics.append((document_id, tuple(card.topics)))
             if script := _writing_system(card.title):
                 contents.scripts.append(script)
             if code := card.language.strip():
@@ -1965,6 +1974,21 @@ def _guard_refused(guard: str, *, folder: PurePosixPath, **fields: object) -> No
     not protecting the design, it is the design.
     """
     log_trace("guard.refused", guard=guard, folder=str(folder), **fields)
+
+
+def _vocabulary(contents: _Contents, *, taken: set[str], most: int = 40) -> list[str]:
+    """What the folder is about, minus the documents already spoken for.
+
+    Topics rather than titles, deliberately: shown titles, the axis step read the kind of
+    instrument off them. Ordered by how many documents carry each one, so a question that
+    covers the front of this list covers most of the folder.
+    """
+    counted: Counter[str] = Counter()
+    for document_id, topics in contents.topics:
+        if document_id in taken:
+            continue
+        counted.update(topic.strip() for topic in topics if topic.strip())
+    return [topic for topic, _ in counted.most_common(most)]
 
 
 def _describe(card: DocumentCard, *, with_type: bool = True) -> str:
