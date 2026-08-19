@@ -147,6 +147,7 @@ class LibraryMaintenanceService:
         self._llm = llm
         self._barren: dict[tuple[str, str], int] = {}
         self._merged: dict[str, int] = {}
+        self._dissolved: dict[tuple[str, str], int] = {}
 
     def _asked_before(self, folder: PurePosixPath, name: str, *, documents: int) -> bool:
         """Whether this name already bought nothing here, on evidence barely different.
@@ -1232,14 +1233,17 @@ class LibraryMaintenanceService:
         if charter is None or not charter.managed or self._has_protected_descendant(folder):
             return False
         # Merge and split are reverse operators, so on unchanged evidence they undo each
-        # other: this shelf was built by grouping 13 seconds before it was dissolved, and
-        # again 14 seconds later elsewhere in the same run. The reverse is not offered
-        # until the folder's own evidence has moved (ADR-0018).
-        if self._merged.get(str(folder)) == self._count_documents(folder, recursive=True):
+        # other (ADR-0018). Comparing the count for equality was not enough: one document
+        # arriving between the two answers unlocked the reverse, and the same shelf was
+        # built and dissolved fifteen times in one run, twice within three seconds. The
+        # folder's own evidence has to double, which is the rule every other schedule
+        # here uses and is measured against the folder rather than against a corpus.
+        built_at = self._merged.get(str(folder))
+        if built_at is not None and self._count_documents(folder, recursive=True) < built_at * 2:
             log_trace(
                 "subdivide.skipped",
                 folder=str(folder),
-                reason="this shelf was just built and nothing has changed since",
+                reason="this shelf was built here and its evidence has not doubled",
             )
             return False
 
@@ -1297,6 +1301,18 @@ class LibraryMaintenanceService:
 
         report(on_progress, Progress(stage=Stage.DIVIDING, filename=filename, note=str(parent)))
         return self._apply_split(folder, children)
+
+    def _remember_dissolved(self, folder: PurePosixPath) -> None:
+        """So grouping does not rebuild what splitting just took down.
+
+        The other direction of the same rule. Without it the two operators still trade
+        the same shelf, only with grouping paying for the naming call and one closed
+        question per folder standing here each time round.
+        """
+        parent = folder.parent
+        self._dissolved[(str(parent), normalise_label(folder.name))] = self._count_documents(
+            parent, recursive=True
+        )
 
     def _apply_split(self, folder: PurePosixPath, children: list[tuple[str, str, int]]) -> bool:
         """Move everything one step up and remove the level, in one undoable batch."""
@@ -1356,6 +1372,7 @@ class LibraryMaintenanceService:
                 operations=tuple(operations),
             )
         )
+        self._remember_dissolved(folder)
         log_trace(
             "subdivide.split",
             folder=str(folder),
@@ -1410,6 +1427,40 @@ class LibraryMaintenanceService:
             children=len(children),
         )
         if not proposal.emerged or not proposal.name.strip():
+            return False
+
+        here = self._count_documents(folder, recursive=True)
+        taken_down = self._dissolved.get((str(folder), normalise_label(proposal.name)))
+        if taken_down is not None and here < taken_down * 2:
+            log_trace(
+                "subdivide.grouping_rejected",
+                folder=str(folder),
+                reason="this shelf was dissolved here and the evidence has not doubled",
+                proposed=proposal.name,
+            )
+            return False
+
+        # The one operator that invents a name without choosing a property, so nothing
+        # the axis check refuses ever reached it. Unchecked, it put 283 of 300 documents
+        # behind one folder named after what they are made of. Asked before the loop
+        # below, which costs one call per folder standing here.
+        verdict = await self._llm.choose(
+            prompts.build_shelf_check(
+                path=str(folder),
+                name=proposal.name,
+                sign=proposal.sign,
+                moving=[],
+                staying=[name for name, _, _ in children],
+            ),
+            choices=("CLASS", "CONTAINER"),
+        )
+        if verdict.strip().upper() == "CONTAINER":
+            log_trace(
+                "subdivide.grouping_rejected",
+                folder=str(folder),
+                reason="the broader name says what the documents are, not what they are about",
+                proposed=proposal.name,
+            )
             return False
 
         # Naming a folder that already stands here is not a collision, it is the cheaper
