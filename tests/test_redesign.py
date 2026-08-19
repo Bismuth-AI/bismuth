@@ -113,19 +113,21 @@ class TestDrawingANewTopLevel:
 
 
 class TestWhatItRefusesBeforeMovingAnything:
-    async def test_a_design_that_renames_the_folders_that_already_stand_here(
+    async def test_a_design_that_leaves_the_tree_alone_is_an_answer(
         self, engine: Bismuth, script: ScriptedModel, llm
     ) -> None:  # type: ignore[no-untyped-def]
-        """Nothing has been redrawn, and finding that out must not cost the loop."""
+        """The answer every other question here can give and this one could not. Without
+        it the model answered with the folders already standing -- the only true answer
+        left to it -- and was turned down for that 26 times in one run."""
         await _three_folders(engine, script)
-        _designed(script, "문학", "역사", "과학")
+        script.set(redesign_prompts.Design, redesign_prompts.Design(question="?", axis="주제"))
         llm.calls.clear()
 
         result = await engine.redesign.redesign()
 
         assert not result.applied
-        assert "already stand here" in result.refused
         assert not [p for p in llm.prompts_for(None) if "THE NEW TOP-LEVEL FOLDERS:" in p.user]
+        assert (engine.vault.root / "문학").is_dir()
 
     async def test_fewer_than_three_answers_is_a_rename(
         self, engine: Bismuth, script: ScriptedModel
@@ -179,8 +181,10 @@ class TestTheCostIsBoundedByFolders:
         script.set_assigned({"문학": "C001", "역사": "C001", "과학": "C002"})
         standing = [
             item
-            for item in Path(engine.vault.root).iterdir()
-            if item.is_dir() and not item.name.startswith(("_", "."))
+            for item in Path(engine.vault.root).rglob("*")
+            if item.is_dir()
+            and not item.name.startswith(("_", "."))
+            and ".bismuth" not in item.parts
         ]
         llm.calls.clear()
 
@@ -198,19 +202,40 @@ class TestTheCostIsBoundedByFolders:
 class TestAClassThatOnlyWrapsAFolder:
     """SPEC 6.2 counts pass-through folders and wants none. The first real redesign made
     three: 금융 및 금융소비자 was drawn over 금융업 및 금융소비자 and held 89 of its 90
-    documents in that one child."""
+    documents in that one child.
 
-    async def test_a_name_that_says_a_standing_folder_again_is_refused(
+    Whether a class is one is a fact about what it collected, not about its name. Judged
+    by name, 연구개발 및 과학기술 was turned down 55 times for standing over 연구개발 --
+    which is the broader shelf the pass exists to build."""
+
+    async def test_a_class_that_collects_one_folder_it_repeats_is_dropped(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         await _three_folders(engine, script)
         _designed(script, "문학 및 예술", "자연", "사회")
+        script.set_assigned({"문학": "C001", "역사": "C002", "과학": "C002"})
 
         result = await engine.redesign.redesign()
 
-        assert not result.applied
-        assert "문학" in result.refused
-        assert not (engine.vault.root / "자연").exists()
+        assert not (engine.vault.root / "문학 및 예술").exists(), "it would hold 문학 alone"
+        assert (engine.vault.root / "문학/문학.txt").is_file()
+        # The rest of the redesign still happened.
+        assert result.applied
+        assert (engine.vault.root / "자연/역사").is_dir()
+
+    async def test_a_broader_name_that_collects_several_is_kept(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """연구개발 및 과학기술 over 연구개발 and one more is the whole point."""
+        await _three_folders(engine, script)
+        _designed(script, "문학 및 예술", "자연", "사회")
+        script.set_assigned({"문학": "C001", "역사": "C001", "과학": "C002"})
+
+        result = await engine.redesign.redesign()
+
+        assert result.applied
+        assert (engine.vault.root / "문학 및 예술/문학").is_dir()
+        assert (engine.vault.root / "문학 및 예술/역사").is_dir()
 
     async def test_names_that_share_no_words_with_what_stands_here_are_fine(
         self, engine: Bismuth, script: ScriptedModel
@@ -271,31 +296,47 @@ class TestWhenItRunsItself:
         """The incremental path decides when a root first has enough to divide at all."""
         assert not engine.redesign.due()
 
-    async def test_the_first_draw_waits_for_a_top_level_to_exist(
+    async def test_the_first_look_waits_for_a_top_level_to_exist(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
-        """Until this pass has drawn anything there is no count of its own to double, and
-        the one it would have to borrow is the one that keeps moving."""
-        await _three_folders(engine, script)
+        """Until this pass has looked there is no count of its own to double, and the one
+        it would have to borrow is the one that keeps moving."""
+        from tests.conftest import seed_folder
 
-        assert engine.redesign.due(), "three folders stand here and none was drawn by us"
+        for name in ("문학", "역사", "과학"):
+            seed_folder(Path(engine.vault.root), PurePosixPath(name))
+
+        assert engine.redesign.due(), "three folders stand here and it has never looked"
+
+    async def test_a_look_that_moved_nothing_still_counts_as_a_look(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """160 attempts in one run, 155 of which changed anything -- because only an
+        applied redesign wrote anything down."""
+        await _three_folders(engine, script)
+        script.set(redesign_prompts.Design, redesign_prompts.Design(question="?", axis="주제"))
+
+        await engine.redesign.redesign()
+
+        assert not engine.redesign.due()
 
     async def test_the_clock_the_incremental_path_keeps_resetting_is_not_used(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         """Replayed against a real run, measuring against split_at_documents answered no
         on all three hundred arrivals: the root divided eighteen times and reset it."""
-        await _three_folders(engine, script)
         from bismuth.domain.charter import Charter
 
-        here = engine.vault.count_files(PurePosixPath(), recursive=True)
+        await _three_folders(engine, script)
+        engine.redesign._looked_at = 0  # type: ignore[attr-defined]  # this test is about the note
+        here = max(1, engine.vault.count_files(PurePosixPath(), recursive=True))
         note = Charter(
             path=PurePosixPath(),
             title="/",
             purpose="",
             split_basis="다루는 분야",
             split_question="이 문서의 다루는 분야는 무엇인가?",
-            split_at_documents=here,
+            split_at_documents=here * 100,
             redrawn_at_documents=max(1, here // 2),
         )
         (Path(engine.vault.root) / "_folder.md").write_text(note.to_markdown(), encoding="utf-8")
@@ -306,7 +347,8 @@ class TestWhenItRunsItself:
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         await _three_folders(engine, script)
-        here = engine.vault.count_files(PurePosixPath(), recursive=True)
+        engine.redesign._looked_at = 0  # type: ignore[attr-defined]  # this test is about the note
+        here = max(1, engine.vault.count_files(PurePosixPath(), recursive=True))
 
         _drawn_at(engine, here)
         assert not engine.redesign.due(), "a top level drawn over this many is not stale"
