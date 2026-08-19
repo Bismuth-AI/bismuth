@@ -954,7 +954,9 @@ class TestTheLanguageInstruction:
             subdivision_prompts.build_group(
                 documents=[("a", "ko doc")], children=[], language="ko"
             ),
-            subdivision_prompts.build_axis(shared="같은 법령을 다룬다", language="ko"),
+            subdivision_prompts.build_axis(
+                shared="같은 법령을 다룬다", rest=["금융", "소비자"], language="ko"
+            ),
             subdivision_prompts.build_class_sign(
                 shared="같은 법령을 다룬다", documents=[("a", "ko doc")], language="ko"
             ),
@@ -979,7 +981,7 @@ class TestTheLanguageInstruction:
 
     def test_a_collection_with_no_language_is_told_nothing(self) -> None:
         """The code comes off the cards, so this file never names a language itself."""
-        prompt = subdivision_prompts.build_axis(shared="one subject")
+        prompt = subdivision_prompts.build_axis(shared="one subject", rest=[])
 
         assert "These documents are written in" not in prompt.user
 
@@ -1339,3 +1341,32 @@ class TestANameAnswersTheFoldersQuestion:
         three attempts running, and the whole call was thrown away."""
         with pytest.raises(ValidationError):
             subdivision_prompts.Gathered(members=["D0001", "D0002"], shared="금융회사등, " * 60)
+
+
+class TestTheQuestionCoversTheFolder:
+    """The axis was chosen from the group that prompted it and nothing else. A collection
+    of 300 laws was divided on 어떤 분야의 상생협력을 촉진하는가 -- exactly right for the
+    four documents that suggested it, unanswerable for the other 290 -- and every honest
+    name after it was refused, correctly and uselessly, 103 times."""
+
+    async def test_the_rest_of_the_folder_is_in_the_question(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        asked = llm.prompts_for(subdivision_prompts.Axis)
+        assert asked
+        assert "WHAT THE REST OF THE FOLDER IS ABOUT:" in asked[-1].user
+        # Topics, not titles: shown titles, this step read the kind of instrument off them.
+        assert "아폴로" in asked[-1].user
+
+    async def test_a_folder_with_nothing_left_over_is_not_told_about_it(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """An empty list is a line that says nothing, so it is not sent."""
+        prompt = subdivision_prompts.build_axis(shared="같은 주제", rest=[])
+
+        assert "WHAT THE REST OF THE FOLDER IS ABOUT:" not in prompt.user
