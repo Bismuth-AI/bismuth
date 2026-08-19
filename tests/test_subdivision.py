@@ -954,7 +954,9 @@ class TestTheLanguageInstruction:
                 documents=[("a", "ko doc")], children=[], language="ko"
             ),
             subdivision_prompts.build_axis(shared="같은 법령을 다룬다", language="ko"),
-            subdivision_prompts.build_class_sign(shared="같은 법령을 다룬다", language="ko"),
+            subdivision_prompts.build_class_sign(
+                shared="같은 법령을 다룬다", documents=[("a", "ko doc")], language="ko"
+            ),
             subdivision_prompts.build_class_name(
                 shared="같은 법령을 다룬다",
                 question="이 문서의 규제 대상은?",
@@ -979,3 +981,112 @@ class TestTheLanguageInstruction:
         prompt = subdivision_prompts.build_axis(shared="one subject")
 
         assert "These documents are written in" not in prompt.user
+
+
+class TestThePropertyIsCheckedOnce:
+    """Task #31. The one judgement that outlives every later question about a folder.
+
+    It lived inside the boundary audit, refused 118 axes in one 300-document run, and was
+    deleted with the audit. The next run fixed the root on 법률명 -- one folder per law,
+    which excludes nothing -- at 89 documents.
+    """
+
+    async def test_a_refused_property_builds_nothing(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "시행령", "시행령 문서", ids[:2], axis="문서 종류")
+        script.set_axis_fails()
+
+        divided = await engine.subdivision.consider(PurePosixPath())
+
+        assert divided == []
+        assert not (Path(engine.vault.root) / "시행령").exists()
+
+    async def test_a_divided_folder_does_not_pay_for_it_again(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The axis is recorded after the first division, and every later class answers a
+        question that has already been checked."""
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+        llm.calls.clear()
+        _emerges(script, "과학", "과학 자료", ids[2:4])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        asked = [p for p in llm.prompts_for(None) if "QUESTION IT ASKS: " in p.user]
+        assert not asked
+
+
+class TestTheSignIsWrittenFromDocuments:
+    """Task #32. Given one word, the sign step invented a folder nothing could join.
+
+    Measured: shared="중소벤처기업부" produced "중소기업 및 벤처기업 지원 정책과 사업
+    공고가 담긴 문서" over documents that were the full text of 시행규칙, and all 5,125
+    membership answers were STAY.
+    """
+
+    async def test_the_documents_are_in_the_prompt(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        signs = llm.prompts_for(subdivision_prompts.ClassSign)
+        assert signs
+        assert "THEM:" in signs[-1].user
+        assert "[D0001]" in signs[-1].user
+
+    def test_the_name_is_still_kept_out(self) -> None:
+        """The reason the sign never sees the name: it came back as the name 22 times in
+        349, which is the one string it must not produce."""
+        prompt = subdivision_prompts.build_class_sign(
+            shared="같은 법령을 다룬다", documents=[("D0001", "어떤 문서")]
+        )
+
+        assert "문학" not in prompt.user
+
+
+class TestANameThatShelvedNothing:
+    """Task #30. Nothing recorded a proposal that bought nothing, so it came back.
+
+    중소벤처기업부 was proposed 55 times in one folder and asked 5,125 membership
+    questions, shelving no document at all. Three such names took 9,606 of the run's
+    10,512 membership questions.
+    """
+
+    async def test_it_is_not_asked_about_again(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 6)
+        # Named, but nobody claims it: the loop runs once and shelves nothing.
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        script.set_members([])
+        await engine.subdivision.consider(PurePosixPath())
+        first = [p for p in llm.prompts_for(None) if "NEW SIGN: 문학/" in p.user]
+        assert first, "the first proposal must reach the membership loop"
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        again = [p for p in llm.prompts_for(None) if "NEW SIGN: 문학/" in p.user]
+        assert not again
+
+    async def test_another_name_is_still_free_to_ask(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The memory is about one name at one folder, not about the folder."""
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        script.set_members([])
+        await engine.subdivision.consider(PurePosixPath())
+        llm.calls.clear()
+        _emerges(script, "과학", "과학 자료", ids[2:4])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert [p for p in llm.prompts_for(None) if "NEW SIGN: 과학/" in p.user]

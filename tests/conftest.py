@@ -175,6 +175,7 @@ class ScriptedModel:
         self._routes: dict[str, str] = {}
         self._shelved: set[str] = set()
         self._dissolve: set[str] = set()
+        self._axis_fails = False
 
     def set(self, schema: type[BaseModel], response: object) -> None:
         key = None if schema is placement_prompts.PlacementDecision else schema
@@ -194,6 +195,10 @@ class ScriptedModel:
     def set_dissolve(self, paths: list[str]) -> None:
         """Script which levels answer DISSOLVE when asked whether they earn their guess."""
         self._dissolve = set(paths)
+
+    def set_axis_fails(self, fails: bool = True) -> None:
+        """Script the one check on the property a folder is about to be fixed on."""
+        self._axis_fails = fails
 
     def set_shelved(self, folder_names: list[str]) -> None:
         """Script which existing sub-folders move onto a proposed broader shelf."""
@@ -218,9 +223,13 @@ class ScriptedModel:
 
         Several different questions share the plain-choice call and are only told apart
         by what they offer: a placement descent, membership in a new class, routing into
-        an existing sign, dissolving a level, moving onto a shelf. One shared slot sent
-        them all to the placement chooser.
+        an existing sign, dissolving a level, moving onto a shelf, checking a property.
+        One shared slot sent them all to the placement chooser.
         """
+        if "QUESTION IT ASKS: " in prompt.user:
+            # The property a folder is about to be divided on. HOLDS by default, so the
+            # tests that are about something else keep the trees their assertions expect.
+            return "FAILS" if self._axis_fails else "HOLDS"
         if "THE LEVEL IN QUESTION: " in prompt.user:
             # Dissolving a level is asked about a folder, not a document, so it answers
             # from its own script. KEEP by default: a test that wants a level removed
