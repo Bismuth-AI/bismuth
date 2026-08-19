@@ -1302,3 +1302,40 @@ class TestGroupingDoesNotRebuildWhatSplittingTookDown:
         await engine.subdivision.consider(PurePosixPath())
 
         assert not (engine.vault.root / "문학").exists()
+
+
+class TestANameAnswersTheFoldersQuestion:
+    """The property is checked when it is chosen and never again, so nothing read the
+    names it was supposed to produce. A collection divided on 적용 대상 -- who the law
+    applies to -- took 중대재해처벌법, 디지털포용법 and 테러자금금지법 as answers, and
+    eight of the root's 25 folders ended up named after a statute."""
+
+    async def test_a_name_that_answers_something_else_builds_nothing(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "중대재해처벌법", "중대재해 관련 문서", ids[:2], axis="적용 대상")
+        script.set_name_is_beside()
+
+        divided = await engine.subdivision.consider(PurePosixPath())
+
+        assert divided == []
+        assert not (Path(engine.vault.root) / "중대재해처벌법").exists()
+
+    async def test_it_is_asked_before_the_membership_loop(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """One closed question against one call per document standing here."""
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "중대재해처벌법", "중대재해 관련 문서", ids[:2], axis="적용 대상")
+        script.set_name_is_beside()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert not [p for p in llm.prompts_for(None) if "NEW SIGN:" in p.user]
+
+    def test_the_shared_sentence_has_a_ceiling(self) -> None:
+        """One reply ran the same handful of nouns to the 8,192-token generation limit,
+        three attempts running, and the whole call was thrown away."""
+        with pytest.raises(ValidationError):
+            subdivision_prompts.Gathered(members=["D0001", "D0002"], shared="금융회사등, " * 60)

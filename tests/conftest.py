@@ -147,7 +147,10 @@ class ScriptedModel:
             # asserting what it was written to assert.
             subdivision_prompts.Gathered: lambda prompt, schema: subdivision_prompts.Gathered(
                 members=_subset_shown(prompt) if _scripted_emergence(self).emerged else [],
-                shared=_scripted_emergence(self).sign or "같은 종류의 문서",
+                # Cut to the schema's ceiling: a test that scripts an essay-length
+                # SIGN is about the sign, and this field is only standing in for the
+                # sentence the grouping step would have written.
+                shared=(_scripted_emergence(self).sign or "같은 종류의 문서")[:300],
             ),
             subdivision_prompts.ClassName: lambda prompt, schema: subdivision_prompts.ClassName(
                 name=_scripted_emergence(self).name,
@@ -177,6 +180,7 @@ class ScriptedModel:
         self._dissolve: set[str] = set()
         self._axis_fails = False
         self._shelf_is_container = False
+        self._name_is_beside = False
 
     def set(self, schema: type[BaseModel], response: object) -> None:
         key = None if schema is placement_prompts.PlacementDecision else schema
@@ -205,6 +209,10 @@ class ScriptedModel:
         """Script the one check on a broader name before folders are moved under it."""
         self._shelf_is_container = container
 
+    def set_name_is_beside(self, beside: bool = True) -> None:
+        """Script the one check on whether a name answers the folder's question."""
+        self._name_is_beside = beside
+
     def set_shelved(self, folder_names: list[str]) -> None:
         """Script which existing sub-folders move onto a proposed broader shelf."""
         self._shelved = set(folder_names)
@@ -231,6 +239,10 @@ class ScriptedModel:
         an existing sign, dissolving a level, moving onto a shelf, checking a property.
         One shared slot sent them all to the placement chooser.
         """
+        if "THE PROPOSED NAME: " in prompt.user:
+            # Whether a name answers the question its siblings answer. ANSWERS by
+            # default, so every other test keeps the tree its assertions expect.
+            return "BESIDE" if self._name_is_beside else "ANSWERS"
         if "THE BROADER NAME: " in prompt.user:
             # Whether a broader name is a class or a word for what the documents are.
             # CLASS by default, so the tests about grouping itself keep working.
