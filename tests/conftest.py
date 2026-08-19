@@ -21,6 +21,7 @@ from bismuth.ports.llm import Prompt
 from bismuth.prompts import cards as card_prompts
 from bismuth.prompts import charters as charter_prompts
 from bismuth.prompts import placement as placement_prompts
+from bismuth.prompts import redesign as redesign_prompts
 from bismuth.prompts import subdivision as subdivision_prompts
 
 
@@ -165,6 +166,9 @@ class ScriptedModel:
             # Same default, for the same reason: existing folders stay where they are
             # unless a test asks for them to be stood together.
             subdivision_prompts.Grouping: subdivision_prompts.Grouping(emerged=False),
+            # Default: the whole-collection pass proposes nothing, so a test that is
+            # not about it never redraws the tree its assertions were written against.
+            redesign_prompts.Design: redesign_prompts.Design(),
             subdivision_prompts.ExistingAssignments: subdivision_prompts.ExistingAssignments(
                 groups=[],
             ),
@@ -181,6 +185,7 @@ class ScriptedModel:
         self._axis_fails = False
         self._shelf_is_container = False
         self._name_is_beside = False
+        self._assigned: dict[str, str] = {}
 
     def set(self, schema: type[BaseModel], response: object) -> None:
         key = None if schema is placement_prompts.PlacementDecision else schema
@@ -213,6 +218,10 @@ class ScriptedModel:
         """Script the one check on whether a name answers the folder's question."""
         self._name_is_beside = beside
 
+    def set_assigned(self, by_subject: dict[str, str]) -> None:
+        """Script where a redesign puts each folder, as ``{folder name: C###}``."""
+        self._assigned = dict(by_subject)
+
     def set_shelved(self, folder_names: list[str]) -> None:
         """Script which existing sub-folders move onto a proposed broader shelf."""
         self._shelved = set(folder_names)
@@ -239,6 +248,12 @@ class ScriptedModel:
         an existing sign, dissolving a level, moving onto a shelf, checking a property.
         One shared slot sent them all to the placement chooser.
         """
+        if "THE NEW TOP-LEVEL FOLDERS:" in prompt.user:
+            # Placing one folder, or one loose document, under a redrawn top level.
+            # STAY by default, matching production: a thing nothing claims keeps the
+            # place it has.
+            subject = prompt.user.split("WHAT IS BEING PLACED: ", 1)[-1].splitlines()[0]
+            return self._assigned.get(subject.strip(), "STAY")
         if "THE PROPOSED NAME: " in prompt.user:
             # Whether a name answers the question its siblings answer. ANSWERS by
             # default, so every other test keeps the tree its assertions expect.
