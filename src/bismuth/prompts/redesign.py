@@ -53,6 +53,11 @@ would belong there tomorrow.
 
 Nothing is named by what it is not. No name meaning assorted, other, general or related:
 the reader cannot tell what is inside, and the next arrival always fits it.
+
+**Leaving it alone is an answer.** Return no classes at all when the folders standing
+here are already a good top level for these subjects -- when what you would draw is what
+is there. Nothing is moved, and you will be asked again when the collection has doubled.
+A tree that is merely imperfect is better than a tree redrawn every time someone asks.
 """
 
 
@@ -85,7 +90,11 @@ class Design(BaseModel):
         description="The property that question asks about, named in a few words.",
     )
     classes: list[Class] = Field(
-        default_factory=list, description="Between three and nine answers to it."
+        default_factory=list,
+        description=(
+            "Between three and nine answers to it, or EMPTY to leave the top of this "
+            "tree exactly as it is."
+        ),
     )
     unsound: list[str] = Field(
         default_factory=list,
