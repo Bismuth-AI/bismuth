@@ -256,10 +256,13 @@ class Gathered(BaseModel):
     )
     shared: str = Field(
         default="",
+        max_length=300,
         description=(
-            "A SENTENCE, not a title: what a further document would have to be ABOUT to "
-            "belong with these. It must still be true of a document that is not part of "
-            "the same law, work or series. In the documents' own language."
+            "ONE SENTENCE, not a title and not a list: what a further document would "
+            "have to be ABOUT to belong with these. It must still be true of a document "
+            "that is not part of the same law, work or series. In the documents' own "
+            "language, and at most about thirty words -- one reply ran the same handful "
+            "of nouns to the generation limit and the whole call was thrown away."
         ),
     )
 
@@ -466,6 +469,57 @@ def build_class_name(
     if taken:
         user += "\n\nANSWERS ALREADY TAKEN BY FOLDERS BESIDE THIS ONE:\n  " + "\n  ".join(taken)
     return Prompt(system=_CLASS_NAME_SYSTEM, user=in_their_language(user, language))
+
+
+_NAME_CHECK_SYSTEM = """\
+A folder is about to be created, and you are checking ONE thing: whether its name is an \
+ANSWER to the question this folder's siblings all answer. Answer with exactly ANSWERS or \
+BESIDE and nothing else.
+
+The question is fixed. It was chosen when this folder was first divided and every folder \
+standing here is one answer to it, which is what lets a reader rule the others out by \
+reading the names alone. A name that answers some different question sits BESIDE that \
+list rather than in it: the reader can no longer tell what the names are distinguishing, \
+and has to open everything again.
+
+BESIDE if the name is the title of one law, work, series or programme, when the question \
+asks about something else -- who it applies to, what it regulates, what field it is in. \
+A title is a name, not an answer. Observed live: a collection divided on 적용 대상 -- who \
+the law applies to -- took 중대재해처벌법, 디지털포용법 and 테러자금금지법 as answers, \
+and a reader scanning for their own situation learns nothing from any of the three.
+
+BESIDE if the name answers a different question about the same documents: their form, \
+their issuer, their date, or which body administers them, when that is not what was \
+asked.
+
+ANSWERS if a reader could put the name and the question together into a sentence that is \
+true of the documents behind it, and false of the folders standing beside it.\
+"""
+
+
+def build_name_check(*, path: str, question: str, name: str, taken: list[str]) -> Prompt:
+    """One closed question about a name, before the documents are asked to join it.
+
+    The axis is checked when it is chosen and never again, so everything after it was
+    free: the question could be about who a law applies to and the answers could be the
+    titles of laws, for ever. This was one of the six booleans in the audit that went out
+    with the redraw path -- the one that reads only the names, which is why it survives
+    on its own where the others needed a whole boundary in front of them.
+    """
+    return Prompt(
+        system=_NAME_CHECK_SYSTEM,
+        user=(
+            f"FOLDER: {path or '(root)'}\n"
+            f"THE QUESTION ITS FOLDERS ANSWER: {question}\n"
+            f"THE PROPOSED NAME: {name}\n"
+            + (
+                "ANSWERS ALREADY TAKEN BY FOLDERS STANDING HERE:\n"
+                + "\n".join(f"  {item}" for item in taken)
+                if taken
+                else "NO FOLDER STANDS HERE YET."
+            )
+        ),
+    )
 
 
 def build_class_sign(
