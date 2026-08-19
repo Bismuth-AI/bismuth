@@ -146,6 +146,7 @@ class LibraryMaintenanceService:
         self._transactor = transactor
         self._llm = llm
         self._barren: dict[tuple[str, str], int] = {}
+        self._merged: dict[str, int] = {}
 
     def _asked_before(self, folder: PurePosixPath, name: str, *, documents: int) -> bool:
         """Whether this name already bought nothing here, on evidence barely different.
@@ -360,7 +361,13 @@ class LibraryMaintenanceService:
         # Two children is what makes a boundary reviewable, not what makes an axis real.
         established = len(contents.children) >= 2
         axis = charter.split_basis if charter is not None and charter.divided else ""
-        spent = self._axes_above(folder)
+        # Only when a property is being chosen. Once it is recorded it is a fact about
+        # this folder, and holding it against the ancestors again refuses the folder's
+        # own settled boundary: a shelf built by grouping carries its parent's property
+        # deliberately -- the folders standing in it are answers to it -- so every class
+        # it went on to propose was refused for reusing it. Measured at 76 refusals in
+        # one run, with 77 documents left loose in the shelf that could not divide.
+        spent = self._axes_above(folder) if not axis else []
 
         with log_context(stage="subdivision.emerging"):
             emerging, _ = await self._find_emerging(
@@ -1027,7 +1034,11 @@ class LibraryMaintenanceService:
             ),
             available_document_ids=available,
             ancestor_names=folder.parts,
-            spent_axes=tuple(self._axes_above(folder)),
+            # The same condition the preview uses: a property already recorded on this
+            # folder is a fact, and only a new one is held against the ancestors.
+            spent_axes=(
+                () if charter is not None and charter.divided else tuple(self._axes_above(folder))
+            ),
         )
         if not validation.accepted:
             reasons = [problem.value for problem in validation.problems]
@@ -1219,6 +1230,17 @@ class LibraryMaintenanceService:
         parent = folder.parent
         charter = self._charters.load(folder)
         if charter is None or not charter.managed or self._has_protected_descendant(folder):
+            return False
+        # Merge and split are reverse operators, so on unchanged evidence they undo each
+        # other: this shelf was built by grouping 13 seconds before it was dissolved, and
+        # again 14 seconds later elsewhere in the same run. The reverse is not offered
+        # until the folder's own evidence has moved (ADR-0018).
+        if self._merged.get(str(folder)) == self._count_documents(folder, recursive=True):
+            log_trace(
+                "subdivide.skipped",
+                folder=str(folder),
+                reason="this shelf was just built and nothing has changed since",
+            )
             return False
 
         contents = self._read(folder)
@@ -1553,6 +1575,7 @@ class LibraryMaintenanceService:
             files=moved,
             into_existing=into is not None,
         )
+        self._merged[str(target)] = self._count_documents(target, recursive=True)
         return True
 
     def _parent_note(
