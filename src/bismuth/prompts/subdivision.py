@@ -1136,6 +1136,52 @@ nothing: the folder keeps its place exactly as it is.\
 """
 
 
+_SHELF_CHECK_SYSTEM = """\
+Folders are about to be stood together under one broader name. You are checking ONE \
+thing: whether that name is a CLASS a reader could arrive wanting, or only a word for \
+what these documents ARE. Answer with exactly CLASS or CONTAINER and nothing else.
+
+CONTAINER if the name is about the form of the documents rather than their subject -- \
+the kind of instrument, its rank, whether it is an act, a decree or a rule. Observed \
+live: 283 of 300 documents ended up behind one folder called 개별 법률 및 시행령, which \
+is true of almost every document in that collection and so excludes nothing.
+
+CONTAINER if the name leans on a word meaning assorted, individual, various, other, \
+related or general, with or without a subject attached to it. The reader cannot tell \
+what is inside from such a name, and the next arrival always fits it.
+
+CONTAINER if nearly every folder standing here would fit the name, including the ones \
+that are staying behind. A shelf everything fits is this folder under another name, and \
+the reader clicks through it to reach the same list.
+
+CLASS if the name is a subject, an activity, a party or an industry -- something a \
+reader arrives already wanting, and something the folders staying behind are not.\
+"""
+
+
+def build_shelf_check(
+    *, path: str, name: str, sign: str, moving: list[str], staying: list[str]
+) -> Prompt:
+    """One closed question about the broader name, before anyone is asked to move.
+
+    Grouping is the one operator that invents a name without choosing a property, so
+    none of the rules the axis check holds a division to reach it. Left unchecked it
+    built the collection's top level out of what the documents are made of.
+
+    Asked before the membership loop, which costs one call per folder standing here.
+    """
+    return Prompt(
+        system=_SHELF_CHECK_SYSTEM,
+        user=(
+            f"FOLDER: {path or '(root)'}\n"
+            f"THE BROADER NAME: {name}\n"
+            + (f"WHAT IT WOULD SAY: {sign}\n" if sign else "")
+            + "FOLDERS STANDING HERE:\n"
+            + "\n".join(f"  {item}/" for item in moving + staying)
+        ),
+    )
+
+
 def build_grouping_member(
     *, path: str, name: str, sign: str, child: tuple[str, str, int]
 ) -> Prompt:
