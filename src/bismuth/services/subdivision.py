@@ -823,6 +823,29 @@ class LibraryMaintenanceService:
                 )
                 return prompts.Emerging(emerged=False), ()
 
+        # The property was checked when it was chosen, and never again. Nothing then read
+        # the names it was supposed to be producing, so a folder divided on 적용 대상 --
+        # who the law applies to -- grew 중대재해처벌법 and 테러자금금지법 as answers.
+        # Asked here, before the sign is written and long before the membership loop.
+        answers = await self._llm.choose(
+            prompts.build_name_check(
+                path=str(folder),
+                question=question,
+                name=name,
+                taken=[child for child, _ in children],
+            ),
+            choices=("ANSWERS", "BESIDE"),
+        )
+        if answers.strip().upper() == "BESIDE":
+            log_trace(
+                "subdivide.name_refused",
+                folder=str(folder),
+                axis=settled_axis,
+                question=question,
+                proposed=[name],
+            )
+            return prompts.Emerging(emerged=False), ()
+
         signed = await self._llm.structured(
             prompts.build_class_sign(shared=chosen.shared, documents=theirs, language=language),
             schema=prompts.ClassSign,
