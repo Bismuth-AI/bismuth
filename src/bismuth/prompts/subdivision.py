@@ -257,8 +257,9 @@ class Gathered(BaseModel):
     shared: str = Field(
         default="",
         description=(
-            "One sentence: what a further document would have to be about to belong "
-            "with these. In the documents' own language."
+            "A SENTENCE, not a title: what a further document would have to be ABOUT to "
+            "belong with these. It must still be true of a document that is not part of "
+            "the same law, work or series. In the documents' own language."
         ),
     )
 
@@ -397,7 +398,12 @@ real but answers a different question, return an empty list; a later look at ano
 can take it.
 
 Return the handles exactly as shown, and one sentence saying what a further document would \
-have to be for this answer to fit it.\
+have to be for this answer to fit it.
+
+That sentence is a SENTENCE, never a title. 217 of 381 replies answered with the name of \
+one law, and everything downstream is built from this line: the property the folder is \
+divided on, the folder's name, and the sign a reader is shown. A title in this slot puts \
+one work's name on a shelf that will be asked to hold others.\
 """
 
 
@@ -462,18 +468,30 @@ def build_class_name(
     return Prompt(system=_CLASS_NAME_SYSTEM, user=in_their_language(user, language))
 
 
-def build_class_sign(*, shared: str, language: str = "") -> Prompt:
-    """Step four: the line under the name, written without being shown the name.
+def build_class_sign(
+    *, shared: str, documents: list[tuple[str, str]], language: str = ""
+) -> Prompt:
+    """Step four: the line under the name, written from the documents but not the name.
 
-    Shown it, the sign came back as the name again 22 times in 349, empty 9 more, and
-    once past the note budget -- the same failure as every other step handed the string
-    it must not produce. It does not need the name: a sign written from what the group
-    shares is longer and more specific than two or three words can be, which is what the
-    line is for.
+    Shown the name, the sign came back as the name again 22 times in 349, empty 9 more,
+    and once past the note budget -- the same failure as every other step handed the
+    string it must not produce. So the name stays out.
+
+    The documents did not. Given only the group's sentence, this step invented: from
+    `shared` = "중소벤처기업부" it wrote "중소기업 및 벤처기업 지원 정책과 사업 공고가
+    담긴 문서", and the documents were the full text of 시행규칙. Membership judges each
+    document against the sign, so every one of them correctly answered STAY -- including
+    the three the group was built from. One folder spent 5,125 questions that way and
+    shelved nothing. A sign is a promise about documents and cannot be written without
+    seeing them.
     """
+    listed = _render_documents(documents)
     return Prompt(
         system=_CLASS_SIGN_SYSTEM,
-        user=in_their_language(f"WHAT THE DOCUMENTS IN THIS FOLDER SHARE: {shared}", language),
+        user=in_their_language(
+            f"WHAT THE DOCUMENTS IN THIS FOLDER SHARE: {shared}\n\nTHEM:\n{listed}",
+            language,
+        ),
     )
 
 
@@ -664,6 +682,77 @@ def build_emerging(
     return Prompt(
         system=_EMERGING_ALONG_SYSTEM,
         user=in_their_language(f"{user}\n\nTHE AXIS HERE: {axis}", language),
+    )
+
+
+_AXIS_CHECK_SYSTEM = """\
+A library folder is about to be divided, and you are checking ONE thing: whether the \
+property it is being divided on is a good one to divide on HERE. Answer with exactly \
+FAILS or HOLDS and nothing else.
+
+Some properties are known for nearly every document -- what kind of document it is, what \
+form it takes, who issued it, when it was issued, what language it is in, and the title \
+of the one law or work it belongs to. Sorting by one of those produces a tidy tree and a \
+useless one: a reader who arrives wanting a subject finds that every subject has been \
+spread evenly across every folder, so they must open all of them. The tree looks \
+organised and narrows nothing.
+
+Sorting by what the documents are ABOUT does the opposite. A reader who wants one \
+subject opens one folder.
+
+FAILS if this folder is the root, or has no boundary yet, and the property is one of \
+those always-present ones -- the kind of document, its form, its issuer, its date, its \
+language, or which single law or work it is part of.
+
+FAILS if what is offered is not the NAME of a property at all: a sentence describing the \
+split, a comparison between two candidates, or an explanation of why it was chosen. A \
+property is named in a few words, the way a column heading is.
+
+FAILS if the property is one the folders ABOVE are already divided on. Those are listed. \
+Every document here already has the same answer to them, so dividing on one again \
+separates nothing and only restates the parent's name in other words.
+
+Sharing a WORD with an ancestor's property is not the same thing. 규제 대상 산업 under a \
+parent divided on 규제 대상 및 목적 is a different question, and it HOLDS. The test is \
+whether the documents in front of you would give different answers to it -- not whether \
+it reads like something above.
+
+FAILS if almost every document here would give the SAME answer to it. That draws one \
+real shelf and a remainder nobody can name except as "the ones that are not that" -- a \
+folder holding everything except one thing, which excludes nothing and cannot be divided \
+again. Observed live: inside a folder already about 과학기술, dividing on which ministry \
+issued the documents produced one shelf and 비과학기술 분야 소관 beside it.
+
+HOLDS if the property is about what the documents are about. HOLDS also when this \
+folder has already been narrowed by subject and the property is a sensible way to split \
+what remains -- but only if the documents here really do spread across several of its \
+answers. Standing inside a subject licenses a different question, not one whose answer \
+is already fixed for nearly everything in the folder.\
+"""
+
+
+def build_axis_check(
+    *, path: str, axis: str, axis_question: str, name: str, spent: list[str] | None = None
+) -> Prompt:
+    """One closed question about the property a folder is about to be fixed on.
+
+    Asked once, when the axis is chosen, and never again: after that the folder is
+    divided and every later class answers a question that has already been checked.
+
+    Separated from everything else deliberately. Asked as one of six booleans in a single
+    reply, it approved 문서의 성격, 주관 부처 and 법령의 성격 -- every axis it exists to
+    reject. It went out with the boundary audit and the next run fixed the root on 법률명
+    at 89 documents, which is the failure docs/spec/subdivision.md 9-2 records as fatal.
+    """
+    return Prompt(
+        system=_AXIS_CHECK_SYSTEM,
+        user=(
+            f"FOLDER: {path or '(root)'}\n"
+            "PROPERTIES THE FOLDERS ABOVE ARE ALREADY DIVIDED ON:\n"
+            + ("\n".join(f"  {item}" for item in spent) if spent else "  (none)")
+            + f"\n\nPROPERTY: {axis}\nQUESTION IT ASKS: {axis_question}\n"
+            f"FIRST FOLDER NAME IT WOULD PRODUCE: {name}"
+        ),
     )
 
 
