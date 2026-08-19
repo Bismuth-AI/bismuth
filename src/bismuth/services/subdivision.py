@@ -145,6 +145,28 @@ class LibraryMaintenanceService:
         self._charters = charters
         self._transactor = transactor
         self._llm = llm
+        self._barren: dict[tuple[str, str], int] = {}
+
+    def _asked_before(self, folder: PurePosixPath, name: str, *, documents: int) -> bool:
+        """Whether this name already bought nothing here, on evidence barely different.
+
+        A proposal that shelved no document is not refused anywhere: the chain returns
+        None and nothing is written down, so the next arrival proposes it again from the
+        same pile. Measured on 300 documents: 중소벤처기업부 was proposed 55 times in one
+        folder, asked 5,125 membership questions and shelved nothing, once. Three names
+        account for 9,606 of the run's 10,512 membership questions and none of them
+        shelved a single document.
+
+        Doubling, so it is the folder's own history that unlocks the question rather than
+        a number tuned to a corpus, and it is the same rule the boundary used to be held
+        to. Kept for the life of the process only -- a restart re-asks once, which costs
+        one loop and cannot compound.
+        """
+        seen = self._barren.get((str(folder), normalise_label(name)))
+        return seen is not None and documents < seen * 2
+
+    def _bought_nothing(self, folder: PurePosixPath, name: str, *, documents: int) -> None:
+        self._barren[(str(folder), normalise_label(name))] = documents
 
     async def consider_with_ancestors(
         self,
@@ -570,6 +592,16 @@ class LibraryMaintenanceService:
         # is each document asked whether it belongs. This loop is one closed question per
         # document and it used to run first: 84% of the questions it asked in one round
         # were spent on proposals refused afterwards.
+        loose = len(contents.documents)
+        if self._asked_before(folder, emerging.name, documents=loose):
+            log_trace(
+                "subdivide.skipped",
+                folder=str(folder),
+                reason="this name already shelved nothing here",
+                proposed=[emerging.name],
+                documents=loose,
+            )
+            return None
         with log_context(stage="subdivision.members"):
             members = await self._find_members(
                 folder=folder,
@@ -586,6 +618,7 @@ class LibraryMaintenanceService:
                 of=len(contents.documents),
             )
         if not members.document_ids:
+            self._bought_nothing(folder, emerging.name, documents=loose)
             return None
 
         proposed_groups = [
@@ -615,6 +648,10 @@ class LibraryMaintenanceService:
                 reason="; ".join(problem.value for problem in preview.problems),
                 proposed=[group.name for group in proposed_groups],
             )
+            # The loop has already been paid for, and the same name on the same pile will
+            # buy the same refusal: 하도급거래 공정화에 관한 법률 claimed exactly one
+            # document 21 times over, each time refused as a class of one.
+            self._bought_nothing(folder, emerging.name, documents=loose)
             return None
 
         return prompts.Division(
@@ -755,8 +792,31 @@ class LibraryMaintenanceService:
             _guard_refused("class_name_empty", folder=folder)
             return prompts.Emerging(emerged=False), ()
 
+        # Only when the property is being fixed. Once a folder is divided every later
+        # class answers a question that has already been checked, and re-checking it on
+        # every proposal is what made this expensive when it lived inside the audit.
+        if not axis:
+            verdict = await self._llm.choose(
+                prompts.build_axis_check(
+                    path=str(folder),
+                    axis=settled_axis,
+                    axis_question=question,
+                    name=name,
+                    spent=spent,
+                ),
+                choices=("FAILS", "HOLDS"),
+            )
+            if verdict.strip().upper() == "FAILS":
+                log_trace(
+                    "subdivide.axis_refused",
+                    folder=str(folder),
+                    axis=settled_axis,
+                    proposed=[name],
+                )
+                return prompts.Emerging(emerged=False), ()
+
         signed = await self._llm.structured(
-            prompts.build_class_sign(shared=chosen.shared, language=language),
+            prompts.build_class_sign(shared=chosen.shared, documents=theirs, language=language),
             schema=prompts.ClassSign,
         )
         if not signed.sign.strip():
