@@ -272,3 +272,62 @@ class TestWhatMayBeAsked:
         )
 
         assert Operator.MERGE in legal_operators(shape)
+
+
+class TestMovingUnderAFolderThatStandsHere:
+    """The other half of merge: the shelf is already built (ADR-0018)."""
+
+    def test_a_taken_name_is_the_point_not_a_collision(self) -> None:
+        result = validate_grouping(
+            name="금융",
+            axis="주제",
+            members=("가상자산", "벤처투자", "신용정보"),
+            siblings=("금융", "가상자산", "벤처투자", "신용정보", "과학기술", "소비자"),
+            into_existing=True,
+        )
+
+        assert result.accepted
+
+    def test_the_same_proposal_is_refused_when_a_new_shelf_is_meant(self) -> None:
+        result = validate_grouping(
+            name="금융",
+            axis="주제",
+            members=("가상자산", "벤처투자", "신용정보"),
+            siblings=("금융", "가상자산", "벤처투자", "신용정보", "과학기술", "소비자"),
+        )
+
+        assert GroupingProblem.NAME_EXISTS in result.problems
+
+    def test_a_shelf_that_is_not_standing_here_is_refused(self) -> None:
+        result = validate_grouping(
+            name="금융",
+            axis="주제",
+            members=("가상자산", "벤처투자"),
+            siblings=("가상자산", "벤처투자", "소비자"),
+            into_existing=True,
+        )
+
+        assert GroupingProblem.SHELF_IS_NOT_HERE in result.problems
+
+    def test_a_folder_cannot_stand_inside_itself(self) -> None:
+        result = validate_grouping(
+            name="금융",
+            axis="주제",
+            members=("금융", "가상자산"),
+            siblings=("금융", "가상자산", "소비자"),
+            into_existing=True,
+        )
+
+        assert GroupingProblem.NAME_IS_A_MEMBER in result.problems
+
+    def test_the_shelf_counts_as_one_of_the_folders_left_standing(self) -> None:
+        """Moving everything else inside it leaves this folder with one child."""
+        result = validate_grouping(
+            name="금융",
+            axis="주제",
+            members=("가상자산", "벤처투자"),
+            siblings=("금융", "가상자산", "벤처투자"),
+            into_existing=True,
+        )
+
+        assert GroupingProblem.TOOK_EVERY_FOLDER in result.problems

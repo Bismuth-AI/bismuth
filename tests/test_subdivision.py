@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from bismuth.container import Bismuth
 from bismuth.domain.charter import Charter
+from bismuth.domain.maintenance import validate_grouping
 from bismuth.ports.llm import Prompt
 from bismuth.prompts import placement as placement_prompts
 from bismuth.prompts import subdivision as subdivision_prompts
@@ -1090,3 +1091,69 @@ class TestANameThatShelvedNothing:
         await engine.subdivision.consider(PurePosixPath())
 
         assert [p for p in llm.prompts_for(None) if "NEW SIGN: 과학/" in p.user]
+
+
+class TestMovingIntoAFolderThatAlreadyStands:
+    """Cobweb's merge, the half we did not have.
+
+    Measured on 300 documents: the root held 금융 beside 가상자산, 벤처투자, 신용정보 and
+    신용협동조합, and grouping asked five times to put them together. Every one was
+    refused -- 금융·신용·투자 because a member restated it, 금융 because the name was
+    taken, by the folder it wanted to move them into.
+    """
+
+    async def _three_shelves(self, engine: Bismuth, script: ScriptedModel) -> None:
+        for name in ("문학", "과학", "역사"):
+            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"])
+            await engine.subdivision.consider(PurePosixPath())
+
+    async def test_folders_move_inside_the_one_that_is_named(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _fill(engine, script, 8)
+        script.set(
+            subdivision_prompts.Grouping,
+            subdivision_prompts.Grouping(emerged=True, name="문학", sign="문학 자료"),
+        )
+        script.set_shelved(["역사"])
+
+        await self._three_shelves(engine, script)
+
+        assert (engine.vault.root / "문학/역사").is_dir()
+        # It kept its own place, its own documents and its own note.
+        assert (engine.vault.root / "문학/doc0.txt").is_file()
+        assert (engine.vault.root / "문학/_folder.md").is_file()
+        assert "문학" in (engine.vault.root / "문학/_folder.md").read_text(encoding="utf-8")
+        assert not (engine.vault.root / "역사").exists()
+        assert (engine.vault.root / "과학").is_dir()
+
+    async def test_one_folder_is_enough_to_move(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Nothing is created, so there is no level to justify: the list just gets
+        shorter by one. Building a new shelf still needs two."""
+        result = validate_grouping(
+            name="금융",
+            axis="주제",
+            members=("신용협동조합",),
+            siblings=("금융", "신용협동조합", "과학기술", "소비자"),
+            into_existing=True,
+        )
+
+        assert result.accepted
+
+    async def test_it_still_cannot_swallow_the_whole_level(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _fill(engine, script, 8)
+        script.set(
+            subdivision_prompts.Grouping,
+            subdivision_prompts.Grouping(emerged=True, name="문학", sign="문학 자료"),
+        )
+        # 아폴로 is the seeded fixture folder, so with 문학 as the shelf this is the rest.
+        script.set_shelved(["과학", "역사", "아폴로"])
+
+        await self._three_shelves(engine, script)
+
+        assert (engine.vault.root / "역사").is_dir()
+        assert not (engine.vault.root / "문학/역사").exists()
