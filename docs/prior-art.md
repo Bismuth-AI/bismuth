@@ -96,6 +96,67 @@ drift 연구 쪽에서는 **클러스터 지름의 변화로 split과 merge를 �
 - [Faceted Classification — The Discipline of Organizing](https://berkeley.pressbooks.pub/tdo4p/chapter/faceted-classification/)
 - [Ranganathan and the faceted classification theory](https://www.redalyc.org/journal/3843/384357586006/html/)
 
+## 긴 문서를 카드 한 장으로 — 우리 방식에는 이름이 있다
+
+문서를 조각으로 나눠 순서대로 읽으며 카드를 고쳐 쓰는 것은 **incremental updating**이라고
+불리는 알려진 워크플로다. 대안은 **hierarchical merging** — 조각을 따로 요약하고 그 요약들을
+재귀적으로 병합하는 것.
+
+[BooookScore](https://arxiv.org/abs/2310.00785)(ICLR 2024)가 둘을 체계적으로 비교했다.
+
+| | 일관성 | 세부 |
+|---|---|---|
+| 계층 병합 | 높음 (GPT-4 90.8) | 적음 |
+| **증분 갱신** | 낮음 (82.4) | **많음** |
+
+**우리는 세부 쪽이 맞다.** 카드는 사람이 읽을 요약이 아니라 **분류가 읽는 표면**이기 때문이다.
+일관성이 떨어진 카드는 읽기 불편할 뿐이지만, 빠진 주제는 축이 되지 못하고 축이 좁으면 폴더가
+안 나뉜다 — 여러 판에서 반복해서 본 그 병이다.
+
+그리고 주석자가 찾은 여덟 가지 오류 중 **가장 흔한 것이 개체 누락과 사건 누락**이었다. 우리
+실패도 정확히 그 형태다.
+
+**조각 크기가 가장 큰 레버다.** 같은 논문이 여러 파라미터 중 chunk size의 영향이 가장 크다고
+보고한다 — Claude 2가 작은 조각에서 78.6, 88K 토큰 조각에서 90.9. 우리는 12,000자 창을 쓰고
+있고(실측 카드 프롬프트 최대 10,739토큰), 창을 키우면 갱신 횟수·누락·반복 출력 사고가 동시에
+줄어든다. 300건 중 131건은 이미 한 조각이다.
+
+- [BooookScore (arXiv:2310.00785)](https://arxiv.org/abs/2310.00785)
+
+### 계층 병합을 안 고르는 이유
+
+원형은 [Recursively Summarizing Books with Human Feedback](https://arxiv.org/abs/2109.10862)
+(OpenAI, 2021)이고, 재귀 분해로 사람이 책을 다 안 읽고도 평가할 수 있게 만든 것이 요점이었다.
+
+그런데 [Context-Aware Hierarchical Merging](https://arxiv.org/abs/2502.00977)(ACL Findings
+2025)이 **재귀 병합은 환각을 증폭시킨다**고 지적한다. 중간 요약을 다시 요약하므로 틀린 것이
+굳는다. 그 논문의 해법은 병합 단계에 원문 근거를 다시 넣는 것이다.
+
+우리에게 이건 치명적이다. **카드가 틀리면 그 문서는 영원히 잘못 분류된다** — 배치도 세분화도
+재설계도 원문을 다시 읽지 않고 카드만 보기 때문이다(SPEC 3.1).
+
+### 순서대로 읽는 것의 비용
+
+[On Positional Bias of Faithfulness for Long-form Summarization](https://aclanthology.org/2025.naacl-long.442.pdf)
+(NAACL 2025): 생성된 요약의 충실도가 **U자 곡선과 lead bias**를 보인다. 앞쪽을 더 충실하게
+요약한다.
+
+증분 갱신은 순서대로 읽으므로 여기 정면으로 노출된다. 우리 `summary`는 조각마다 다시 쓰이고,
+그때 살아남는 쪽이 앞이라는 뜻이다. **아직 재보지 않았다.**
+
+16조각을 넘으면 앞에서부터가 아니라 처음~끝을 균등 간격으로 뽑는 우리 규칙은 이 편향에 대한
+올바른 방향이다.
+
+### `_densify`에도 이름이 있다 — Chain of Density
+
+[From Sparse to Dense](https://aclanthology.org/2023.newsum-1.7/)(Adams et al., 2023): 희소한
+요약에서 시작해 **길이를 늘리지 않으면서** 빠진 핵심 개체를 1~3개씩 반복해서 편입한다. 자리를
+만들려고 기존 내용을 압축한다.
+
+우리 카드 프롬프트가 이미 그 규칙을 담고 있다 — *"3~4문장으로 유지하고, 이번 부분이 기존보다
+중요하면 약한 것을 버려 자리를 만들라."* 다른 점은 CoD가 **빠진 개체를 명시적으로 찾는 단계**를
+두는 데 있고, 우리에게는 그 단계가 없다.
+
 ## 읽는 쪽이 에이전트라는 것의 의미
 
 LLM-Wiki 계열 작업의 관측: 트리를 순회하는 에이전트는 **페이지를 열어보고 나서 쓸모를
