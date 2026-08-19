@@ -113,23 +113,37 @@ class RedesignService:
     def due(self) -> bool:
         """Whether the top of the tree is worth drawing again.
 
-        The same doubling every other schedule in this program uses, applied to the
-        collection instead of to one folder: a top level decided over a hundred documents
-        is not worth redrawing at a hundred and one. The count it is measured against is
-        written by whatever last drew the top -- this pass, or the first division of the
-        root before it ever ran.
+        Measured against this pass's own record, not against ``split_at_documents``. That
+        field belongs to the incremental path, which rewrites it every time the root
+        divides -- eighteen times in one 300-document run, never more than 37 documents
+        apart -- so a schedule hung on it can never reach a doubling. Replayed against
+        that run, this method answered no on all three hundred arrivals.
+
+        The first time is different from the rest. Until this pass has drawn anything,
+        there is no count of its own to double, and the number it would have to borrow is
+        the one that keeps moving. So the first draw waits for the root to have enough
+        standing on it to be worth drawing at all, and every draw after that waits for the
+        collection to double -- self-relative, and measured against its own history.
+
+        Drawing early is the point rather than a cost. The property a root is divided on
+        is otherwise chosen by :func:`build_axis` from one group's sentence, over as few
+        as two documents; this pass chooses it from the whole collection's vocabulary.
 
         Scheduling, not judgement: asking late costs a late fix, never a wrong tree
-        (SPEC.md 6.1), and the ratio is to the collection's own history so nothing here
-        is tuned to a corpus.
+        (SPEC.md 6.1).
         """
         root = self._charters.load(PurePosixPath())
-        drawn_at = root.split_at_documents if root is not None else 0
-        if drawn_at <= 0:
-            # Never drawn. The incremental path is still building the first tree, and it
-            # is the one that decides when a root has enough evidence to divide at all.
-            return False
-        return self._count(PurePosixPath()) >= drawn_at * 2
+        if root is not None and root.redrawn_at_documents > 0:
+            return self._count(PurePosixPath()) >= root.redrawn_at_documents * 2
+        # Never drawn by this pass. The incremental path decides when a root has enough
+        # evidence to divide at all; once it has drawn enough of a top level for a
+        # question to be asked about, this pass can ask a better one.
+        standing = sum(
+            1
+            for child in self._vault.iter_folders()
+            if child.parent == PurePosixPath() and child.parts and child.parts[0] != INBOX.parts[0]
+        )
+        return standing >= MIN_CLASSES
 
     async def redesign(self) -> Redesign:
         """Draw a new top level and move everything under it. One entry, or none."""
@@ -356,6 +370,7 @@ class RedesignService:
                 "split_basis": design.axis.strip(),
                 "split_question": design.question.strip(),
                 "split_at_documents": sum(count for _, _, count in standing.folders),
+                "redrawn_at_documents": self._count(PurePosixPath()),
             }
         )
         operations.append(
