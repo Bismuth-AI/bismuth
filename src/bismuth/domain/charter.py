@@ -15,7 +15,7 @@ from bismuth.domain.maintenance import is_axis_label, normalise_label
 
 #: Filename of a folder's note; sorts to the top of a listing.
 CHARTER_FILENAME = "_folder.md"
-CHARTER_SCHEMA_VERSION = 7
+CHARTER_SCHEMA_VERSION = 8
 MAX_PURPOSE_CHARS = 220
 
 _GENERATED_BODY_NOTICE = "<!-- generated from frontmatter -->"
@@ -152,6 +152,16 @@ class Charter(BaseModel):
             "again however much grew beneath it."
         ),
     )
+    redrawn_at_documents: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Root only. How many documents the collection held when the whole-collection "
+            "pass last drew the top of it. Its own field, because split_at_documents is "
+            "rewritten every time the root divides -- eighteen times in one 300-document "
+            "run -- and a schedule measured against that can never mature."
+        ),
+    )
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("split_basis")
@@ -180,6 +190,8 @@ class Charter(BaseModel):
             meta["split_basis"] = self.split_basis
             meta["split_question"] = self.split_question
             meta["split_at_documents"] = self.split_at_documents
+        if self.redrawn_at_documents:
+            meta["redrawn_at_documents"] = self.redrawn_at_documents
         front = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False, default_flow_style=False)
         return f"---\n{front}---\n\n{self._render_body()}\n"
 
@@ -218,6 +230,7 @@ class Charter(BaseModel):
                 split_basis=str(meta.get("split_basis") or ""),
                 split_question=str(meta.get("split_question") or ""),
                 split_at_documents=int(meta.get("split_at_documents") or 0),
+                redrawn_at_documents=int(meta.get("redrawn_at_documents") or 0),
                 updated_at=_parse_datetime(meta.get("updated_at")),
             )
         except (KeyError, TypeError, ValueError) as exc:
