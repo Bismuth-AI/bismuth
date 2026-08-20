@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path, PurePosixPath
 
 from bismuth.container import Bismuth
+from bismuth.prompts import cards as card_prompts
 from bismuth.prompts import placement as placement_prompts
 from bismuth.prompts import redesign as redesign_prompts
 from tests.conftest import ScriptedModel
@@ -247,6 +248,121 @@ class TestAClassThatOnlyWrapsAFolder:
         result = await engine.redesign.redesign()
 
         assert result.applied
+
+
+class TestADocumentTravellingWithTheFolderDoesNotSaveTheClass:
+    """The pass-through rule counted items and not folders, so one loose document
+    assigned to the same class made it two items and skipped the check entirely.
+
+    Measured: 소비자 보호 over 소비자 was dropped correctly at 112 documents and built at
+    224 -- the same pair, the same names -- because a document came along that time."""
+
+    async def test_one_folder_and_one_document_is_still_one_folder(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _three_folders(engine, script)
+        script.set(placement_prompts.PlacementDecision, place_at(""))
+        await add(engine, "loose.txt", "루트에 남은 문서")
+        _designed(script, "문학 및 예술", "자연", "사회")
+        script.set_assigned(
+            {"문학": "C001", "루트에 남은 문서": "C001", "역사": "C002", "과학": "C002"}
+        )
+
+        result = await engine.redesign.redesign()
+
+        assert not (engine.vault.root / "문학 및 예술").exists()
+        assert (engine.vault.root / "문학/문학.txt").is_file()
+        assert result.applied
+
+
+class TestAClassIsHeldToTheQuestionAShelfIs:
+    """The one operator that invents a whole top level was the one never asked whether its
+    names are classes. 특수 분야 지원 collected 여성·장애인기업 and 중대재해 and split
+    dissolved it six minutes later, having paid to move eight files twice."""
+
+    async def test_a_container_name_collects_nothing(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _three_folders(engine, script)
+        _designed(script, "기타 자료", "자연", "사회")
+        script.set_assigned({"문학": "C001", "역사": "C001", "과학": "C002"})
+        script.set_shelf_is_container()
+
+        await engine.redesign.redesign()
+
+        assert not (engine.vault.root / "기타 자료").exists()
+        assert (engine.vault.root / "문학").is_dir()
+        assert (engine.vault.root / "역사").is_dir()
+
+    async def test_it_is_only_asked_about_classes_that_collected_something(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        await _three_folders(engine, script)
+        _designed(script, "인문", "자연", "사회")
+        script.set_assigned({"문학": "C001", "역사": "C001"})
+        llm.calls.clear()
+
+        await engine.redesign.redesign()
+
+        asked = [p for p in llm.prompts_for(None) if "THE BROADER NAME: " in p.user]
+        assert [p.user.split("THE BROADER NAME: ", 1)[1].splitlines()[0] for p in asked] == ["인문"]
+
+
+class TestWhatTheDesignIsShown:
+    """It draws from the subjects and the folders standing here, so what those two say is
+    the whole of its evidence."""
+
+    async def test_a_folder_says_how_much_of_it_is_still_in_the_hall(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """A folder of four that filed all four and one with three in the hall are the
+        same number and opposite states."""
+        from tests.conftest import seed_folder
+
+        seed_folder(Path(engine.vault.root), PurePosixPath("문학"))
+        script.set(placement_prompts.PlacementDecision, place_at("문학"))
+        for index in range(3):
+            await add(engine, f"문학{index}.txt", f"문학 문서 {index}")
+        await _three_folders(engine, script)
+        _designed(script, "인문", "자연", "사회")
+
+        await engine.redesign.redesign()
+
+        drawn = llm.prompts_for(redesign_prompts.Design)[-1].user
+        assert "문학/  (4 documents, 4 of them loose in it)" in drawn
+
+    async def test_subjects_that_stand_under_every_folder_are_ranked_last(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The most common subject in a legal collection is 과태료 -- every statute has
+        one -- and ranked by count it led the list the model draws the top of the tree
+        from, above 전통시장 and 연구개발비 which each stand under exactly one folder."""
+        from tests.conftest import seed_folder
+
+        common, mine = "과태료", {"문학": "시집", "역사": "연표", "과학": "실험"}
+        for name, own in mine.items():
+            seed_folder(Path(engine.vault.root), PurePosixPath(name))
+            script.set(placement_prompts.PlacementDecision, place_at(name))
+            for index in range(2):
+                script.set(
+                    card_prompts.CardDraft,
+                    card_prompts.CardDraft(
+                        title=f"{name}{index}",
+                        summary=f"{name} 문서",
+                        doc_type="법률",
+                        language="ko",
+                        topics=[common, own],
+                    ),
+                )
+                await add(engine, f"{name}{index}.txt", f"{name} {index} 내용")
+        _designed(script, "인문", "자연", "사회")
+
+        await engine.redesign.redesign()
+
+        listed = llm.prompts_for(redesign_prompts.Design)[-1].user
+        subjects = listed.split("most common first):\n", 1)[1].splitlines()[0].split(", ")
+        assert subjects.index(common) > subjects.index("시집")
+        assert subjects.index(common) > subjects.index("실험")
 
 
 class TestThePropertyIsCheckedHereToo:

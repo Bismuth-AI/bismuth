@@ -1283,6 +1283,75 @@ class TestABroaderNameIsCheckedBeforeAnythingMoves:
         assert not (engine.vault.root / "개별 자료").exists()
 
 
+class TestAPileThatSaysItIsAllOneThingIsNotAskedTwice:
+    """Not a refusal to repeat: the folder is saying it has no class to give up on this
+    axis, which stops being true only when what is in it changes. Bought 43 times in one
+    300-document run, 20 of them from the same folder."""
+
+    @staticmethod
+    def _takes_everything(script: ScriptedModel) -> None:
+        """Answer with every handle shown, which is what the guard is about.
+
+        The default fake deliberately keeps a subset back, so this is the one place that
+        has to override it.
+        """
+        script.set(
+            subdivision_prompts.Gathered,
+            lambda prompt, schema: subdivision_prompts.Gathered(
+                members=[
+                    line.strip()[1:6]
+                    for line in prompt.user.splitlines()
+                    if line.strip().startswith("[D")
+                ],
+                shared="모두 같은 종류의 문서",
+            ),
+        )
+
+    async def test_the_same_pile_is_asked_once(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        await _fill(engine, script, 6)
+        self._takes_everything(script)
+        await engine.subdivision.consider(PurePosixPath())
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert not llm.prompts_for(subdivision_prompts.Gathered)
+
+    async def test_a_changed_pile_is_asked_again(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        await _fill(engine, script, 6)
+        self._takes_everything(script)
+        await engine.subdivision.consider(PurePosixPath())
+        llm.calls.clear()
+        await add(engine, "새문서.txt", "새로 들어온 문서 내용")
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert llm.prompts_for(subdivision_prompts.Gathered)
+
+
+class TestANameTurnedDownIsNotBoughtAgain:
+    """The check reads the name and the question, and neither changes between arrivals.
+    신용협동조합 was proposed and turned down eight times under one question in a single
+    run, 상생협력 nine."""
+
+    async def test_the_same_name_under_the_same_question_is_refused_from_memory(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 8)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        script.set_name_is_beside()
+        await engine.subdivision.consider(PurePosixPath())
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert not [p for p in llm.prompts_for(None) if "THE PROPOSED NAME: " in p.user]
+
+
 class TestAShelfAnswersForWhatMovesInsideIt:
     """A folder already standing here was named before the newcomers existed, so nothing
     had ever asked whether its name covers them. Unasked, 과학기술 연구개발 및 기관 -- 42

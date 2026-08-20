@@ -70,6 +70,26 @@ class TestWindows:
         assert _extraction("").windows(100) == ()
 
 
+class TestOneLineSeveralItems:
+    """Asked for one item per line, the model sometimes writes the list on one. Read
+    whole, that line is past what fits on a folder tab and the filter drops it -- eight
+    items were lost that way in one 300-document run."""
+
+    def test_a_comma_separated_line_is_several_items(self) -> None:
+        card = card_prompts.parse_card(
+            "SUMMARY: 한 문장.\nKEYWORD: 온누리상품권, 가맹점, 과징금\nTOPIC: 전통시장"
+        )
+
+        assert card.keywords == ("온누리상품권", "가맹점", "과징금")
+        assert card.topics == ("전통시장",)
+
+    def test_a_label_that_contains_a_comma_survives(self) -> None:
+        """Only a separator, never a rewrite: splitting must not leave an empty piece."""
+        card = card_prompts.parse_card("SUMMARY: 한 문장.\nTOPIC: 대ㆍ중소기업 상생협력,")
+
+        assert card.topics == ("대ㆍ중소기업 상생협력,",)
+
+
 class TestDescribe:
     async def test_short_document_costs_one_call(self, llm: FakeLLM, script: ScriptedModel) -> None:
         card = await CardService(llm, context_chars=10_000).describe(
