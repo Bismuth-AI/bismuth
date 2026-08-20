@@ -154,12 +154,17 @@ class LibraryMaintenanceService:
         self._llm = llm
         self._barren: dict[tuple[str, str], int] = {}
         self._merged: dict[str, int] = {}
-        self._homogeneous: dict[tuple[str, str], bool] = {}
-        """Piles that answered "all of these belong together", keyed by their own signs.
+        self._homogeneous: dict[str, int] = {}
+        """Folders that answered "all of these belong together", and how big they were.
 
-        Not a refusal to be repeated: it is the folder saying it has nothing to give up on
-        this axis, which stops being true only when what is in it changes. Keyed the same
-        way routing memory is, so an arrival invalidates it and nothing else needs to.
+        Not a refusal to be repeated: it is the folder saying it has no class to give up
+        on this axis. Keyed on the folder and released by doubling, which is the rule every
+        other schedule here uses.
+
+        Keyed on the pile's own contents first, which never fired once in 300 documents:
+        an arrival changes the pile, so the fingerprint always differed and the same
+        folder was asked 20 times and gave the same answer 20 times. What has to move is
+        the amount of evidence, not the identity of it.
         """
         self._not_an_answer: dict[tuple[str, str], set[str]] = {}
         """Names the check turned down here, keyed by the question they failed to answer.
@@ -869,13 +874,14 @@ class LibraryMaintenanceService:
         # homogeneous on this axis and has no class to give up. Unremembered it was bought
         # 43 times in one run, 20 of them from the same folder, each time paying for the
         # grouping call and throwing the whole chain away.
-        pile = _shown_fingerprint(documents)
-        if self._homogeneous.get((str(folder), pile)):
+        whole = self._homogeneous.get(str(folder))
+        if whole is not None and len(documents) < whole * 2:
             log_trace(
                 "subdivide.skipped",
                 folder=str(folder),
-                reason="this pile already answered that all of it belongs together",
+                reason="this folder already answered that all of it belongs together",
                 documents=len(documents),
+                answered_at=whole,
             )
             return prompts.Emerging(emerged=False), ()
 
@@ -890,7 +896,7 @@ class LibraryMaintenanceService:
                 took_everything = True
         if not gathered:
             if took_everything:
-                self._homogeneous[(str(folder), pile)] = True
+                self._homogeneous[str(folder)] = len(documents)
             return prompts.Emerging(emerged=False), ()
 
         # The thickest, decided here rather than asked. The prompt already says to return

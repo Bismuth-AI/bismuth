@@ -216,10 +216,10 @@ class RedesignService:
                 log_trace("redesign.refused", reason=refusal, axis=design.axis)
                 return Redesign(refused=refusal, unsound=tuple(design.unsound))
 
-            classes = self._buildable(
-                [(sanitize_segment(item.name), item.sign.strip()) for item in design.classes],
-                standing,
-            )
+            drawn = [(sanitize_segment(item.name), item.sign.strip()) for item in design.classes]
+            promotions = self._promotions(drawn, standing)
+            classes = self._buildable(drawn, standing, promotions)
+            promotions = {name: promotions[name] for name, _ in classes if name in promotions}
             if len(classes) < MIN_CLASSES:
                 return Redesign(
                     question=design.question,
@@ -227,9 +227,9 @@ class RedesignService:
                     unsound=tuple(design.unsound),
                     refused="too few of these answers could be built where they were drawn",
                 )
-            placed = await self._assign(classes, standing)
-            placed = await self._only_classes(placed, classes)
-            if not placed:
+            placed = await self._assign(classes, standing, promotions)
+            placed = await self._only_classes(placed, classes, promotions)
+            if not placed and not promotions:
                 return Redesign(
                     question=design.question,
                     axis=design.axis,
@@ -237,12 +237,13 @@ class RedesignService:
                     unsound=tuple(design.unsound),
                     refused="nothing found a place under the new top level",
                 )
-            return self._apply(design, classes, placed, standing)
+            return self._apply(design, classes, placed, standing, promotions)
 
     async def _only_classes(
         self,
         placed: dict[str, list[PurePosixPath]],
         classes: list[tuple[str, str]],
+        promotions: dict[str, PurePosixPath] | None = None,
     ) -> dict[str, list[PurePosixPath]]:
         """Drop the classes that name what their contents are rather than what they are about.
 
@@ -257,6 +258,10 @@ class RedesignService:
         """
         signs = dict(classes)
         for name, items in list(placed.items()):
+            if name in (promotions or {}):
+                # It is a folder already, moving up. Whether that name is a class was
+                # settled when the folder was built.
+                continue
             verdict = await self._llm.choose(
                 subdivision_prompts.build_shelf_check(
                     path="",
@@ -427,45 +432,75 @@ class RedesignService:
         # about what it collected, so it is decided after the assignment, not here.
         return ""
 
-    def _buildable(
+    def _promotions(
         self, classes: list[tuple[str, str]], standing: _Standing
-    ) -> list[tuple[str, str]]:
-        """Drop the classes that would be built beside a folder of their own name.
+    ) -> dict[str, PurePosixPath]:
+        """The buried folder that each class already is, and will be moved up to become.
 
-        A class is created at the root. A folder standing at the root with the same name
-        IS that class and simply receives the members -- but a folder buried inside the
-        tree is a different folder, and building the class anyway leaves two of that name
-        in two places. Measured live: 금융 drawn at the root while 금융 stood inside
-        산업별 규제 및 지원 제도, whose four children were moved out to it and whose own
-        documents stayed behind.
+        A class is created at the root. A folder standing at the root with that name IS
+        the class and receives the members where it stands; a folder buried inside the
+        tree carries the same name and is not the same folder, and building the class
+        beside it left one subject in two homes -- 금융 at the root and 금융 inside
+        산업별 규제 및 지원 제도, its children moved out to the first and its own
+        documents left in the second.
 
-        Dropping the class rather than refusing the design: the rest of the top level is
-        usually right, and the buried folder keeping the place it has is a better answer
-        than the same subject in two homes. Exact names only, so a class broader than a
-        buried folder -- which is the reason this pass looks below the root at all --
-        is untouched.
+        Refusing such a class was worse. The pass then proposed 금융 및 신용,
+        연구개발 및 과학기술, 중소기업 및 벤처투자 and 소비자 보호 및 협동조합 -- the
+        right top level for that collection -- and every one was dropped, because all four
+        stood inside a 204-document 경제·산업 정책. Pulling a subject up beside the one it
+        belongs with is what this pass is for.
+
+        So the folder moves up and becomes the class. Only when exactly one folder carries
+        the name: two would each have a claim and nothing here can say which, so that case
+        keeps the refusal.
         """
-        buried = {
-            normalise_label(PurePosixPath(name).name)
-            for name, _, _, _ in standing.folders
-            if len(PurePosixPath(name).parts) > 1
+        carried: dict[str, list[PurePosixPath]] = {}
+        for name, _, _, _ in standing.folders:
+            path = PurePosixPath(name)
+            if len(path.parts) > 1:
+                carried.setdefault(normalise_label(path.name), []).append(path)
+        return {
+            name: found[0]
+            for name, _ in classes
+            if len(found := carried.get(normalise_label(name), [])) == 1
         }
+
+    def _buildable(
+        self,
+        classes: list[tuple[str, str]],
+        standing: _Standing,
+        promotions: dict[str, PurePosixPath],
+    ) -> list[tuple[str, str]]:
+        """Drop only the classes whose name is carried by more than one buried folder."""
+        carried: dict[str, int] = {}
+        for name, _, _, _ in standing.folders:
+            path = PurePosixPath(name)
+            if len(path.parts) > 1:
+                key = normalise_label(path.name)
+                carried[key] = carried.get(key, 0) + 1
         kept: list[tuple[str, str]] = []
         for name, sign in classes:
-            if normalise_label(name) in buried:
+            if name not in promotions and carried.get(normalise_label(name), 0) > 1:
                 log_trace(
                     "redesign.dropped",
                     klass=name,
-                    reason="a folder of that name already stands inside the tree",
+                    reason="more than one folder of that name stands inside the tree",
                 )
                 continue
             kept.append((name, sign))
         return kept
 
     async def _assign(
-        self, classes: list[tuple[str, str]], standing: _Standing
+        self,
+        classes: list[tuple[str, str]],
+        standing: _Standing,
+        promotions: dict[str, PurePosixPath] | None = None,
     ) -> dict[str, list[PurePosixPath]]:
-        """One closed choice per folder, and one per document loose at the root."""
+        """One closed choice per folder, and one per document loose at the root.
+
+        A folder being promoted to become a class is not asked about: it is already
+        spoken for, and nothing under it is asked either, because it travels whole.
+        """
         offered = [
             (f"C{index:03d}", name, sign or name)
             for index, (name, sign) in enumerate(classes, start=1)
@@ -473,6 +508,7 @@ class RedesignService:
         by_handle = {handle: name for handle, name, _ in offered}
         placed: dict[str, list[PurePosixPath]] = {name: [] for name, _ in classes}
         taken = {normalise_label(name) for name, _ in classes}
+        promoted = set((promotions or {}).values())
 
         for name, note, count, _ in standing.folders:
             folder = PurePosixPath(name)
@@ -482,9 +518,11 @@ class RedesignService:
             #
             # At the root, where a class is built. A buried folder of the same name is a
             # different folder, and skipping it there built the class beside it out of its
-            # own children -- :meth:`_buildable` now drops such a class before this loop,
-            # and the condition says which case this skip was ever about.
+            # own children -- :meth:`_promotions` moves such a folder up to become the
+            # class instead, and the condition says which case this skip was ever about.
             if normalise_label(folder.name) in taken and len(folder.parts) == 1:
+                continue
+            if any(folder == moved or folder.is_relative_to(moved) for moved in promoted):
                 continue
             answer = await self._llm.choose(
                 prompts.build_assignment(subject=name, note=note, count=count, classes=offered),
@@ -503,7 +541,7 @@ class RedesignService:
 
         # A folder inside another folder that is also moving travels with its parent, so
         # asking for it twice would move it out from under itself.
-        moving = {item for items in placed.values() for item in items}
+        moving = {item for items in placed.values() for item in items} | promoted
         for name, items in placed.items():
             placed[name] = [
                 item
@@ -549,6 +587,7 @@ class RedesignService:
         classes: list[tuple[str, str]],
         placed: dict[str, list[PurePosixPath]],
         standing: _Standing,
+        promotions: dict[str, PurePosixPath] | None = None,
     ) -> Redesign:
         """Every move in one journal entry, so a stopped redesign cannot exist."""
         operations: list[Operation] = []
@@ -559,9 +598,14 @@ class RedesignService:
 
         for name, sign in classes:
             target = PurePosixPath(name)
-            if name not in placed:
+            if name not in placed and name not in (promotions or {}):
                 continue
-            if not self._vault.exists(target):
+            # The folder that carries this name moves up first and becomes the class, so
+            # nothing is created beside it and whatever else was assigned lands inside it.
+            if (rises := (promotions or {}).get(name)) is not None:
+                operations.extend(self._move_folder(rises, PurePosixPath()))
+                moved_folders.append(str(rises))
+            elif not self._vault.exists(target):
                 operations.append(Operation(kind=OperationKind.MKDIR, target=target))
                 shelf = Charter(
                     path=target,
@@ -581,7 +625,7 @@ class RedesignService:
                 )
                 payloads[target / CHARTER_FILENAME] = shelf.to_markdown().encode("utf-8")
 
-            for item in placed[name]:
+            for item in placed.get(name, []):
                 if str(item) in folder_names:
                     operations.extend(self._move_folder(item, target))
                     moved_folders.append(str(item))

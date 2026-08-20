@@ -285,23 +285,44 @@ class TestAClassIsNotBuiltBesideItsOwnName:
     its four children were moved out to the new root folder while its own seven documents
     stayed behind -- one subject, two homes."""
 
-    async def test_a_name_buried_in_the_tree_takes_the_class_off_the_table(
+    async def test_a_name_buried_in_the_tree_rises_to_become_the_class(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
+        """It is not built beside the buried folder, and the buried folder is not left
+        where it is: it moves up and becomes the class."""
         from tests.conftest import seed_folder
 
         await _three_folders(engine, script)
         seed_folder(Path(engine.vault.root), PurePosixPath("문학/금융"))
+        _designed(script, "금융", "자연", "사회")
+        script.set_assigned({"역사": "C002", "과학": "C003"})
+
+        result = await engine.redesign.redesign()
+
+        assert result.applied
+        assert (engine.vault.root / "금융").is_dir()
+        assert not (engine.vault.root / "문학/금융").exists()
+        assert not (engine.vault.root / "금융/금융").exists()
+
+    async def test_two_folders_of_that_name_keep_the_refusal(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Each has a claim on the name and nothing here can say which."""
+        from tests.conftest import seed_folder
+
+        await _three_folders(engine, script)
+        seed_folder(Path(engine.vault.root), PurePosixPath("문학/금융"))
+        seed_folder(Path(engine.vault.root), PurePosixPath("역사/금융"))
         _designed(script, "금융", "자연", "사회", "인문")
-        # 금융 is dropped before the handles are minted, so the three that survive are
-        # C001-3 -- the offer is built from the classes that can actually be created.
-        script.set_assigned({"역사": "C001", "과학": "C002", "문학": "C003"})
+        # 금융 is refused before the handles are minted: 자연, 사회, 인문 are C001-3.
+        script.set_assigned({"과학": "C001", "문학": "C002", "역사": "C003"})
 
         result = await engine.redesign.redesign()
 
         assert result.applied
         assert not (engine.vault.root / "금융").exists()
-        assert (engine.vault.root / "인문/문학/금융").is_dir()
+        assert (engine.vault.root / "사회/문학/금융").is_dir()
+        assert (engine.vault.root / "인문/역사/금융").is_dir()
 
     async def test_the_same_name_at_the_root_is_the_class_itself(
         self, engine: Bismuth, script: ScriptedModel

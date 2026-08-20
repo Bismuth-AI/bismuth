@@ -1319,14 +1319,32 @@ class TestAPileThatSaysItIsAllOneThingIsNotAskedTwice:
 
         assert not llm.prompts_for(subdivision_prompts.Gathered)
 
-    async def test_a_changed_pile_is_asked_again(
+    async def test_one_more_arrival_does_not_unlock_it(
         self, engine: Bismuth, script: ScriptedModel, llm
-    ) -> None:  # type: ignore[no-untyped-def]
+    ) -> None:
+        """Keyed on the pile's own contents this never fired: an arrival changes the
+        pile, so one folder was asked twenty times and answered the same twenty times."""
         await _fill(engine, script, 6)
         self._takes_everything(script)
         await engine.subdivision.consider(PurePosixPath())
         llm.calls.clear()
         await add(engine, "새문서.txt", "새로 들어온 문서 내용")
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert not llm.prompts_for(subdivision_prompts.Gathered)
+
+    async def test_a_doubled_pile_is_asked_again(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The folder's own evidence has to move, which is the rule every other schedule
+        here uses."""
+        await _fill(engine, script, 6)
+        self._takes_everything(script)
+        await engine.subdivision.consider(PurePosixPath())
+        llm.calls.clear()
+        for index in range(7):
+            await add(engine, f"추가{index}.txt", f"추가로 들어온 문서 {index}")
 
         await engine.subdivision.consider(PurePosixPath())
 
