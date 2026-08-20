@@ -292,6 +292,7 @@ class GroupingProblem(StrEnum):
     TOO_FEW_MEMBERS = "fewer than two folders would move onto the shelf"
     TOOK_EVERY_FOLDER = "every folder would move, which renames this folder rather than tidying it"
     UNKNOWN_MEMBER = "a folder named for the shelf does not stand here"
+    SHELF_WOULD_GO_TOO_DEEP = "the shelf would push a folder past the depth a reader can follow"
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +313,8 @@ def validate_grouping(
     ancestor_names: tuple[str, ...] = (),
     into_existing: bool = False,
     taken_anywhere: frozenset[str] = frozenset(),
+    depth: int = 0,
+    member_depths: tuple[int, ...] = (),
 ) -> GroupingValidation:
     """Whether existing sub-folders may be stood together under one broader name.
 
@@ -361,6 +364,12 @@ def validate_grouping(
     # of near-synonyms reached six levels and left an empty folder in the middle of it.
     if any(restates(member, cleaned) for member in members):
         problems.append(GroupingProblem.MEMBER_RESTATES_NAME)
+    # Where the deepest document under the deepest member would end up: one level for the
+    # shelf, plus whatever already stands under that member. The move that reached five
+    # levels put a subtree two deep under a folder one deep, and every part of it had been
+    # locally justified.
+    if member_depths and depth + 1 + max(member_depths) > MAX_DEPTH:
+        problems.append(GroupingProblem.SHELF_WOULD_GO_TOO_DEEP)
     if key in {normalise_label(item) for item in ancestor_names} or any(
         restates(cleaned, item) for item in ancestor_names
     ):
@@ -482,6 +491,17 @@ def smallest_class(depth: int) -> int:
 MIN_GROUPING_MEMBERS = 2
 """Fewer than two folders on a new shelf is a rename (``TOO_FEW_MEMBERS``)."""
 
+MAX_DEPTH = 4
+"""How many levels of folder may stand between the root and a document.
+
+SPEC.md 3.3.1 asks for fewer than five, and :func:`smallest_class` was the only thing
+pushing back on depth -- it raises the bar for a class as the tree deepens but never
+forbids the level, so a 300-document run reached five: 중앙행정기관 조직 및 직제 /
+과학기술 연구개발 및 기관 / 연구개발 기관 및 사업 / 국가연구개발 / 이공계. Four of those
+five segments were drawn by grouping, which is why the ceiling has to hold against
+:func:`validate_grouping` and not only against a new class.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class FolderShape:
@@ -499,6 +519,10 @@ class FolderShape:
     ancestor_names: tuple[str, ...] = ()
     siblings: tuple[str, ...] = ()
     is_root: bool = False
+    subtree_depth: int = 0
+    """How many levels of folder stand below this one; ``0`` for a leaf. Counted from the
+    filesystem, because grouping pushes a whole subtree down by one and the ceiling is
+    about where the deepest document ends up, not about where the shelf goes."""
     last_operator: Operator | None = None
     evidence_moved: bool = True
     """Whether this folder's own evidence has moved since ``last_operator`` was applied."""
@@ -521,12 +545,18 @@ def legal_operators(shape: FolderShape) -> frozenset[Operator]:
     # One class comes out at a time, so both halves of the division have to survive it:
     # the class itself, and the pile it leaves behind. Both bars rise with depth, because
     # a level deep in the tree sits behind every guess above it.
-    if shape.loose_documents >= smallest_class(shape.depth) * 2:
+    # A class deepens the tree only where there is nothing below yet, so the ceiling is
+    # about the child it would create and not about the subtree.
+    if shape.loose_documents >= smallest_class(shape.depth) * 2 and shape.depth < MAX_DEPTH:
         legal.add(Operator.CREATE)
 
     # Two or more folders move onto the shelf and at least one stays beside it, or the
     # shelf has renamed this folder rather than tidying it (``TOOK_EVERY_FOLDER``).
-    if len(shape.children) > MIN_GROUPING_MEMBERS:
+    # A shelf pushes whatever moves onto it down one level, so in the worst case the
+    # deepest thing here goes with it. Which folders actually move is not known until the
+    # model has answered, so this only refuses the case where no member could survive;
+    # :func:`validate_grouping` holds the real one, member by member.
+    if len(shape.children) > MIN_GROUPING_MEMBERS and shape.depth + 1 < MAX_DEPTH:
         legal.add(Operator.MERGE)
 
     # The name is not known yet, so the rest of the grouping contract cannot be checked

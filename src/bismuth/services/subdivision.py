@@ -32,7 +32,10 @@ from bismuth.domain.document import DocumentCard, sidecar_name
 from bismuth.domain.errors import BismuthError
 from bismuth.domain.journal import Actor, JournalEntry, Operation, OperationKind
 from bismuth.domain.maintenance import (
+    FolderShape,
+    Operator,
     ProposedClass,
+    legal_operators,
     normalise_label,
     validate_grouping,
     validate_names,
@@ -254,14 +257,23 @@ class LibraryMaintenanceService:
             log_trace("subdivide.skipped", folder=str(folder), reason="folder note is not managed")
             return []
 
+        # Which of the four operators could be applied here at all, counted from the
+        # filesystem before anything is asked (ADR-0018, docs/spec/maintenance.md 2). An
+        # operator whose contract could only refuse the answer is not offered, so there is
+        # nothing to refuse: one 300-document run asked 52 folders holding three documents
+        # or fewer to divide, and threw away 36 answers for taking the whole pile -- six of
+        # them from folders holding two documents, where no legal answer existed.
+        legal = legal_operators(self._shape_of(folder, contents))
+
         # Before asking what could come out of this folder, ask whether the folder should
-        # be here at all. It runs first and unconditionally, because the folders that most
-        # need the question are the ones that have stopped dividing -- grouping sits after
-        # a successful division and so can only ever widen a tree that is already moving.
-        # If the level goes, there is nothing left here to divide.
-        with log_context(stage="subdivision.split"):
-            if await self._consider_split(folder, filename=filename, on_progress=on_progress):
-                return []
+        # be here at all. It runs first, because the folders that most need the question
+        # are the ones that have stopped dividing -- grouping sits after a successful
+        # division and so can only ever widen a tree that is already moving. If the level
+        # goes, there is nothing left here to divide.
+        if Operator.SPLIT in legal:
+            with log_context(stage="subdivision.split"):
+                if await self._consider_split(folder, filename=filename, on_progress=on_progress):
+                    return []
 
         # Which folder is being judged is the first thing anyone reading these lines
         # needs, and it is not derivable from the document that triggered the call.
@@ -273,6 +285,7 @@ class LibraryMaintenanceService:
                 filename=filename,
                 on_progress=on_progress,
                 allow_emerging=allow_emerging,
+                may_create=Operator.CREATE in legal,
             )
             if plan is None or not plan.groups:
                 return []
@@ -301,7 +314,9 @@ class LibraryMaintenanceService:
         # never narrow one, which left the width a folder reached early as the width it
         # kept for good (SPEC.md 3.3.1, and eight rounds of 300 documents: a root of 3,
         # then 4, then 22, decided by how broad the first two classes happened to be).
-        if not divided.routed:
+        if not divided.routed and Operator.MERGE in legal_operators(
+            self._shape_of(folder, self._read(folder))
+        ):
             with log_context(stage="subdivision.grouping"):
                 await self._consider_grouping(folder, filename=filename, on_progress=on_progress)
 
@@ -339,6 +354,7 @@ class LibraryMaintenanceService:
         filename: str,
         on_progress: ProgressSink | None,
         allow_emerging: bool,
+        may_create: bool = True,
     ) -> prompts.Division | None:
         """Ask the model. Returns None when there is nothing to ask about."""
         purpose = charter.purpose if charter else ""
@@ -377,32 +393,26 @@ class LibraryMaintenanceService:
         # one run, with 77 documents left loose in the shelf that could not divide.
         spent = self._axes_above(folder) if not axis else []
 
-        with log_context(stage="subdivision.emerging"):
-            emerging, _ = await self._find_emerging(
+        if not may_create:
+            # The pile cannot give up a class and still leave one, or the level below this
+            # one would be past the depth a reader can follow. Routing still runs: putting
+            # a loose document behind a sign that already stands here creates nothing.
+            log_trace(
+                "subdivide.skipped",
+                folder=str(folder),
+                reason="no class could legally come out of this pile",
+                documents=len(contents.documents),
+            )
+            emerging = prompts.Emerging(emerged=False)
+        else:
+            emerging = await self._emerging(
                 folder=folder,
                 purpose=purpose,
-                documents=contents.subject_lines,
-                children=contents.children,
+                contents=contents,
+                charter=charter,
                 axis=axis,
-                # The same condition as the axis, deliberately. Split, the folder
-                # inherited a property with no question attached, the chain skipped the
-                # step that would have written one because the property was already
-                # there, and the plan was refused for having no question -- 69 times.
-                axis_question=(
-                    charter.split_question if charter is not None and charter.divided else ""
-                ),
                 spent=spent,
-                language=contents.language,
-            )
-            log_trace(
-                "subdivide.emerging",
-                folder=str(folder),
-                documents=len(contents.documents),
-                subtree=total,
-                axis=axis or emerging.axis,
-                axis_is_new=not axis,
-                emerged=emerging.emerged,
-                name=emerging.name,
+                total=total,
             )
 
         # Only once nothing new has emerged. Routing used to run before that question and
@@ -682,6 +692,71 @@ class LibraryMaintenanceService:
             ),
             groups=proposed_groups,
         )
+
+    async def _emerging(
+        self,
+        *,
+        folder: PurePosixPath,
+        purpose: str,
+        contents: _Contents,
+        charter: Charter | None,
+        axis: str,
+        spent: list[str],
+        total: int,
+    ) -> prompts.Emerging:
+        """The chain that names one class, lifted out so the gate above has a step to skip."""
+        with log_context(stage="subdivision.emerging"):
+            emerging, _ = await self._find_emerging(
+                folder=folder,
+                purpose=purpose,
+                documents=contents.subject_lines,
+                children=contents.children,
+                axis=axis,
+                # The same condition as the axis, deliberately. Split, the folder
+                # inherited a property with no question attached, the chain skipped the
+                # step that would have written one because the property was already
+                # there, and the plan was refused for having no question -- 69 times.
+                axis_question=(
+                    charter.split_question if charter is not None and charter.divided else ""
+                ),
+                spent=spent,
+                language=contents.language,
+            )
+            log_trace(
+                "subdivide.emerging",
+                folder=str(folder),
+                documents=len(contents.documents),
+                subtree=total,
+                axis=axis or emerging.axis,
+                axis_is_new=not axis,
+                emerged=emerging.emerged,
+                name=emerging.name,
+            )
+        return emerging
+
+    def _shape_of(self, folder: PurePosixPath, contents: _Contents) -> FolderShape:
+        """What the enumeration needs, counted from the filesystem and nothing else."""
+        parent_children = (
+            [name for name, _ in self._read(folder.parent).children if name != folder.name]
+            if folder.parts
+            else []
+        )
+        return FolderShape(
+            loose_documents=len(contents.documents),
+            depth=len(folder.parts),
+            children=tuple(name for name, _ in contents.children),
+            ancestor_names=folder.parts,
+            siblings=tuple(parent_children),
+            is_root=not folder.parts,
+            subtree_depth=self._subtree_depth(folder),
+        )
+
+    def _subtree_depth(self, folder: PurePosixPath) -> int:
+        """How many levels of folder stand below this one; ``0`` for a leaf."""
+        children = [name for name, _ in self._read(folder).children if name != INBOX.parts[0]]
+        if not children:
+            return 0
+        return 1 + max(self._subtree_depth(folder / name) for name in children)
 
     async def _existing_assignments(
         self,
@@ -1324,6 +1399,23 @@ class LibraryMaintenanceService:
             )
             return False
 
+        # A level holding one folder and none of its own documents cannot be answering
+        # anything: every document under it is under its single child, so the reader pays
+        # a guess to reach a list of one. Nothing the model could say would change that,
+        # so it is not asked -- 전통시장 및 지역경제 held ten documents through one child
+        # and survived a run in which the split question was put 273 times.
+        if len(children) == 1 and not here:
+            log_trace(
+                "subdivide.split_asked",
+                folder=str(folder),
+                children=1,
+                documents=0,
+                answer="DISSOLVE",
+                reason="one folder below and none of its own, so the level answers nothing",
+            )
+            report(on_progress, Progress(stage=Stage.DIVIDING, filename=filename, note=str(parent)))
+            return self._apply_split(folder, children)
+
         answer = await self._llm.choose(
             prompts.build_split_check(
                 path=str(folder),
@@ -1488,29 +1580,6 @@ class LibraryMaintenanceService:
             )
             return False
 
-        # The one operator that invents a name without choosing a property, so nothing
-        # the axis check refuses ever reached it. Unchecked, it put 283 of 300 documents
-        # behind one folder named after what they are made of. Asked before the loop
-        # below, which costs one call per folder standing here.
-        verdict = await self._llm.choose(
-            prompts.build_shelf_check(
-                path=str(folder),
-                name=proposal.name,
-                sign=proposal.sign,
-                moving=[],
-                staying=[name for name, _, _ in children],
-            ),
-            choices=("CLASS", "CONTAINER"),
-        )
-        if verdict.strip().upper() == "CONTAINER":
-            log_trace(
-                "subdivide.grouping_rejected",
-                folder=str(folder),
-                reason="the broader name says what the documents are, not what they are about",
-                proposed=proposal.name,
-            )
-            return False
-
         # Naming a folder that already stands here is not a collision, it is the cheaper
         # answer: these folders move inside that one and no level is created. Asked for
         # five times in one run and refused five times, because the name it wanted was
@@ -1531,6 +1600,66 @@ class LibraryMaintenanceService:
             if answer.strip().upper() == "SHELF":
                 members.append(child)
 
+        if not members:
+            return False
+
+        # The one operator that invents a name without choosing a property, so nothing the
+        # axis check refuses ever reached it. Unchecked, it put 283 of 300 documents behind
+        # one folder named after what they are made of.
+        #
+        # Asked here rather than before the membership loop, which is where it used to sit
+        # to save one call per folder standing beside the shelf. It was answering about a
+        # name with nothing under it, and it passed 중소기업 지원 관련 법률 -- a name that
+        # says what its contents are, which is the one thing it exists to refuse. Shown the
+        # eight folders that would actually move, the question is about something.
+        verdict = await self._llm.choose(
+            prompts.build_shelf_check(
+                path=str(folder),
+                name=into or proposal.name,
+                sign=proposal.sign,
+                moving=[name for name, _, _ in members],
+                staying=[name for name, _, _ in children if name not in {m for m, _, _ in members}],
+            ),
+            choices=("CLASS", "CONTAINER"),
+        )
+        if verdict.strip().upper() == "CONTAINER":
+            log_trace(
+                "subdivide.grouping_rejected",
+                folder=str(folder),
+                reason="the broader name says what the documents are, not what they are about",
+                proposed=into or proposal.name,
+                members=[name for name, _, _ in members],
+            )
+            return False
+
+        # A shelf that already stands here was named for what it holds, and nothing has
+        # asked whether it also answers for what is about to move inside it. Left unasked,
+        # 과학기술 연구개발 및 기관 -- 42 documents of research law -- was moved under
+        # 중앙행정기관 조직 및 직제, whose name then answered for a fifth of its own
+        # contents. Only on this path: a new shelf is named from its members, so its name
+        # cannot fail to cover them, while an existing one was named before they existed.
+        if into is not None:
+            standing_note = next((note for name, note, _ in children if name == into), "")
+            for name, note, _ in members:
+                answer = await self._llm.choose(
+                    prompts.build_covers_check(
+                        shelf=into,
+                        note=standing_note,
+                        incoming=name,
+                        incoming_note=note,
+                    ),
+                    choices=("COVERS", "WIDER"),
+                )
+                if answer.strip().upper() != "COVERS":
+                    log_trace(
+                        "subdivide.grouping_rejected",
+                        folder=str(folder),
+                        reason="the folder standing here does not answer for what would move inside it",
+                        proposed=into,
+                        members=[name],
+                    )
+                    return False
+
         validation = validate_grouping(
             name=into or proposal.name,
             axis=charter.split_basis,
@@ -1539,6 +1668,8 @@ class LibraryMaintenanceService:
             ancestor_names=folder.parts,
             into_existing=into is not None,
             taken_anywhere=self._names_in_use(),
+            depth=len(folder.parts),
+            member_depths=tuple(self._subtree_depth(folder / name) + 1 for name, _, _ in members),
         )
         if not validation.accepted:
             log_trace(
