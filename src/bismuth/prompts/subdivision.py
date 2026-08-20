@@ -856,7 +856,13 @@ is already fixed for nearly everything in the folder.\
 
 
 def build_axis_check(
-    *, path: str, axis: str, axis_question: str, name: str, spent: list[str] | None = None
+    *,
+    path: str,
+    axis: str,
+    axis_question: str,
+    name: str,
+    rest: list[str] | None = None,
+    spent: list[str] | None = None,
 ) -> Prompt:
     """One closed question about the property a folder is about to be fixed on.
 
@@ -867,12 +873,20 @@ def build_axis_check(
     reply, it approved 문서의 성격, 주관 부처 and 법령의 성격 -- every axis it exists to
     reject. It went out with the boundary audit and the next run fixed the root on 법률명
     at 89 documents, which is the failure docs/spec/subdivision.md 9-2 records as fatal.
+
+    ``rest`` is what the folder is about, which the system prompt has always assumed it
+    could see: two of its rules are about whether the documents here would give different
+    answers, and it was shown a path and a label. Reading the label alone it held
+    상생협력 촉진 분야 over a folder of 과학관법, 디지털포용 and 가상융합산업 -- a
+    well-formed subject property, and one nothing in that folder answers -- which then
+    fixed six folders on it and left 55 documents unable to divide.
     """
     return Prompt(
         system=_AXIS_CHECK_SYSTEM,
         user=(
             f"FOLDER: {path or '(root)'}\n"
-            "PROPERTIES THE FOLDERS ABOVE ARE ALREADY DIVIDED ON:\n"
+            + ("WHAT THE DOCUMENTS HERE ARE ABOUT:\n  " + ", ".join(rest) + "\n" if rest else "")
+            + "PROPERTIES THE FOLDERS ABOVE ARE ALREADY DIVIDED ON:\n"
             + ("\n".join(f"  {item}" for item in spent) if spent else "  (none)")
             + f"\n\nPROPERTY: {axis}\nQUESTION IT ASKS: {axis_question}\n"
             f"FIRST FOLDER NAME IT WOULD PRODUCE: {name}"

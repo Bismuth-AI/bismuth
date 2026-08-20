@@ -1283,6 +1283,42 @@ class TestABroaderNameIsCheckedBeforeAnythingMoves:
         assert not (engine.vault.root / "개별 자료").exists()
 
 
+class TestTheAxisCheckSeesTheFolderItJudges:
+    """Two of its rules are about whether the documents here would give different answers
+    to the property, and the request carried a path and a label.
+
+    Measured on 300 documents: it held 상생협력 촉진 분야 over a folder of 과학관법,
+    디지털포용 and 가상융합산업 -- a well-formed subject property that nothing in that
+    folder answers -- and six folders were fixed on it, one of them left with 55
+    documents it could never divide."""
+
+    async def test_what_the_folder_is_about_is_in_the_question(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        asked = [p for p in llm.prompts_for(None) if "QUESTION IT ASKS:" in p.user]
+        assert asked
+        assert "WHAT THE DOCUMENTS HERE ARE ABOUT:" in asked[0].user
+
+    async def test_a_settled_axis_is_not_re_checked(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """It is asked once, when the property is chosen, and never again."""
+        ids = await _fill(engine, script, 8)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+        llm.calls.clear()
+        _emerges(script, "역사", "역사 자료", ids[2:4])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert not [p for p in llm.prompts_for(None) if "QUESTION IT ASKS:" in p.user]
+
+
 class TestAPileThatSaysItIsAllOneThingIsNotAskedTwice:
     """Not a refusal to repeat: the folder is saying it has no class to give up on this
     axis, which stops being true only when what is in it changes. Bought 43 times in one

@@ -910,13 +910,10 @@ class LibraryMaintenanceService:
         # not exist yet. A folder that already has one inherits it: either way the name is
         # then asked as an answer to a question, which is what a folder name is.
         settled_axis, question = axis, axis_question
+        rest = _vocabulary(self._read(folder), taken=members) if not axis else []
         if not axis:
             asked = await self._llm.structured(
-                prompts.build_axis(
-                    shared=chosen.shared,
-                    rest=_vocabulary(self._read(folder), taken=members),
-                    language=language,
-                ),
+                prompts.build_axis(shared=chosen.shared, rest=rest, language=language),
                 schema=prompts.Axis,
             )
             settled_axis, question = asked.axis.strip(), asked.axis_question.strip()
@@ -949,6 +946,9 @@ class LibraryMaintenanceService:
                     axis=settled_axis,
                     axis_question=question,
                     name=name,
+                    # The same evidence the property was chosen from, so the two rules
+                    # about what the documents here would answer have something to read.
+                    rest=rest,
                     spent=spent,
                 ),
                 choices=("FAILS", "HOLDS"),
