@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from bismuth.container import Bismuth
-from bismuth.domain.charter import Charter
+from bismuth.domain.charter import CHARTER_FILENAME, Charter
 from bismuth.domain.maintenance import validate_grouping
 from bismuth.ports.llm import Prompt
 from bismuth.prompts import placement as placement_prompts
@@ -391,12 +391,14 @@ class TestOneAxisPerFolder:
     async def test_a_divided_folder_is_held_to_the_axis_it_has(
         self, engine: Bismuth, script: ScriptedModel, llm
     ) -> None:  # type: ignore[no-untyped-def]
-        ids = await _fill(engine, script, 4)
+        # Eight, so that four are still loose after the first class comes out and the
+        # second look is a question the gate lets through.
+        ids = await _fill(engine, script, 8)
         _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야")
         await engine.subdivision.consider(PurePosixPath())
         llm.calls.clear()
 
-        _emerges(script, "과학", "과학 자료", ids[2:], axis="완전히 다른 축")
+        _emerges(script, "과학", "과학 자료", ids[2:4], axis="완전히 다른 축")
         await engine.subdivision.consider(PurePosixPath())
 
         # The second look is told the axis rather than asked for one...
@@ -1255,20 +1257,106 @@ class TestABroaderNameIsCheckedBeforeAnythingMoves:
         assert not (engine.vault.root / "개별 자료").exists()
         assert (engine.vault.root / "문학").is_dir()
 
-    async def test_it_is_asked_before_the_folders_are(
+    async def test_it_is_asked_once_the_members_are_known(
         self, engine: Bismuth, script: ScriptedModel, llm
     ) -> None:  # type: ignore[no-untyped-def]
-        """The membership loop costs one call per folder standing here."""
+        """Shown nothing, the check passed a name that says what its contents are.
+
+        It used to run before the membership loop, to save one call per folder standing
+        beside the shelf. Answering about a bare name, it let 중소기업 지원 관련 법률
+        through -- the exact shape it exists to refuse. The folders that would move are
+        the evidence, so it waits for them.
+        """
         await _fill(engine, script, 8)
         script.set(
             subdivision_prompts.Grouping,
             subdivision_prompts.Grouping(emerged=True, name="개별 자료", sign="여러 자료"),
         )
+        script.set_shelved(["문학", "역사"])
         script.set_shelf_is_container()
 
         await self._three_shelves(engine, script)
 
-        assert not [p for p in llm.prompts_for(None) if "THE BROADER SHELF:" in p.user]
+        asked = [p for p in llm.prompts_for(None) if "THE BROADER NAME:" in p.user]
+        assert asked
+        assert "문학/" in asked[-1].user and "역사/" in asked[-1].user
+        assert not (engine.vault.root / "개별 자료").exists()
+
+
+class TestAShelfAnswersForWhatMovesInsideIt:
+    """A folder already standing here was named before the newcomers existed, so nothing
+    had ever asked whether its name covers them. Unasked, 과학기술 연구개발 및 기관 -- 42
+    documents of research law -- was moved under 중앙행정기관 조직 및 직제, whose name then
+    answered for a fifth of its own contents."""
+
+    async def _three_shelves(self, engine: Bismuth, script: ScriptedModel) -> None:
+        for name in ("문학", "과학", "역사"):
+            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"])
+            await engine.subdivision.consider(PurePosixPath())
+
+    async def test_a_folder_the_standing_name_does_not_cover_stays_put(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        await _fill(engine, script, 10)
+        await self._three_shelves(engine, script)
+        script.set(
+            subdivision_prompts.Grouping,
+            subdivision_prompts.Grouping(emerged=True, name="문학", sign="문학 자료"),
+        )
+        script.set_shelved(["과학"])
+        script.set_name_is_beside()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        assert (engine.vault.root / "과학").is_dir()
+        assert not (engine.vault.root / "문학" / "과학").exists()
+
+    async def test_a_new_shelf_is_not_asked_the_question(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """It is named from its members, so its name cannot fail to cover them."""
+        await _fill(engine, script, 10)
+        await self._three_shelves(engine, script)
+        script.set(
+            subdivision_prompts.Grouping,
+            subdivision_prompts.Grouping(emerged=True, name="인문", sign="인문 자료"),
+        )
+        script.set_shelved(["문학", "역사"])
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        asked = [
+            p for p in llm.prompts_for(None) if "THE FOLDER THAT WOULD MOVE INSIDE IT:" in p.user
+        ]
+        assert not asked
+
+
+class TestALevelThatAnswersNothingGoesWithoutAsking:
+    """One folder below and none of its own documents: every document under it is under
+    its single child, so the reader pays a guess to reach a list of one. 전통시장 및
+    지역경제 held ten documents that way through a run that asked the split question 273
+    times."""
+
+    async def test_a_pass_through_level_is_dissolved(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 4)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+        await engine.subdivision.consider(PurePosixPath())
+        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
+        # A level with nothing of its own, standing over the one folder that holds it all.
+        (engine.vault.root / "인문").mkdir()
+        shutil.move(str(engine.vault.root / "문학"), str(engine.vault.root / "인문" / "문학"))
+        (engine.vault.root / "인문" / CHARTER_FILENAME).write_text(
+            Charter(path=PurePosixPath("인문"), title="인문", purpose="인문 자료").to_markdown(),
+            encoding="utf-8",
+        )
+        llm.calls.clear()
+
+        await engine.subdivision.consider(PurePosixPath("인문"))
+
+        assert not [p for p in llm.prompts_for(None) if "THE LEVEL IN QUESTION:" in p.user]
 
 
 class TestGroupingDoesNotRebuildWhatSplittingTookDown:

@@ -2,6 +2,7 @@ from pathlib import PurePosixPath
 
 from bismuth.domain.charter import Charter
 from bismuth.domain.maintenance import (
+    MAX_DEPTH,
     FolderShape,
     GroupingProblem,
     Operator,
@@ -275,6 +276,47 @@ class TestWhatMayBeAsked:
         )
 
         assert Operator.MERGE in legal_operators(shape)
+
+
+class TestTheTreeHasACeiling:
+    """SPEC.md 3.3.1 asks for fewer than five levels, and until now only the size bar
+    pushed back on depth. A 300-document run reached five, four of whose five segments
+    were drawn by grouping rather than by a new class."""
+
+    def test_a_folder_at_the_ceiling_may_not_create_a_child(self) -> None:
+        shape = FolderShape(loose_documents=40, depth=MAX_DEPTH, ancestor_names=("가", "나"))
+
+        assert Operator.CREATE not in legal_operators(shape)
+
+    def test_one_level_above_it_may(self) -> None:
+        shape = FolderShape(loose_documents=40, depth=MAX_DEPTH - 1, ancestor_names=("가", "나"))
+
+        assert Operator.CREATE in legal_operators(shape)
+
+    def test_a_shelf_that_would_push_a_subtree_past_the_ceiling_is_refused(self) -> None:
+        """The move that reached five levels: a subtree two deep, put one level lower."""
+        result = validate_grouping(
+            name="연구개발 기관 및 사업",
+            axis="행정 영역",
+            members=("국가연구개발", "과학기술원 설립 및 운영"),
+            siblings=("국가연구개발", "과학기술원 설립 및 운영", "뇌연구 촉진"),
+            depth=2,
+            member_depths=(2, 1),
+        )
+
+        assert GroupingProblem.SHELF_WOULD_GO_TOO_DEEP in result.problems
+
+    def test_the_same_shelf_nearer_the_root_is_not(self) -> None:
+        result = validate_grouping(
+            name="연구개발 기관 및 사업",
+            axis="행정 영역",
+            members=("국가연구개발", "과학기술원 설립 및 운영"),
+            siblings=("국가연구개발", "과학기술원 설립 및 운영", "뇌연구 촉진"),
+            depth=0,
+            member_depths=(2, 1),
+        )
+
+        assert result.accepted
 
 
 class TestMovingUnderAFolderThatStandsHere:

@@ -320,6 +320,9 @@ class ScriptedModel:
             # against.
             level = prompt.user.split("THE LEVEL IN QUESTION: ", 1)[-1].splitlines()[0]
             return "DISSOLVE" if level in self._dissolve else "KEEP"
+        if "THE FOLDER THAT WOULD MOVE INSIDE IT:" in prompt.user:
+            # Whether a folder that already stands answers for what would move inside it.
+            return "WIDER" if self._name_is_beside else "COVERS"
         if "THE BROADER SHELF:" in prompt.user:
             # Standing existing folders on one shelf: the choice is about a folder, not
             # a document, so it is answered from its own script.

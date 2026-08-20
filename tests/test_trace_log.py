@@ -68,11 +68,15 @@ class TestJoinable:
 
 class TestStages:
     async def test_a_decision_carries_the_stage_that_produced_it(
-        self, engine: Bismuth, logs: Path
+        self, engine: Bismuth, script: ScriptedModel, logs: Path
     ) -> None:
         """A context that covers only the model call leaves the decision untagged, so
         filtering by stage returns the calls and not what they decided."""
-        await add(engine, "contract.txt")
+        # Four, in one pile, because the emerging step is not asked of a folder that
+        # could not give up a class and still leave one behind.
+        script.set(placement_prompts.PlacementDecision, place_at(""))
+        for index in range(4):
+            await add(engine, f"contract{index}.txt", f"계약서 {index}")
 
         staged = {
             line["event"]: line.get("stage")
@@ -130,16 +134,26 @@ class TestSilence:
     ) -> None:
         """A power-of-two schedule asked the root of a thirty-document archive four
         times, all of them early, and never again after the sixteenth document. Nothing
-        was ever filed. Arrival is what makes the question worth asking."""
+        was ever filed. Arrival is what makes the question worth asking.
+
+        Every arrival to a pile that could give up a class, that is. Below that the
+        question has no legal answer -- a class of two out of three leaves one behind --
+        and the gate says so instead of paying to be refused."""
         script.set(placement_prompts.PlacementDecision, place_at(""))
-        for index in range(3):
+        for index in range(6):
             await add(engine, f"doc{index}.txt", f"문서 {index}")
 
-        asked = [
-            line for line in _lines(logs / "trace.jsonl") if line["event"] == "subdivide.emerging"
+        lines = _lines(logs / "trace.jsonl")
+        asked = [line for line in lines if line["event"] == "subdivide.emerging"]
+        gated = [
+            line["documents"]
+            for line in lines
+            if line["event"] == "subdivide.skipped"
+            and line.get("reason") == "no class could legally come out of this pile"
         ]
 
-        assert [line["documents"] for line in asked] == [1, 2, 3]
+        assert [line["documents"] for line in asked] == [4, 5, 6]
+        assert gated == [1, 2, 3]
 
     async def test_a_folder_left_alone_says_why(
         self, engine: Bismuth, script: ScriptedModel, logs: Path
