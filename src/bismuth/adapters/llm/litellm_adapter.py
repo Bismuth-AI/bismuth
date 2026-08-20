@@ -5,14 +5,36 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import re
 import time
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from bismuth.adapters.llm.body import (
+    _drop_unsupported,
+    _schema_output_cap,
+    apply_body,
+)
+from bismuth.adapters.llm.wire import (
+    _AbsoluteTimeoutError,
+    _close_stream,
+    _dump_chunk,
+    _field,
+    _first_choice,
+    _InactivityTimeoutError,
+    _load_litellm,
+    _looks_like_repetition,
+    _looks_like_timeout,
+    _open_stream,
+    _parse_json,
+    _repeated_suffix,
+    _RepetitionDetectedError,
+    _shared_aiohttp_session,
+    _text_field,
+    close_clients,
+    preload,
+)
 from bismuth.domain.errors import ModelRequestError, StructuredOutputError
 from bismuth.logging_setup import log_llm_call
 from bismuth.ports.llm import CURRENT_DOCUMENT, Prompt, Usage
@@ -20,76 +42,10 @@ from bismuth.ports.llm import CURRENT_DOCUMENT, Prompt, Usage
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
-_litellm: Any = None
-_owned_aiohttp_sessions: dict[int, Any] = {}
 
-
-def _load_litellm() -> Any:
-    """Import LiteLLM lazily, not at module scope, so our own ``.env`` load wins over python-dotenv's upward directory scan on import."""
-    global _litellm
-    if _litellm is None:
-        # LiteLLM downloads its price list from GitHub while importing, with a five second
-        # timeout and a warning when it expires. Measured on a box that cannot reach
-        # raw.githubusercontent.com: 8.5s to import, against 3.1s with the bundled copy --
-        # paid at every start, and the first thing the user sees is a network warning from
-        # a tool that organises local files. The bundled copy ships with the installed
-        # LiteLLM, so a model priced only in a newer list reports no cost rather than a
-        # wrong one, which is what usage_of already does for anything unlisted. Set
-        # LITELLM_LOCAL_MODEL_COST_MAP=false to fetch the current list instead.
-        os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
-
-        import litellm
-
-        litellm.suppress_debug_info = True
-        litellm.drop_params = True
-        _litellm = litellm
-    return _litellm
-
-
-def preload() -> None:
-    """Do the deferred LiteLLM import now.
-
-    The deferral exists to win a race against python-dotenv, not to postpone the cost:
-    importing LiteLLM takes seconds, and paying that inside the first request makes a
-    started server look like a hung one. Call once, after the configuration is loaded.
-    """
-    _load_litellm()
-
-
-async def close_clients() -> None:
-    """Close LiteLLM's shared async transports during application shutdown."""
-    sessions = list(_owned_aiohttp_sessions.values())
-    _owned_aiohttp_sessions.clear()
-    for session in sessions:
-        if not getattr(session, "closed", True):
-            await session.close()
-    if _litellm is None:
-        return
-    close = getattr(_litellm, "close_litellm_async_clients", None)
-    if close is not None:
-        await close()
-
-
-async def _shared_aiohttp_session() -> Any | None:
-    """Own one explicit aiohttp session per event loop for real LiteLLM calls.
-
-    LiteLLM otherwise creates an implicit session on some OpenAI-compatible streaming
-    paths.  Exception/fallback paths can let that object be collected before its cache
-    cleanup runs, producing ``Unclosed client session`` during a live batch.  Tests and
-    embedders that replace LiteLLM with a stub do not need or receive this transport.
-    """
-    client = _load_litellm()
-    if getattr(client, "__name__", "") != "litellm":
-        return None
-    loop = asyncio.get_running_loop()
-    key = id(loop)
-    session = _owned_aiohttp_sessions.get(key)
-    if session is None or getattr(session, "closed", False):
-        from aiohttp import ClientSession
-
-        session = ClientSession()
-        _owned_aiohttp_sessions[key] = session
-    return session
+# Re-exported so callers keep one import for the provider adapter: the lifecycle lives in
+# :mod:`wire` because it belongs to the transport, not to this class.
+__all__ = ["LiteLLMAdapter", "close_clients", "preload", "usage_of"]
 
 
 def usage_of(response: Any, model: str) -> Usage:
@@ -113,68 +69,10 @@ def usage_of(response: Any, model: str) -> Usage:
     )
 
 
-_OPENAI_BODY_PARAMS = frozenset(
-    {
-        "temperature",
-        "top_p",
-        "presence_penalty",
-        "frequency_penalty",
-        "max_tokens",
-        "max_completion_tokens",
-        "stop",
-        "seed",
-        "n",
-        "logit_bias",
-        "user",
-        "reasoning_effort",
-    }
-)
 """Body values LiteLLM understands as its own arguments. Everything else has to be
 smuggled past it -- see :func:`apply_body`."""
-
-
-_SAMPLING_PARAMS = frozenset(
-    {"temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty", "seed"}
-)
 """How the model picks its next token. A classification call owns these; see
 :func:`apply_body`."""
-
-
-_DROPPABLE = _SAMPLING_PARAMS | frozenset({"reasoning_effort"})
-"""Generation settings Bismuth can stop sending without changing the question it asked."""
-
-
-def apply_body(
-    kwargs: dict[str, Any], body: dict[str, Any], *, owns_sampling: bool = False
-) -> None:
-    """Merge configured request-body values into a completion call, in place.
-
-    Split because LiteLLM runs with ``drop_params``, which silently discards arguments
-    the provider is not known to support -- and that is exactly the set worth
-    configuring: ``top_k``, ``min_p``, and the ``chat_template_kwargs`` that turns a
-    qwen model's thinking off. Those go through ``extra_body``, which is passed to the
-    endpoint untouched. The standard ones stay top-level so LiteLLM can translate them
-    per provider.
-
-    ``owns_sampling`` drops the configured sampling values for schema-bound calls, which
-    ask a closed question and want the same answer twice. A real configuration carried
-    ``temperature: 0.7`` and ``presence_penalty: 1.5`` -- sensible for chat, and a
-    presence penalty is the exact opposite of what placement asks for, because placement
-    shows the model the existing folder names and wants one of them back. Everything the
-    endpoint itself needs, including ``chat_template_kwargs``, still goes through.
-    """
-    if not body:
-        return
-    extra: dict[str, Any] = dict(kwargs.get("extra_body") or {})
-    for name, value in body.items():
-        if owns_sampling and name in _SAMPLING_PARAMS:
-            continue
-        if name in _OPENAI_BODY_PARAMS:
-            kwargs[name] = value
-        else:
-            extra[name] = value
-    if extra:
-        kwargs["extra_body"] = extra
 
 
 _MINIMAL_REASONING = "minimal"
@@ -192,66 +90,6 @@ LiteLLM removes the parameter for models it knows have no reasoning to configure
 endpoint that refuses it by name is honoured through :func:`_learn_refusal`. An operator
 who wants more can set ``reasoning_effort`` in the configured body.
 """
-
-
-_UNSUPPORTED: dict[str, set[str]] = {}
-"""Generation parameters a served model has refused by name, keyed by model.
-
-Process-wide because both adapters talk to the same endpoint: whichever call discovers
-the refusal spares every later one. Cleared by nothing -- a served model that starts
-accepting a parameter again is a restart away, and the alternative is paying a failed
-round trip per call to find out.
-"""
-
-
-def _drop_unsupported(kwargs: dict[str, Any]) -> None:
-    """Leave out what this model has already refused."""
-    for name in _UNSUPPORTED.get(str(kwargs.get("model", "")), ()):
-        kwargs.pop(name, None)
-
-
-def _learn_refusal(exc: Exception, kwargs: dict[str, Any]) -> str | None:
-    """Give up the sampling parameter an endpoint just refused by name, and remember it.
-
-    Read from the error's own ``param`` field rather than matched against a list of model
-    names, because the lists disagree with the servers. Measured: gpt-5.6-luna answered
-    ``400 unsupported_value`` for ``temperature: 0`` while
-    ``litellm.get_supported_openai_params`` listed temperature as supported, so
-    ``drop_params`` had no reason to remove it.
-
-    Only generation knobs. Omitting one costs the model's default in its place, which is
-    the endpoint's own stated terms; omitting an output cap or a schema would change what
-    was asked, and those have their own ladders.
-    """
-    name = getattr(exc, "param", None)
-    if not isinstance(name, str) or name not in _DROPPABLE or name not in kwargs:
-        return None
-    _UNSUPPORTED.setdefault(str(kwargs.get("model", "")), set()).add(name)
-    del kwargs[name]
-    return name
-
-
-async def _open_stream(kwargs: dict[str, Any], *, given_up: list[str] | None = None) -> Any:
-    """Begin a completion, dropping any sampling parameter the endpoint refuses by name.
-
-    Terminates: a refusal is only acted on while the parameter is still in ``kwargs``, and
-    each one is removed before retrying.
-    """
-    while True:
-        try:
-            return await _load_litellm().acompletion(**kwargs)
-        except Exception as exc:
-            name = _learn_refusal(exc, kwargs)
-            if name is None:
-                raise
-            if given_up is not None:
-                given_up.append(name)
-            logger.warning(
-                "%s refused %s (%s); retrying without it",
-                kwargs.get("model"),
-                name,
-                getattr(exc, "code", None) or "400",
-            )
 
 
 def _loggable_parameters(
@@ -286,9 +124,6 @@ def _loggable_parameters(
     return logged
 
 
-_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-
-
 _JSON_INSTRUCTION = """\
 Reply with a single JSON object and nothing else. No prose, no markdown fences, \
 no explanation before or after. It must validate against this JSON Schema:
@@ -321,20 +156,6 @@ _CHOICE_RETRY_SYSTEM = """\
 Return exactly one allowed literal and nothing else. Do not use JSON, quotes, prose,
 markdown, or an answer wrapper.
 """
-
-# Initial operational caps measured against real successful calls. They are safety
-# ceilings, not a substitute for schema validation. Unknown extension schemas get the
-# conservative general cap rather than running unbounded.
-_SCHEMA_MAX_TOKENS: dict[str, int] = {
-    "CharterDraft": 256,
-    "ExistingAssignments": 1024,
-    "DensifiedSummary": 512,
-    "Members": 512,
-    "CardDraft": 2048,
-    "CardUpdate": 2048,
-    "Emerging": 4096,
-}
-_DEFAULT_SCHEMA_MAX_TOKENS = 2048
 _MAX_SCHEMA_MAX_TOKENS = 8192
 _CHOICE_MAX_TOKENS = 64
 """What one literal out of a listed set is allowed to cost.
@@ -347,20 +168,6 @@ gpt-5-nano at minimal effort: 8 tokens spent with nothing shown, then ``SHELF`` 
 _MAX_CHOICE_MAX_TOKENS = 512
 _REPAIR_RAW_CHARS = 2000
 _STALLED_WHITESPACE_CHARS = 512
-
-
-class _RepetitionDetectedError(RuntimeError):
-    def __init__(self, pattern: str) -> None:
-        super().__init__(f"repeated output pattern {pattern!r}")
-        self.pattern = pattern
-
-
-class _InactivityTimeoutError(TimeoutError):
-    pass
-
-
-class _AbsoluteTimeoutError(TimeoutError):
-    pass
 
 
 class LiteLLMAdapter:
@@ -1015,142 +822,3 @@ class LiteLLMAdapter:
     @staticmethod
     def _usage_of(response: Any, model: str) -> Usage:
         return usage_of(response, model)
-
-
-def _looks_like_timeout(exc: Exception) -> bool:
-    names = " ".join(item.__name__ for item in exc.__class__.__mro__)
-    return "timeout" in names.casefold() or "timed out" in str(exc).casefold()
-
-
-def _looks_like_repetition(exc: Exception) -> bool:
-    """Recognise provider/LiteLLM repetition errors through wrapper exceptions."""
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        message = f"{type(current).__name__}: {current}".casefold()
-        if "repeating the same chunk" in message or "repeated stream chunk" in message:
-            return True
-        current = current.__cause__ or current.__context__
-    return False
-
-
-def _schema_output_cap(schema: type[BaseModel]) -> int:
-    return _SCHEMA_MAX_TOKENS.get(schema.__name__, _DEFAULT_SCHEMA_MAX_TOKENS)
-
-
-def _repeated_suffix(text: str, *, count: int = 6, maximum_pattern: int = 40) -> str | None:
-    """Find only an obvious exact non-whitespace suffix loop."""
-    for size in range(2, min(maximum_pattern, len(text) // count) + 1):
-        pattern = text[-size:]
-        if pattern.strip() and text.endswith(pattern * count):
-            return pattern
-    return None
-
-
-async def _close_stream(stream: Any) -> None:
-    """Best-effort cancellation; never hide the response or error being logged."""
-    try:
-        closer = getattr(stream, "aclose", None)
-        if closer is not None:
-            result = closer()
-            if asyncio.iscoroutine(result):
-                await result
-            return
-        closer = getattr(stream, "close", None)
-        if closer is not None:
-            result = closer()
-            if asyncio.iscoroutine(result):
-                await result
-    except Exception:
-        logger.debug("failed to close LLM stream", exc_info=True)
-
-
-def _field(value: Any, name: str) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        return value.get(name)
-    return getattr(value, name, None)
-
-
-def _text_field(value: Any, name: str) -> str:
-    found = _field(value, name)
-    return found if isinstance(found, str) else ""
-
-
-def _first_choice(chunk: Any) -> Any:
-    choices = _field(chunk, "choices") or []
-    return choices[0] if choices else None
-
-
-def _dump_chunk(chunk: Any) -> Any:
-    """Preserve every field LiteLLM exposes for the received stream chunk."""
-    dump = getattr(chunk, "model_dump", None)
-    if dump is not None:
-        return dump(mode="json")
-    if isinstance(chunk, dict):
-        return chunk
-    return str(chunk)
-
-
-def _parse_json(raw: str) -> Any:
-    """Recover a JSON object from a model reply: strict parse, then a fenced code block, then a balanced-brace scan.
-
-    Raises:
-        ValueError: if no JSON object can be found.
-    """
-    text = raw.strip()
-    if not text:
-        raise ValueError("model returned an empty response")
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    if fenced := _FENCE.search(text):
-        try:
-            return json.loads(fenced.group(1))
-        except json.JSONDecodeError:
-            pass
-
-    if (obj := _first_balanced_object(text)) is not None:
-        return obj
-
-    raise ValueError(f"no JSON object found in response: {text[:200]!r}")
-
-
-def _first_balanced_object(text: str) -> Any | None:
-    """Scan for the first brace-balanced object, respecting string literals (a naive find/rfind slice breaks on nested braces)."""
-    start = text.find("{")
-    if start == -1:
-        return None
-
-    depth = 0
-    in_string = False
-    escaped = False
-
-    for index in range(start, len(text)):
-        char = text[index]
-        if escaped:
-            escaped = False
-            continue
-        if char == "\\":
-            escaped = True
-            continue
-        if char == '"':
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start : index + 1])
-                except json.JSONDecodeError:
-                    return None
-    return None

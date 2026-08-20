@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bismuth.adapters.llm import litellm_adapter
+from bismuth.adapters.llm import wire as llm_wire
 from bismuth.adapters.parsers import build_registry
 from bismuth.adapters.parsers.registry import ExtensionRegistry, require
 from bismuth.api.app import create_app
@@ -95,11 +96,11 @@ class TestServerPreload:
         litellm would make the sys.modules version of this pass without preload running.
         """
         monkeypatch.chdir(tmp_path)  # startup writes ./logs
-        monkeypatch.setattr(litellm_adapter, "_litellm", None)
-        assert litellm_adapter._litellm is None
+        monkeypatch.setattr(llm_wire, "_litellm", None)
+        assert llm_wire._litellm is None
 
         with TestClient(create_app(settings)):
-            assert litellm_adapter._litellm is not None
+            assert llm_wire._litellm is not None
 
     def test_no_parser_import_is_left_for_the_first_upload(self, client) -> None:  # type: ignore[no-untyped-def]
         assert {"pypdf", "docx", "pptx", "openpyxl"} <= set(sys.modules)
@@ -116,7 +117,7 @@ class TestStartupMakesNoNetworkCall:
 
     def _instant_litellm(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setitem(sys.modules, "litellm", types.ModuleType("litellm"))
-        monkeypatch.setattr(litellm_adapter, "_litellm", None)
+        monkeypatch.setattr(llm_wire, "_litellm", None)
 
     def test_the_price_list_comes_from_the_installed_package(
         self, monkeypatch: pytest.MonkeyPatch

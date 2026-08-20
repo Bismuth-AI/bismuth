@@ -9,7 +9,9 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from bismuth.adapters.llm import body as llm_body
 from bismuth.adapters.llm import litellm_adapter
+from bismuth.adapters.llm import wire as llm_wire
 from bismuth.adapters.llm.litellm_adapter import (
     _CHOICE_MAX_TOKENS,
     _MAX_CHOICE_MAX_TOKENS,
@@ -174,7 +176,7 @@ class StubLiteLLM:
 def stub(monkeypatch: pytest.MonkeyPatch) -> StubLiteLLM:
     def install(replies: list[str], *, native: bool = True) -> StubLiteLLM:
         fake = StubLiteLLM(replies, native=native)
-        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+        monkeypatch.setattr(llm_wire, "_litellm", fake)
         return fake
 
     return install  # type: ignore[return-value]
@@ -363,12 +365,12 @@ class TestClientCleanup:
                 self.closed = True
 
         session = Session()
-        litellm_adapter._owned_aiohttp_sessions[1] = session
+        llm_wire._owned_aiohttp_sessions[1] = session
 
         await litellm_adapter.close_clients()
 
         assert session.closed
-        assert litellm_adapter._owned_aiohttp_sessions == {}
+        assert llm_wire._owned_aiohttp_sessions == {}
 
 
 class TestStructuredOutputTiers:
@@ -659,13 +661,13 @@ class TestAParameterTheEndpointRefuses:
     @pytest.fixture(autouse=True)
     def _forget_between_tests(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The registry is process-wide on purpose, so a test must not leak into the next."""
-        monkeypatch.setattr(litellm_adapter, "_UNSUPPORTED", {})
+        monkeypatch.setattr(llm_body, "_UNSUPPORTED", {})
 
     async def test_the_call_gives_the_parameter_up_and_succeeds(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         fake = RefusesOneParameter(['{"name": "Apollo", "year": 2023}'], refuses="temperature")
-        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+        monkeypatch.setattr(llm_wire, "_litellm", fake)
 
         result = await adapter().structured(Prompt(system="s", user="u"), schema=Answer)
 
@@ -678,7 +680,7 @@ class TestAParameterTheEndpointRefuses:
     ) -> None:
         """A served model's terms do not change between two documents."""
         fake = RefusesOneParameter(['{"name": "Apollo", "year": 2023}'] * 2, refuses="temperature")
-        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+        monkeypatch.setattr(llm_wire, "_litellm", fake)
         engine = adapter()
 
         await engine.structured(Prompt(system="s", user="u"), schema=Answer)
@@ -689,7 +691,7 @@ class TestAParameterTheEndpointRefuses:
     async def test_the_record_says_what_was_given_up(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A sampling change that no log mentions makes the next run unexplainable."""
         fake = RefusesOneParameter(['{"name": "Apollo", "year": 2023}'], refuses="temperature")
-        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+        monkeypatch.setattr(llm_wire, "_litellm", fake)
         records: list[dict[str, Any]] = []
         monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
 
@@ -704,7 +706,7 @@ class TestAParameterTheEndpointRefuses:
     ) -> None:
         """Only sampling is given up. A refused schema or output cap changes the question."""
         fake = RefusesOneParameter(['{"name": "Apollo"}'], refuses="max_tokens")
-        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+        monkeypatch.setattr(llm_wire, "_litellm", fake)
 
         with pytest.raises(ModelRequestError):
             await adapter().structured(Prompt(system="s", user="u"), schema=Answer)
@@ -735,7 +737,7 @@ class SpendsTheBudgetOnThinking(StubLiteLLM):
 class TestReasoningIsNotWhatWasAsked:
     @pytest.fixture(autouse=True)
     def _forget_between_tests(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(litellm_adapter, "_UNSUPPORTED", {})
+        monkeypatch.setattr(llm_body, "_UNSUPPORTED", {})
 
     async def test_a_classification_call_asks_for_minimal_reasoning(self, stub: Any) -> None:
         """There is nothing to reason about: the question is closed and the answers listed."""
@@ -759,7 +761,7 @@ class TestReasoningIsNotWhatWasAsked:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         fake = RefusesOneParameter(['{"name": "Apollo", "year": 2023}'], refuses="reasoning_effort")
-        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+        monkeypatch.setattr(llm_wire, "_litellm", fake)
 
         result = await adapter().structured(Prompt(system="s", user="u"), schema=Answer)
 
@@ -771,7 +773,7 @@ class TestReasoningIsNotWhatWasAsked:
     ) -> None:
         """A budget generous for a literal can still be nothing at all for a thinking model."""
         fake = SpendsTheBudgetOnThinking(["F003"], answers_above=_CHOICE_MAX_TOKENS)
-        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+        monkeypatch.setattr(llm_wire, "_litellm", fake)
 
         chosen = await adapter().choose(Prompt(system="s", user="u"), choices=["F003", "STAY"])
 
@@ -785,7 +787,7 @@ class TestReasoningIsNotWhatWasAsked:
         """ "Output reached the limit" about an empty reply sends the reader after a
         length problem that is not there. The cap was a total, not an output cap."""
         fake = SpendsTheBudgetOnThinking([""], answers_above=_MAX_CHOICE_MAX_TOKENS)
-        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+        monkeypatch.setattr(llm_wire, "_litellm", fake)
 
         with pytest.raises(StructuredOutputError, match="without producing any output"):
             await adapter().choose(Prompt(system="s", user="u"), choices=["F003", "STAY"])
@@ -803,7 +805,7 @@ class TestReasoningIsNotWhatWasAsked:
         characters of task replaced by 117 of formatting rules. One folder was created.
         """
         fake = SpendsTheBudgetOnThinking(["F003"], answers_above=_CHOICE_MAX_TOKENS)
-        monkeypatch.setattr(litellm_adapter, "_litellm", fake)
+        monkeypatch.setattr(llm_wire, "_litellm", fake)
         records: list[dict[str, Any]] = []
         monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
 

@@ -10,15 +10,14 @@ from typing import Any
 
 from agentkit import AssistantMessage, Message, ToolCall, ToolSpec
 
-from bismuth.adapters.llm.litellm_adapter import (
+from bismuth.adapters.llm.body import _drop_unsupported, apply_body
+from bismuth.adapters.llm.litellm_adapter import usage_of
+from bismuth.adapters.llm.wire import (
     _close_stream,
-    _drop_unsupported,
     _dump_chunk,
     _load_litellm,
     _open_stream,
     _shared_aiohttp_session,
-    apply_body,
-    usage_of,
 )
 from bismuth.logging_setup import log_llm_call
 from bismuth.ports.llm import Usage
