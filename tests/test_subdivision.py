@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import importlib
 import re
 import shutil
 from pathlib import Path, PurePosixPath
@@ -16,9 +18,28 @@ from bismuth.domain.maintenance import validate_grouping
 from bismuth.ports.llm import Prompt
 from bismuth.prompts import placement as placement_prompts
 from bismuth.prompts import subdivision as subdivision_prompts
-from bismuth.services import subdivision as subdivision_service
 from tests.conftest import ScriptedModel
 from tests.test_ingest import add, place_at
+
+
+@contextlib.contextmanager
+def _traced():
+    """Collect every trace event the maintenance service emits, wherever it emits it from.
+
+    The service is a package now and each operator logs from its own module, so patching
+    one of them would silently miss the others.
+    """
+    events: list[tuple[str, dict]] = []
+    modules = [
+        importlib.import_module(f"bismuth.services.subdivision.{name}")
+        for name in ("emerging", "grouping", "splitting", "naming", "service")
+    ]
+    with contextlib.ExitStack() as stack:
+        for module in modules:
+            stack.enter_context(
+                mock.patch.object(module, "log_trace", lambda e, **f: events.append((e, f)))
+            )
+        yield events
 
 
 def _emerges(
@@ -645,10 +666,7 @@ class TestARefusedSignSaysWhy:
         # A sign that is the folder name again is one of the four refusals.
         _emerges(script, "문학", "문학", ids[:2])
 
-        events = []
-        with mock.patch.object(
-            subdivision_service, "log_trace", lambda e, **f: events.append((e, f))
-        ):
+        with _traced() as events:
             await engine.subdivision.consider(PurePosixPath())
 
         refusals = [f for e, f in events if e == "subdivide.sign_refused"]
@@ -704,10 +722,7 @@ class TestEveryMoveNamesItsDocument:
         ids = await _fill(engine, script, 6)
         _emerges(script, "문학", "소설과 시에 관한 자료", ids[:2])
 
-        events = []
-        with mock.patch.object(
-            subdivision_service, "log_trace", lambda e, **f: events.append((e, f))
-        ):
+        with _traced() as events:
             await engine.subdivision.consider(PurePosixPath())
 
         moves = [f for e, f in events if e == "document.moved"]
