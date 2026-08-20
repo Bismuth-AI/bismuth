@@ -165,9 +165,17 @@ class LibraryMaintenanceService(
         on_progress: ProgressSink | None = None,
         allow_emerging: bool = True,
     ) -> list[Divided]:
-        """Draw one class out of ``folder``, if one has grown in it.
+        """Draw classes out of ``folder`` until it has no more to give.
 
-        At most one folder is created per call, and never below the one it creates.
+        Never below the one it creates, and never on evidence this folder has already
+        answered for: each round re-reads the pile, re-counts what may legally be asked of
+        it, and stops the moment a round changes nothing.
+
+        One class per call was the rule until the property below the root became which work
+        a document belongs to. With that settled the pile could name its families, and the
+        rate was what held it up: 46 of 58 groups took exactly two documents, a folder shown
+        forty still gave up two, and one 58-document folder was asked 62 times to reach five
+        classes. Arrivals could never catch up, so the folder is drained where it stands.
 
         ``filename`` is the document whose arrival prompted this, carried only so the
         progress events join that document's run rather than opening one of their own.
@@ -175,7 +183,6 @@ class LibraryMaintenanceService(
         if folder.parts and folder.parts[0] == INBOX.parts[0]:
             return []  # the inbox holds what could not be read; it is not a category
 
-        contents = self._read(folder)
         charter = self._charter(folder)
 
         if charter is not None and not charter.managed:
@@ -183,6 +190,8 @@ class LibraryMaintenanceService(
             # because "nothing happened here" should never need the source to explain.
             log_trace("subdivide.skipped", folder=str(folder), reason="folder note is not managed")
             return []
+
+        contents = self._read(folder)
 
         # Which of the four operators could be applied here at all, counted from the
         # filesystem before anything is asked (ADR-0018, docs/spec/maintenance.md 2). An
@@ -202,28 +211,42 @@ class LibraryMaintenanceService(
                 if await self._consider_split(folder, filename=filename, on_progress=on_progress):
                     return []
 
-        # Which folder is being judged is the first thing anyone reading these lines
-        # needs, and it is not derivable from the document that triggered the call.
-        with log_context(folder=str(folder) or "/"):
-            plan = await self._judge(
-                folder,
-                contents,
-                charter,
-                filename=filename,
-                on_progress=on_progress,
-                allow_emerging=allow_emerging,
-                may_create=Operator.CREATE in legal,
-            )
-            if plan is None or not plan.groups:
-                return []
+        drawn: list[Divided] = []
+        while True:
+            # Re-read and re-count every round: the pile is smaller than it was, so what
+            # may legally be asked of it has changed, and the classes that already came out
+            # are now signs a later document can simply be routed behind.
+            contents = self._read(folder)
+            charter = self._charter(folder)
+            legal = legal_operators(self._shape_of(folder, contents))
 
-            divided = (
-                self._route_existing(folder, contents, plan, charter)
-                if plan.reuse_existing
-                else self._apply(folder, contents, plan, charter)
-            )
-        if not divided.happened:
+            # Which folder is being judged is the first thing anyone reading these lines
+            # needs, and it is not derivable from the document that triggered the call.
+            with log_context(folder=str(folder) or "/"):
+                plan = await self._judge(
+                    folder,
+                    contents,
+                    charter,
+                    filename=filename,
+                    on_progress=on_progress,
+                    allow_emerging=allow_emerging,
+                    may_create=Operator.CREATE in legal,
+                )
+                if plan is None or not plan.groups:
+                    break
+
+                divided = (
+                    self._route_existing(folder, contents, plan, charter)
+                    if plan.reuse_existing
+                    else self._apply(folder, contents, plan, charter)
+                )
+            if not divided.happened:
+                break
+            drawn.append(divided)
+
+        if not drawn:
             return []
+        divided = drawn[-1]
 
         # A folder born holding documents is asked about itself, once, before this
         # returns. "Every arrival asks" is not true for a folder that arrives full: the
@@ -241,7 +264,7 @@ class LibraryMaintenanceService(
         # never narrow one, which left the width a folder reached early as the width it
         # kept for good (SPEC.md 3.3.1, and eight rounds of 300 documents: a root of 3,
         # then 4, then 22, decided by how broad the first two classes happened to be).
-        if not divided.routed and Operator.MERGE in legal_operators(
+        if not all(one.routed for one in drawn) and Operator.MERGE in legal_operators(
             self._shape_of(folder, self._read(folder))
         ):
             with log_context(stage="subdivision.grouping"):
@@ -264,13 +287,13 @@ class LibraryMaintenanceService(
         # this condition -- the same round asked that 198-document folder 233 times and
         # refused all 233 answers, which is what the refusal list above fixes.
         remaining = self._count_documents(folder, recursive=False)
-        for child in divided.created:
+        for child in (created for one in drawn for created in one.created):
             if self._count_documents(child, recursive=True) <= remaining:
                 continue
             results = await self.consider(child, filename=filename, on_progress=on_progress)
             if results:
-                return [divided, *results]
-        return [divided]
+                return [*drawn, *results]
+        return drawn
 
     def _shape_of(self, folder: PurePosixPath, contents: _Contents) -> FolderShape:
         """What the enumeration needs, counted from the filesystem and nothing else."""

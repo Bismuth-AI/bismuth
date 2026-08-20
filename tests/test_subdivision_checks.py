@@ -25,7 +25,7 @@ class TestOneAxisPerFolder:
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await _fill(engine, script, 4)
-        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야")
+        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야", once=True)
 
         await engine.subdivision.consider(PurePosixPath())
 
@@ -39,11 +39,11 @@ class TestOneAxisPerFolder:
         # Eight, so that four are still loose after the first class comes out and the
         # second look is a question the gate lets through.
         ids = await _fill(engine, script, 8)
-        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야")
+        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야", once=True)
         await engine.subdivision.consider(PurePosixPath())
         llm.calls.clear()
 
-        _emerges(script, "과학", "과학 자료", ids[2:4], axis="완전히 다른 축")
+        _emerges(script, "과학", "과학 자료", ids[2:4], axis="완전히 다른 축", once=True)
         await engine.subdivision.consider(PurePosixPath())
 
         # The second look is told the axis rather than asked for one...
@@ -61,7 +61,7 @@ class TestOneAxisPerFolder:
         A redraft that dropped the history erased the axis on the way in, so it survived
         only until the next arrival -- which is most of why sibling folders drifted."""
         ids = await _fill(engine, script, 4)
-        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야")
+        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야", once=True)
         await engine.subdivision.consider(PurePosixPath())
         before = engine.charters.load(PurePosixPath("문학"))
         assert before is not None
@@ -156,7 +156,7 @@ class TestTheNameIsAnAnswerNotTheQuestion:
         ids = await _fill(engine, script, 4)
         # A note that does not contain the name, so the name is the only thing the
         # assertion can be seeing.
-        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야")
+        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야", once=True)
         llm.calls.clear()
 
         await engine.subdivision.consider(PurePosixPath())
@@ -169,7 +169,7 @@ class TestTheNameIsAnAnswerNotTheQuestion:
         self, engine: Bismuth, script: ScriptedModel, llm
     ) -> None:  # type: ignore[no-untyped-def]
         ids = await _fill(engine, script, 4)
-        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야")
+        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야", once=True)
         llm.calls.clear()
 
         await engine.subdivision.consider(PurePosixPath())
@@ -185,11 +185,11 @@ class TestTheNameIsAnAnswerNotTheQuestion:
     ) -> None:  # type: ignore[no-untyped-def]
         """One path for both: inherited or new, the name answers a question."""
         ids = await _fill(engine, script, 6)
-        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야")
+        _emerges(script, "문학", "문학 자료", ids[:2], axis="주제 분야", once=True)
         await engine.subdivision.consider(PurePosixPath())
         llm.calls.clear()
 
-        _emerges(script, "과학", "과학 자료", ids[2:4], axis="주제 분야")
+        _emerges(script, "과학", "과학 자료", ids[2:4], axis="주제 분야", once=True)
         await engine.subdivision.consider(PurePosixPath())
 
         assert not llm.prompts_for(subdivision_prompts.Axis)

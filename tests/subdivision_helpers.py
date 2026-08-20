@@ -38,9 +38,42 @@ def _traced():
 
 
 def _emerges(
-    script: ScriptedModel, name: str, note: str, ids: list[str], *, axis: str = "주제"
+    script: ScriptedModel,
+    name: str,
+    note: str,
+    ids: list[str],
+    *,
+    axis: str = "주제",
+    once: bool = False,
 ) -> None:
-    """Script a class coming out of the pile: its name, then who belongs to it."""
+    """Script a class coming out of the pile: its name, then who belongs to it.
+
+    ``once`` stops after that one class. The service drains a folder where it stands --
+    it keeps drawing until a round changes nothing -- and a scripted model answers the
+    same way every round, so a test about what happens *after* one class has come out has
+    to say when the pile is finished. Tests about the drawing itself leave it False.
+    """
+    if once:
+        drawn = {"done": False}
+        original = ids
+
+        def gather(prompt, schema):  # type: ignore[no-untyped-def]
+            if drawn["done"]:
+                return subdivision_prompts.Gathered(members=[], shared="")
+            drawn["done"] = True
+            shown = [
+                line.strip()[1:6]
+                for line in prompt.user.splitlines()
+                if line.strip().startswith("[D")
+            ]
+            keep = [handle for handle in shown if handle in original] or shown[:-1]
+            # Cut to the schema's ceiling, as the fake's default does: a test that scripts
+            # an essay-length note is about the note, not about this field.
+            return subdivision_prompts.Gathered(
+                members=keep, shared=(note or "같은 종류의 문서")[:300]
+            )
+
+        script.set(subdivision_prompts.Gathered, gather)
     script.set(
         subdivision_prompts.Emerging,
         subdivision_prompts.Emerging(

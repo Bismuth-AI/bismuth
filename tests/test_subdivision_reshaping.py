@@ -21,7 +21,7 @@ class TestStandingFoldersTogether:
     async def _three_shelves(self, engine: Bismuth, script: ScriptedModel) -> None:
         """Handles are request-local, so the two documents still loose are always D0001-2."""
         for name in ("문학", "과학", "역사"):
-            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"])
+            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"], once=True)
             await engine.subdivision.consider(PurePosixPath())
 
     async def test_several_folders_move_under_one_broader_name(
@@ -167,7 +167,7 @@ class TestMovingIntoAFolderThatAlreadyStands:
 
     async def _three_shelves(self, engine: Bismuth, script: ScriptedModel) -> None:
         for name in ("문학", "과학", "역사"):
-            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"])
+            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"], once=True)
             await engine.subdivision.consider(PurePosixPath())
 
     async def test_folders_move_inside_the_one_that_is_named(
@@ -230,7 +230,7 @@ class TestAShelfCanDivideAfterAll:
 
     async def _three_shelves(self, engine: Bismuth, script: ScriptedModel) -> None:
         for name in ("문학", "과학", "역사"):
-            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"])
+            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"], once=True)
             await engine.subdivision.consider(PurePosixPath())
 
     async def test_a_settled_property_is_not_held_against_its_own_ancestors(
@@ -252,7 +252,7 @@ class TestAShelfCanDivideAfterAll:
             await add(engine, f"more{index}.txt", f"추가 문서 {index}")
         # The shelf carries the root's property, which is exactly the one a new class
         # inside it has to answer.
-        _emerges(script, "철학", "철학 자료", ["D0001", "D0002"], axis="주제")
+        _emerges(script, "철학", "철학 자료", ["D0001", "D0002"], axis="주제", once=True)
 
         await engine.subdivision.consider(PurePosixPath("인문"))
 
@@ -266,7 +266,7 @@ class TestAShelfIsNotDissolvedTheMomentItIsBuilt:
 
     async def _three_shelves(self, engine: Bismuth, script: ScriptedModel) -> None:
         for name in ("문학", "과학", "역사"):
-            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"])
+            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"], once=True)
             await engine.subdivision.consider(PurePosixPath())
 
     async def test_the_reverse_waits_for_the_evidence_to_move(
@@ -297,7 +297,7 @@ class TestABroaderNameIsCheckedBeforeAnythingMoves:
 
     async def _three_shelves(self, engine: Bismuth, script: ScriptedModel) -> None:
         for name in ("문학", "과학", "역사"):
-            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"])
+            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"], once=True)
             await engine.subdivision.consider(PurePosixPath())
 
     async def test_a_container_name_moves_nothing(
@@ -350,7 +350,7 @@ class TestAShelfAnswersForWhatMovesInsideIt:
 
     async def _three_shelves(self, engine: Bismuth, script: ScriptedModel) -> None:
         for name in ("문학", "과학", "역사"):
-            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"])
+            _emerges(script, name, f"{name} 자료", ["D0001", "D0002"], once=True)
             await engine.subdivision.consider(PurePosixPath())
 
     async def test_a_folder_the_standing_name_does_not_cover_stays_put(

@@ -18,14 +18,15 @@ class TestRoutingSeesTheNotes:
         관련 법령 -- crypto reads as digital from a two-word name, and the note that
         ruled it out was not in the prompt."""
         ids = await _fill(engine, script, 6)
-        _emerges(script, "문학", "소설과 시. 과학 자료가 아닌 것.", ids[:2])
-        await engine.subdivision.consider(PurePosixPath())
-        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
-        llm.calls.clear()
+        _emerges(script, "문학", "소설과 시. 과학 자료가 아닌 것.", ids[:2], once=True)
 
+        # One call: the folder is drained where it stands, so the class comes out and what
+        # no class wanted is offered to the sign it just raised, in the same visit.
         await engine.subdivision.consider(PurePosixPath())
 
-        routing = [p for p in llm.prompts_for(None) if "\n  [F" in p.user and "SIGNS:" in p.user]
+        # The placement descent lists signs too, so it has to be told apart from routing:
+        # one call now covers both, because the drain happens where the document landed.
+        routing = [p for p in llm.prompts_for(None) if _routing(p)]
         assert routing
         assert all("소설과 시" in p.user for p in routing)
 
@@ -38,12 +39,11 @@ class TestRoutingRemembersWhatItAsked:
         self, engine: Bismuth, script: ScriptedModel, llm
     ) -> None:  # type: ignore[no-untyped-def]
         ids = await _fill(engine, script, 8)
-        _emerges(script, "문학", "문학 자료", ids[:2])
-        await engine.subdivision.consider(PurePosixPath())
-        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
+        _emerges(script, "문학", "문학 자료", ids[:2], once=True)
         await engine.subdivision.consider(PurePosixPath())
         first = [p for p in llm.prompts_for(None) if _routing(p)]
         assert first, "routing did run once"
+        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
         llm.calls.clear()
 
         await engine.subdivision.consider(PurePosixPath())
@@ -57,17 +57,16 @@ class TestRoutingRemembersWhatItAsked:
         """The answer depended on the signs it was shown, so the memory lasts as long as
         they do and not one arrival longer."""
         ids = await _fill(engine, script, 8)
-        _emerges(script, "문학", "문학 자료", ids[:2])
+        _emerges(script, "문학", "문학 자료", ids[:2], once=True)
         await engine.subdivision.consider(PurePosixPath())
         script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
         await engine.subdivision.consider(PurePosixPath())
-        llm.calls.clear()
-        # A second shelf goes up, so every document is looking at a different list.
-        _emerges(script, "과학", "과학 자료", ids[2:4])
-        await engine.subdivision.consider(PurePosixPath())
-        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
         llm.calls.clear()
 
+        # A second shelf goes up, so every document is looking at a different list. The
+        # routing that follows it happens in the same visit, because the folder is drained
+        # where it stands.
+        _emerges(script, "과학", "과학 자료", ids[2:4], once=True)
         await engine.subdivision.consider(PurePosixPath())
 
         again = [p for p in llm.prompts_for(None) if _routing(p)]

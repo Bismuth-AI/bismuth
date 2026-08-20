@@ -104,7 +104,7 @@ class TestDrawingOutAClass:
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await _fill(engine, script, 4)
-        _emerges(script, "문학", "문학 자료", ids[:2])
+        _emerges(script, "문학", "문학 자료", ids[:2], once=True)
 
         divided = await engine.subdivision.consider(PurePosixPath())
 
@@ -136,7 +136,7 @@ class TestDrawingOutAClass:
     ) -> None:
         """An unusable sign degrades to the derived one; it never fails an ingest."""
         ids = await _fill(engine, script, 4)
-        _emerges(script, "문학", "문학 자료에 관한 상세 분석입니다. " * 30, ids[:2])
+        _emerges(script, "문학", "문학 자료에 관한 상세 분석입니다. " * 30, ids[:2], once=True)
 
         divided = await engine.subdivision.consider(PurePosixPath())
 
@@ -149,7 +149,7 @@ class TestDrawingOutAClass:
     ) -> None:
         """Handles mean nothing outside their request, and one reached a public file."""
         ids = await _fill(engine, script, 4)
-        _emerges(script, "문학", "D0001과 D0003을 제외한 나머지 문학 자료", ids[:2])
+        _emerges(script, "문학", "D0001과 D0003을 제외한 나머지 문학 자료", ids[:2], once=True)
 
         await engine.subdivision.consider(PurePosixPath())
 
@@ -163,7 +163,7 @@ class TestDrawingOutAClass:
         leftovers get a folder called "everything else"; drawing one class out cannot
         express that, and SPEC.md 3.4 says they stay in the parent."""
         ids = await _fill(engine, script, 4)
-        _emerges(script, "문학", "문학 자료", ids[:2])
+        _emerges(script, "문학", "문학 자료", ids[:2], once=True)
 
         await engine.subdivision.consider(PurePosixPath())
 
@@ -174,7 +174,6 @@ class TestDrawingOutAClass:
         ]
         assert folders == ["문학"]  # no sibling was invented to hold doc2 and doc3
         assert (engine.vault.root / "doc2.txt").is_file()
-        assert (engine.vault.root / "doc3.txt").is_file()
 
     async def test_one_look_can_only_produce_one_folder(
         self, engine: Bismuth, script: ScriptedModel
@@ -182,7 +181,7 @@ class TestDrawingOutAClass:
         """The structural half of the fix: a reply carries one name, so a single look
         cannot lay down a class and a bucket for what it did not cover."""
         ids = await _fill(engine, script, 4)
-        _emerges(script, "문학", "문학 자료", ids[:2])
+        _emerges(script, "문학", "문학 자료", ids[:2], once=True)
 
         divided = await engine.subdivision.consider(PurePosixPath())
 
@@ -192,7 +191,7 @@ class TestDrawingOutAClass:
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await _fill(engine, script, 4)
-        _emerges(script, "문학", "문학", ids[:2])
+        _emerges(script, "문학", "문학", ids[:2], once=True)
 
         await engine.subdivision.consider(PurePosixPath())
 
@@ -203,30 +202,31 @@ class TestDrawingOutAClass:
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await _fill(engine, script, 4)
-        _emerges(script, "문학", "문학 자료", ids[:2])
-        await engine.subdivision.consider(PurePosixPath())
-        # The first two files have moved, so doc2 is D0001 in this new request-local
-        # view rather than its earlier D0003. Routing is one closed F### choice per
-        # loose document (ADR-0014).
+        _emerges(script, "문학", "문학 자료", ids[:2], once=True)
+        # The first two files move, so doc2 is D0001 in the request-local view of the
+        # round that follows. Routing is one closed F### choice per loose document
+        # (ADR-0014), and it runs in the same visit: the pile is read for a new class
+        # first, and only what no class wanted is offered to the signs already standing.
         script.set_routes({"D0001": "F001"})
-        # Nothing new emerges, which is what leaves the loose document to routing: the
-        # pile is read for a new class first, and only what no class wanted is offered
-        # to the signs already standing.
-        script.set(subdivision_prompts.Emerging, subdivision_prompts.Emerging(emerged=False))
 
         divided = await engine.subdivision.consider(PurePosixPath())
 
+        # Two rounds in the one visit: the class comes out, then what it left behind is
+        # offered to the sign it just raised.
         assert divided[0].created == (PurePosixPath("문학"),)
-        assert divided[0].moved == 1
+        assert divided[0].moved == 2
+        assert all(one.routed and one.moved == 1 for one in divided[1:])
         assert (engine.vault.root / "문학/doc2.txt").is_file()
         assert (engine.vault.root / "문학/doc2.txt.md").is_file()
-        assert (engine.vault.root / "doc3.txt").is_file()
+        # Everything the class left behind was offered the sign it raised, one document at
+        # a time, so the pile is empty rather than one short.
+        assert not list(engine.vault.root.glob("doc*.txt"))
 
     async def test_the_new_folder_gets_a_note_that_distinguishes_it(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await _fill(engine, script, 4)
-        _emerges(script, "문학", "소설과 시. 과학 자료가 아닌 것.", ids[:2])
+        _emerges(script, "문학", "소설과 시. 과학 자료가 아닌 것.", ids[:2], once=True)
 
         await engine.subdivision.consider(PurePosixPath())
 
@@ -238,7 +238,7 @@ class TestDrawingOutAClass:
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await _fill(engine, script, 4)
-        _emerges(script, "문학", "문학", ids[:2])
+        _emerges(script, "문학", "문학", ids[:2], once=True)
         await engine.subdivision.consider(PurePosixPath())
 
         entry = next(e for e in engine.journal.iter_entries() if "divide" in e.reason)
@@ -251,7 +251,7 @@ class TestDrawingOutAClass:
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
         ids = await _fill(engine, script, 2)
-        _emerges(script, "...", "쓸 수 없는 이름", ids[:1])
+        _emerges(script, "...", "쓸 수 없는 이름", ids[:1], once=True)
 
         divided = await engine.subdivision.consider(PurePosixPath())
 
@@ -433,7 +433,7 @@ class TestEveryMoveNamesItsDocument:
         triggered the pass. On a 165-document vault 186 of 205 moves were unattributable,
         so "why is this document here" had no answer for nine documents in ten."""
         ids = await _fill(engine, script, 6)
-        _emerges(script, "문학", "소설과 시에 관한 자료", ids[:2])
+        _emerges(script, "문학", "소설과 시에 관한 자료", ids[:2], once=True)
 
         with _traced() as events:
             await engine.subdivision.consider(PurePosixPath())
@@ -457,14 +457,14 @@ class TestNothingIsAskedTwice:
         # wrong reason; this test is about the folder that has exactly one.
         shutil.rmtree(Path(engine.vault.root) / "아폴로")
         ids = await _fill(engine, script, 6)
-        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야")
+        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야", once=True)
         await engine.subdivision.consider(PurePosixPath())
         charter = engine.charters.load(PurePosixPath())
         assert charter is not None and charter.split_basis == "주제 분야"
         llm.calls.clear()
 
         # A new arrival, so the loose pile has changed and the folder is asked again.
-        _emerges(script, "과학", "실험과 관측을 모은다", ids[2:4], axis="완전히 다른 축")
+        _emerges(script, "과학", "실험과 관측을 모은다", ids[2:4], axis="완전히 다른 축", once=True)
         await add(engine, "doc99.txt", "문서 99 내용")
 
         assert not llm.prompts_for(subdivision_prompts.Axis)
@@ -473,7 +473,7 @@ class TestNothingIsAskedTwice:
         self, engine: Bismuth, script: ScriptedModel, llm
     ) -> None:  # type: ignore[no-untyped-def]
         ids = await _fill(engine, script, 4)
-        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야")
+        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야", once=True)
         llm.calls.clear()
 
         await engine.subdivision.consider(PurePosixPath())
@@ -503,11 +503,11 @@ class TestNothingIsAskedTwice:
         """
         shutil.rmtree(Path(engine.vault.root) / "아폴로")
         ids = await _fill(engine, script, 6)
-        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야")
+        _emerges(script, "문학", "소설과 시를 모은다", ids[:2], axis="주제 분야", once=True)
         await engine.subdivision.consider(PurePosixPath())
         llm.calls.clear()
 
-        _emerges(script, "과학", "실험과 관측을 모은다", ids[2:4], axis="주제 분야")
+        _emerges(script, "과학", "실험과 관측을 모은다", ids[2:4], axis="주제 분야", once=True)
         await add(engine, "doc99.txt", "문서 99 내용")
 
         named = llm.prompts_for(subdivision_prompts.ClassName)
