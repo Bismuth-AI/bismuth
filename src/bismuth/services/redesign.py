@@ -229,7 +229,6 @@ class RedesignService:
                 )
             placed = await self._assign(classes, standing, promotions)
             classes, promotions, placed = self._without_clashes(classes, promotions, placed)
-            placed = await self._only_classes(placed, classes, standing, promotions)
             if not placed and not promotions:
                 return Redesign(
                     question=design.question,
@@ -278,64 +277,6 @@ class RedesignService:
             {name: rises for name, rises in promotions.items() if name not in clashing},
             {name: items for name, items in placed.items() if name not in clashing},
         )
-
-    async def _only_classes(
-        self,
-        placed: dict[str, list[PurePosixPath]],
-        classes: list[tuple[str, str]],
-        standing: _Standing,
-        promotions: dict[str, PurePosixPath] | None = None,
-    ) -> dict[str, list[PurePosixPath]]:
-        """Drop the classes that name what their contents are rather than what they are about.
-
-        The same closed question a new shelf is held to, and the pass that invents the
-        whole top level was the one operator it was never asked. 특수 분야 지원 collected
-        여성·장애인기업 and 중대재해 -- two unrelated things under a name meaning assorted
-        support -- and split dissolved it six minutes later, having paid to move eight
-        files twice.
-
-        Asked once per class that collected a folder, so a design of nine costs as many
-        calls as it has such classes and none for the rest.
-
-        Folders, because that is the question: whether a name standing over these folders
-        is a class or a word for what they are made of. Handed the loose documents too, it
-        read a list of acts and decrees -- 산업기술단지 지원에 관한 특례법(법률)... -- and
-        answered CONTAINER, correctly for what it was shown. Five classes were lost that
-        way in one run and one redesign failed outright, leaving 92 documents at the root.
-        """
-        signs = dict(classes)
-        folders = {name for name, _, _, _ in standing.folders}
-        roots = {name for name in folders if len(PurePosixPath(name).parts) == 1}
-        for name, items in list(placed.items()):
-            if name in (promotions or {}):
-                # It is a folder already, moving up. Whether that name is a class was
-                # settled when the folder was built.
-                continue
-            taken = {str(item) for item in items}
-            moving = [PurePosixPath(item).name for item in taken if item in folders]
-            if not moving:
-                # Nothing but loose documents chose it. It is a home for them, not a shelf
-                # over anything, and there is nothing here for this question to read.
-                continue
-            verdict = await self._llm.choose(
-                subdivision_prompts.build_shelf_check(
-                    path="",
-                    name=name,
-                    sign=signs.get(name, ""),
-                    moving=sorted(moving),
-                    staying=sorted(PurePosixPath(other).name for other in roots - taken),
-                ),
-                choices=("CLASS", "CONTAINER"),
-            )
-            if verdict.strip().upper() == "CONTAINER":
-                log_trace(
-                    "redesign.dropped",
-                    klass=name,
-                    reason="the name says what its contents are, not what they are about",
-                    members=sorted(moving),
-                )
-                placed.pop(name)
-        return placed
 
     async def _design(self, standing: _Standing) -> prompts.Design | None:
         """The one call that decides the top of the tree, held to the same property

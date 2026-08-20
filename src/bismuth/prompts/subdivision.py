@@ -366,6 +366,10 @@ One sentence, two clauses at most, in the documents' own language. Do not open w
 phrase about this folder or the documents in front of you.\
 """
 
+_AXIS_BELOW_ROOT = """WHICH law or work a document belongs to is allowed HERE, and only here. This folder has already been narrowed to a subject; a reader standing in it has chosen that subject and is now looking for one law's act, its decree and its rules, which belong on one shelf. 어느 법률에 속하는가 is a real question with several documents to each answer. It is forbidden at the top of a collection, where it gives every folder one document -- but you are not at the top.
+
+Never a yes-or-no. 이 법률은 과학관에 관한 것인가 draws one shelf and leaves a remainder nobody can name except as the ones that are not that, and that remainder can never be divided again. If what the picked documents share is one law, the property is which law -- not whether it is that one."""
+
 _AXIS_SYSTEM = """\
 Some documents have been picked out of a folder because they share something. Write the \
 question they all answer the same way -- the question that separates them from the rest \
@@ -601,7 +605,7 @@ def build_class_sign(
     )
 
 
-def build_axis(*, shared: str, rest: list[str], language: str = "") -> Prompt:
+def build_axis(*, shared: str, rest: list[str], language: str = "", is_root: bool = True) -> Prompt:
     """Step two, and only when a folder divides for the first time.
 
     Before the name exists, so there is no name to hand back. Asked after the name, it
@@ -617,7 +621,7 @@ def build_axis(*, shared: str, rest: list[str], language: str = "") -> Prompt:
     """
     listed = ", ".join(rest)
     return Prompt(
-        system=_AXIS_SYSTEM,
+        system=_AXIS_SYSTEM if is_root else _AXIS_SYSTEM + "\n" + _AXIS_BELOW_ROOT,
         user=in_their_language(
             f"WHAT THE PICKED DOCUMENTS SHARE: {shared}"
             + (f"\n\nWHAT THE REST OF THE FOLDER IS ABOUT: {listed}" if listed else ""),

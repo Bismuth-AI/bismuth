@@ -887,7 +887,12 @@ class LibraryMaintenanceService:
         rest = _vocabulary(self._read(folder), taken=members) if not axis else []
         if not axis:
             asked = await self._llm.structured(
-                prompts.build_axis(shared=chosen.shared, rest=rest, language=language),
+                prompts.build_axis(
+                    shared=chosen.shared,
+                    rest=rest,
+                    language=language,
+                    is_root=not folder.parts,
+                ),
                 schema=prompts.Axis,
             )
             settled_axis, question = asked.axis.strip(), asked.axis_question.strip()

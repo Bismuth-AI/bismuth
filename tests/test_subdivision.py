@@ -1283,6 +1283,44 @@ class TestABroaderNameIsCheckedBeforeAnythingMoves:
         assert not (engine.vault.root / "개별 자료").exists()
 
 
+class TestNamingTheLawIsAllowedBelowTheRoot:
+    """The two prompts disagreed. The generator is told never to ask a question every
+    document answers differently -- right at the root, where 법률명 gives every folder one
+    document -- while the checker carries an exception it never saw: below the root, one
+    law's act, decree and rules belong on one shelf.
+
+    So inside a subject folder the generator could not produce an answer its checker would
+    accept, and it routed around the rule: shown 과학관법's three documents it answered
+    과학관 관련 법률 여부, a yes/no about that one law, and the check refused it. 60 of one
+    run's 64 axis refusals were below the root, and 40 carried a law's name as the class."""
+
+    async def test_the_root_is_not_told_it_may(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 6)
+        _emerges(script, "문학", "문학 자료", ids[:2])
+
+        await engine.subdivision.consider(PurePosixPath())
+
+        asked = llm.prompts_for(subdivision_prompts.Axis)
+        assert asked
+        assert "어느 법률에 속하는가" not in asked[0].system
+
+    async def test_a_subject_folder_is(self, engine: Bismuth, script: ScriptedModel, llm) -> None:  # type: ignore[no-untyped-def]
+        ids = await _fill(engine, script, 8)
+        _emerges(script, "문학", "문학 자료", ids[:4])
+        await engine.subdivision.consider(PurePosixPath())
+        llm.calls.clear()
+        # A class emerging inside the subject folder, which is where the exception applies.
+        _emerges(script, "시집", "시집 자료", ["D0001", "D0002"])
+
+        await engine.subdivision.consider(PurePosixPath("문학"))
+
+        asked = llm.prompts_for(subdivision_prompts.Axis)
+        assert asked
+        assert "어느 법률에 속하는가" in asked[-1].system
+
+
 class TestTheAxisCheckSeesTheFolderItJudges:
     """Two of its rules are about whether the documents here would give different answers
     to the property, and the request carried a path and a label.
