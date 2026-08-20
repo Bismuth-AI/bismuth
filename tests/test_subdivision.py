@@ -1319,18 +1319,18 @@ class TestTheAxisCheckSeesTheFolderItJudges:
         assert not [p for p in llm.prompts_for(None) if "QUESTION IT ASKS:" in p.user]
 
 
-class TestAPileThatSaysItIsAllOneThingIsNotAskedTwice:
-    """Not a refusal to repeat: the folder is saying it has no class to give up on this
-    axis, which stops being true only when what is in it changes. Bought 43 times in one
-    300-document run, 20 of them from the same folder."""
+class TestAPileThatSaysItIsAllOneThingIsAskedAgain:
+    """The answer breaks the one contract the step has -- a group must leave a remainder
+    -- so the guard refuses it, and a refused answer is not a finding about the folder.
+
+    Remembered as one it locked the biggest piles out of being asked at all: measured on
+    300 documents, 67 divisions blocked to save 8 calls, and every folder the spec counted
+    as an undivided pile was one this memory had shut. The root reached 103 loose documents
+    without being asked once after it answered at 61."""
 
     @staticmethod
     def _takes_everything(script: ScriptedModel) -> None:
-        """Answer with every handle shown, which is what the guard is about.
-
-        The default fake deliberately keeps a subset back, so this is the one place that
-        has to override it.
-        """
+        """Answer with every handle shown, which is what the guard is about."""
         script.set(
             subdivision_prompts.Gathered,
             lambda prompt, schema: subdivision_prompts.Gathered(
@@ -1343,23 +1343,9 @@ class TestAPileThatSaysItIsAllOneThingIsNotAskedTwice:
             ),
         )
 
-    async def test_the_same_pile_is_asked_once(
+    async def test_the_next_arrival_asks_again(
         self, engine: Bismuth, script: ScriptedModel, llm
     ) -> None:  # type: ignore[no-untyped-def]
-        await _fill(engine, script, 6)
-        self._takes_everything(script)
-        await engine.subdivision.consider(PurePosixPath())
-        llm.calls.clear()
-
-        await engine.subdivision.consider(PurePosixPath())
-
-        assert not llm.prompts_for(subdivision_prompts.Gathered)
-
-    async def test_one_more_arrival_does_not_unlock_it(
-        self, engine: Bismuth, script: ScriptedModel, llm
-    ) -> None:
-        """Keyed on the pile's own contents this never fired: an arrival changes the
-        pile, so one folder was asked twenty times and answered the same twenty times."""
         await _fill(engine, script, 6)
         self._takes_everything(script)
         await engine.subdivision.consider(PurePosixPath())
@@ -1368,23 +1354,18 @@ class TestAPileThatSaysItIsAllOneThingIsNotAskedTwice:
 
         await engine.subdivision.consider(PurePosixPath())
 
-        assert not llm.prompts_for(subdivision_prompts.Gathered)
+        assert llm.prompts_for(subdivision_prompts.Gathered)
 
-    async def test_a_doubled_pile_is_asked_again(
-        self, engine: Bismuth, script: ScriptedModel, llm
-    ) -> None:  # type: ignore[no-untyped-def]
-        """The folder's own evidence has to move, which is the rule every other schedule
-        here uses."""
+    async def test_a_group_that_takes_everything_still_builds_nothing(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Refused, every time. Cheap: the chain stops at the grouping call."""
         await _fill(engine, script, 6)
         self._takes_everything(script)
-        await engine.subdivision.consider(PurePosixPath())
-        llm.calls.clear()
-        for index in range(7):
-            await add(engine, f"추가{index}.txt", f"추가로 들어온 문서 {index}")
 
-        await engine.subdivision.consider(PurePosixPath())
+        divided = await engine.subdivision.consider(PurePosixPath())
 
-        assert llm.prompts_for(subdivision_prompts.Gathered)
+        assert not divided
 
 
 class TestANameTurnedDownIsNotBoughtAgain:

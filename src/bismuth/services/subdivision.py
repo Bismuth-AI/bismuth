@@ -154,18 +154,6 @@ class LibraryMaintenanceService:
         self._llm = llm
         self._barren: dict[tuple[str, str], int] = {}
         self._merged: dict[str, int] = {}
-        self._homogeneous: dict[str, int] = {}
-        """Folders that answered "all of these belong together", and how big they were.
-
-        Not a refusal to be repeated: it is the folder saying it has no class to give up
-        on this axis. Keyed on the folder and released by doubling, which is the rule every
-        other schedule here uses.
-
-        Keyed on the pile's own contents first, which never fired once in 300 documents:
-        an arrival changes the pile, so the fingerprint always differed and the same
-        folder was asked 20 times and gave the same answer 20 times. What has to move is
-        the amount of evidence, not the identity of it.
-        """
         self._not_an_answer: dict[tuple[str, str], set[str]] = {}
         """Names the check turned down here, keyed by the question they failed to answer.
 
@@ -869,34 +857,20 @@ class LibraryMaintenanceService:
             )
             return prompts.Emerging(emerged=False), ()
 
-        # A pile that already answered "all of these belong together" is not asked again
-        # until it changes. The answer is not wrong so much as final: this folder is
-        # homogeneous on this axis and has no class to give up. Unremembered it was bought
-        # 43 times in one run, 20 of them from the same folder, each time paying for the
-        # grouping call and throwing the whole chain away.
-        whole = self._homogeneous.get(str(folder))
-        if whole is not None and len(documents) < whole * 2:
-            log_trace(
-                "subdivide.skipped",
-                folder=str(folder),
-                reason="this folder already answered that all of it belongs together",
-                documents=len(documents),
-                answered_at=whole,
-            )
-            return prompts.Emerging(emerged=False), ()
-
+        # A folder that answers "all of these belong together" is not remembered as
+        # settled. That answer breaks the one contract this step has -- a group must leave
+        # a remainder -- so the guard refuses it, and a refused answer is not a finding
+        # about the folder. Remembered as one, it locked the biggest piles out of being
+        # asked at all: 67 divisions blocked to save 8 calls, and every folder the spec
+        # counted as an undivided pile was one this memory had shut. The chain stops at
+        # the grouping call, which is the cheapest in it, so being wrong here is cheap and
+        # not asking is not.
         gathered: list[prompts.Gathered] = []
-        took_everything = False
         for packet in _document_packets(documents, build):
             found = await self._llm.structured(build(packet), schema=prompts.Gathered)
-            kept = self._kept_members(found, packet, folder=folder)
-            if kept:
+            if kept := self._kept_members(found, packet, folder=folder):
                 gathered.append(prompts.Gathered(members=kept, shared=found.shared.strip()))
-            elif len(dict.fromkeys(found.members)) >= len(packet):
-                took_everything = True
         if not gathered:
-            if took_everything:
-                self._homogeneous[str(folder)] = len(documents)
             return prompts.Emerging(emerged=False), ()
 
         # The thickest, decided here rather than asked. The prompt already says to return
