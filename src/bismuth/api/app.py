@@ -41,6 +41,7 @@ from bismuth.domain.progress import Progress, Stage
 from bismuth.logging_setup import configure_logging, finish_run_manifest, update_run_manifest
 from bismuth.ports.llm import Spend
 from bismuth.ports.vault import INBOX
+from bismuth.services import simple as simple_service
 from bismuth.services.agent import DEFAULT_ORGANIZE_INSTRUCTION
 from bismuth.services.ingest import IngestResult, Prepared
 from bismuth.services.sidecar import read_sidecar_meta
@@ -399,28 +400,48 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                     await asyncio.gather(*(one(i, rel) for i, rel in enumerate(staged)))
 
                 reader = asyncio.create_task(read_ahead())
+                # Filed in tens, because a class is only visible in several: asked about
+                # one document the only honest answer is its title, and a tree of titles is
+                # the list the folders were supposed to replace.
+                pending: list[tuple[PurePosixPath, Any, Any]] = []
+
+                async def flush() -> None:
+                    if not pending:
+                        return
+                    taken = list(pending)
+                    pending.clear()
+                    try:
+                        await engine.simple.file(taken)
+                    except Exception as exc:
+                        logger.exception("batch %s failed while filing %d", batch_id, len(taken))
+                        for rel, _, _ in taken:
+                            report(Progress(stage=Stage.FAILED, filename=rel.name, note=str(exc)))
+                        batch.failed += len(taken)
+                        return
+                    batch.completed += len(taken)
+                    _drain(engine)
+                    if engine.simple.due():
+                        report(Progress(stage=Stage.DIVIDING, filename="", note="전체 구조 점검"))
+                        await engine.simple.review()
+                        _drain(engine)
+
                 for _ in staged:
                     rel, outcome = await prepared.get()
                     batch.current = rel.name
-                    try:
-                        if isinstance(outcome, Exception):
-                            raise outcome
-                        result = _result_of(
-                            await engine.ingest.file(outcome, on_progress=report),
-                            spend=_drain(engine),
-                        )
-                    except Exception as exc:
-                        logger.exception("batch %s failed while processing %s", batch_id, rel)
-                        report(Progress(stage=Stage.FAILED, filename=rel.name, note=str(exc)))
-                        result = IngestOut(filename=rel.name, ok=False, reason=str(exc))
-
-                    batch.completed += 1
-                    if not result.ok:
+                    if isinstance(outcome, Exception):
+                        logger.exception("batch %s failed while reading %s", batch_id, rel)
+                        report(Progress(stage=Stage.FAILED, filename=rel.name, note=str(outcome)))
+                        batch.completed += 1
                         batch.failed += 1
-                    elif result.duplicate:
+                        continue
+                    if outcome.duplicate_of or outcome.card is None:
+                        batch.completed += 1
                         batch.duplicate += 1
-                    elif not result.placed:
-                        batch.inbox += 1
+                        continue
+                    pending.append((outcome.rel, outcome.card, outcome))
+                    if len(pending) >= simple_service.BATCH:
+                        await flush()
+                await flush()
                 await reader
             batch.status = "done"
         except asyncio.CancelledError:

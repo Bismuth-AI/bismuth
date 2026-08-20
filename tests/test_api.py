@@ -257,16 +257,19 @@ class TestBatchReadsAheadButFilesInOrder:
         self, client: TestClient, monkeypatch
     ) -> None:  # type: ignore[no-untyped-def]
         """Reading runs ahead; filing must not. The tree a document lands in is the one the
-        documents before it built, so a reordered batch is a different archive."""
+        documents before it built, so a reordered batch is a different archive.
+
+        Filing takes a handful at a time now, so what has to hold is that the handfuls
+        arrive in order and each is itself in order."""
         filed: list[str] = []
         engine = client.app.state.engine
-        original = engine.ingest.file
+        original = engine.simple.file
 
-        async def record(prepared, **kwargs):  # type: ignore[no-untyped-def]
-            filed.append(prepared.source.filename)
-            return await original(prepared, **kwargs)
+        async def record(batch, **kwargs):  # type: ignore[no-untyped-def]
+            filed.extend(one.source.filename for _, _, one in batch)
+            return await original(batch, **kwargs)
 
-        monkeypatch.setattr(engine.ingest, "file", record)
+        monkeypatch.setattr(engine.simple, "file", record)
         names = [f"doc{index}.txt" for index in range(6)]
         submitted = client.post(
             "/api/batches",

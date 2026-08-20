@@ -29,6 +29,7 @@ from bismuth.services.ingest import IngestService
 from bismuth.services.move import MoveService
 from bismuth.services.placement import PlacementService
 from bismuth.services.redesign import RedesignService
+from bismuth.services.simple import SimpleFiler
 from bismuth.services.subdivision import LibraryMaintenanceService
 from bismuth.services.transactor import Transactor
 
@@ -60,6 +61,8 @@ class Bismuth:
     deletion: DeletionService
     move: MoveService
     agent: AgentService
+    simple: SimpleFiler
+    """The two-question pipeline: file a batch, and look at the whole tree when it grows."""
     redesign: RedesignService
     """The whole-collection pass. Runs itself when the collection has doubled since the
     top of it was last drawn; the button is a way to ask for it early."""
@@ -158,4 +161,5 @@ def build(
         move=move,
         redesign=redesign,
         agent=AgentService(model=chat, vault=vault, charters=charters),
+        simple=SimpleFiler(vault=vault, charters=charters, transactor=transactor, llm=model),
     )
