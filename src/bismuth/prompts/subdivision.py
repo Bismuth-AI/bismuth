@@ -532,6 +532,48 @@ def build_name_check(*, path: str, question: str, name: str, taken: list[str]) -
     )
 
 
+_COVERS_CHECK_SYSTEM = """\
+A folder that already stands is about to have another folder moved inside it. You are \
+checking ONE thing: whether the standing folder's name still answers for what would be \
+under it once the move is made. Answer with exactly COVERS or WIDER and nothing else.
+
+The name on a folder is the only thing a reader has before opening it. Moving something \
+in that the name does not reach does not make the name broader -- it makes it wrong, and \
+every reader who trusts it walks past what they came for.
+
+WIDER if the standing name is about a different property of the documents than the \
+incoming folder is: who issues them against what they are about, their form against their \
+subject, the organisation that keeps them against the field they belong to. Observed \
+live: 42 documents of research law were moved under 중앙행정기관 조직 및 직제, whose name \
+is about which body a document describes and says nothing about research.
+
+WIDER if a reader looking for what is in the incoming folder would not think to open the \
+standing one.
+
+COVERS if the incoming folder is one more instance of what the standing name already \
+says, so that a reader who wants it would open that folder first.\
+"""
+
+
+def build_covers_check(*, shelf: str, note: str, incoming: str, incoming_note: str) -> Prompt:
+    """Whether a folder that already stands answers for what is about to move inside it.
+
+    The other half of merge has no name to invent, so nothing checked it: a new shelf is
+    named from its members and cannot fail to cover them, while a standing one was named
+    before they existed. That asymmetry moved a 42-document research subtree under an
+    organisation chart in a 300-document run.
+    """
+    return Prompt(
+        system=_COVERS_CHECK_SYSTEM,
+        user=(
+            f"THE FOLDER THAT STANDS HERE: {shelf}\n"
+            + (f"WHAT IT SAYS IT HOLDS: {note}\n" if note else "")
+            + f"THE FOLDER THAT WOULD MOVE INSIDE IT: {incoming}\n"
+            + (f"WHAT THAT ONE SAYS IT HOLDS: {incoming_note}\n" if incoming_note else "")
+        ),
+    )
+
+
 def build_class_sign(
     *, shared: str, documents: list[tuple[str, str]], language: str = ""
 ) -> Prompt:
