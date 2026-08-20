@@ -275,6 +275,49 @@ class TestADocumentTravellingWithTheFolderDoesNotSaveTheClass:
         assert result.applied
 
 
+class TestAClassIsNotBuiltBesideItsOwnName:
+    """A class is created at the root. A folder of that name at the root IS that class;
+    one buried in the tree is a different folder, and building the class anyway leaves the
+    same name in two places.
+
+    Measured live at 120 documents: 금융 drawn at the root while 금융 stood inside
+    산업별 규제 및 지원 제도. The buried folder was skipped as if it were the class, and
+    its four children were moved out to the new root folder while its own seven documents
+    stayed behind -- one subject, two homes."""
+
+    async def test_a_name_buried_in_the_tree_takes_the_class_off_the_table(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        from tests.conftest import seed_folder
+
+        await _three_folders(engine, script)
+        seed_folder(Path(engine.vault.root), PurePosixPath("문학/금융"))
+        _designed(script, "금융", "자연", "사회", "인문")
+        # 금융 is dropped before the handles are minted, so the three that survive are
+        # C001-3 -- the offer is built from the classes that can actually be created.
+        script.set_assigned({"역사": "C001", "과학": "C002", "문학": "C003"})
+
+        result = await engine.redesign.redesign()
+
+        assert result.applied
+        assert not (engine.vault.root / "금융").exists()
+        assert (engine.vault.root / "인문/문학/금융").is_dir()
+
+    async def test_the_same_name_at_the_root_is_the_class_itself(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """The case the skip was written for: it receives members where it stands."""
+        await _three_folders(engine, script)
+        _designed(script, "문학", "자연", "사회")
+        script.set_assigned({"역사": "C001", "과학": "C002"})
+
+        result = await engine.redesign.redesign()
+
+        assert result.applied
+        assert (engine.vault.root / "문학/역사").is_dir()
+        assert (engine.vault.root / "문학/문학.txt").is_file()
+
+
 class TestAClassIsHeldToTheQuestionAShelfIs:
     """The one operator that invents a whole top level was the one never asked whether its
     names are classes. 특수 분야 지원 collected 여성·장애인기업 and 중대재해 and split

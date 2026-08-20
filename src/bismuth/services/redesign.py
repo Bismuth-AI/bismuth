@@ -216,7 +216,17 @@ class RedesignService:
                 log_trace("redesign.refused", reason=refusal, axis=design.axis)
                 return Redesign(refused=refusal, unsound=tuple(design.unsound))
 
-            classes = [(sanitize_segment(item.name), item.sign.strip()) for item in design.classes]
+            classes = self._buildable(
+                [(sanitize_segment(item.name), item.sign.strip()) for item in design.classes],
+                standing,
+            )
+            if len(classes) < MIN_CLASSES:
+                return Redesign(
+                    question=design.question,
+                    axis=design.axis,
+                    unsound=tuple(design.unsound),
+                    refused="too few of these answers could be built where they were drawn",
+                )
             placed = await self._assign(classes, standing)
             placed = await self._only_classes(placed, classes)
             if not placed:
@@ -417,6 +427,41 @@ class RedesignService:
         # about what it collected, so it is decided after the assignment, not here.
         return ""
 
+    def _buildable(
+        self, classes: list[tuple[str, str]], standing: _Standing
+    ) -> list[tuple[str, str]]:
+        """Drop the classes that would be built beside a folder of their own name.
+
+        A class is created at the root. A folder standing at the root with the same name
+        IS that class and simply receives the members -- but a folder buried inside the
+        tree is a different folder, and building the class anyway leaves two of that name
+        in two places. Measured live: 금융 drawn at the root while 금융 stood inside
+        산업별 규제 및 지원 제도, whose four children were moved out to it and whose own
+        documents stayed behind.
+
+        Dropping the class rather than refusing the design: the rest of the top level is
+        usually right, and the buried folder keeping the place it has is a better answer
+        than the same subject in two homes. Exact names only, so a class broader than a
+        buried folder -- which is the reason this pass looks below the root at all --
+        is untouched.
+        """
+        buried = {
+            normalise_label(PurePosixPath(name).name)
+            for name, _, _, _ in standing.folders
+            if len(PurePosixPath(name).parts) > 1
+        }
+        kept: list[tuple[str, str]] = []
+        for name, sign in classes:
+            if normalise_label(name) in buried:
+                log_trace(
+                    "redesign.dropped",
+                    klass=name,
+                    reason="a folder of that name already stands inside the tree",
+                )
+                continue
+            kept.append((name, sign))
+        return kept
+
     async def _assign(
         self, classes: list[tuple[str, str]], standing: _Standing
     ) -> dict[str, list[PurePosixPath]]:
@@ -434,7 +479,12 @@ class RedesignService:
             # A folder the new top level names again IS that class, standing where it
             # already stands. 행정조직 was drawn beside 행정·조직 and both survived,
             # because the two are only equal once punctuation is taken out.
-            if normalise_label(folder.name) in taken:
+            #
+            # At the root, where a class is built. A buried folder of the same name is a
+            # different folder, and skipping it there built the class beside it out of its
+            # own children -- :meth:`_buildable` now drops such a class before this loop,
+            # and the condition says which case this skip was ever about.
+            if normalise_label(folder.name) in taken and len(folder.parts) == 1:
                 continue
             answer = await self._llm.choose(
                 prompts.build_assignment(subject=name, note=note, count=count, classes=offered),
