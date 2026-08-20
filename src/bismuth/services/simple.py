@@ -311,11 +311,26 @@ class SimpleFiler:
         return operations
 
 
+TOPICS_SHOWN = 3
+"""How many of a card's topics reach the filing prompt.
+
+The card is already a summary; a filing question does not need the summary inside it. Sent
+whole -- every topic and the summary paragraph -- ten cards came to 5,700 characters
+against 250 characters of folders to choose from, and the reply put all ten at the root
+including two copies of the same law. What is being asked is which folder, and the title,
+the kind and the first few topics are what answers it.
+"""
+
+
 def _describe(card: DocumentCard) -> str:
-    """One line per document: what it is called, what kind it is, what it is about."""
-    parts = [card.title, card.doc_type, ", ".join(card.topics)]
-    line = " | ".join(part for part in parts if part)
-    return f"{line} | {card.summary}" if card.summary else line
+    """One line per document: what it is called, what kind it is, what it is about.
+
+    Not the summary: that is prose about what the document does inside itself, which is
+    the one thing the choice does not turn on. Not the entities either -- on this corpus
+    they were mostly the other laws a law cites, which pull toward the wrong folder.
+    """
+    parts = [card.title, card.doc_type, ", ".join(card.topics[:TOPICS_SHOWN])]
+    return " | ".join(part for part in parts if part)
 
 
 def _language(cards: list[DocumentCard]) -> str:

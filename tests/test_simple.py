@@ -100,6 +100,62 @@ class TestFilingAHandfulAtOnce:
         assert "문학/  (2 here) — 소설과 시" in shown
 
 
+class TestWhatOneDocumentLooksLikeInTheQuestion:
+    """The card is already a summary; a filing question does not need the summary inside it.
+
+    Sent whole, ten cards came to 5,700 characters against 250 of folders to choose from,
+    and the reply put all ten at the root -- including two copies of the same law."""
+
+    def test_the_line_is_a_title_a_kind_and_a_few_topics(self) -> None:
+        from bismuth.domain.document import DocumentCard
+        from bismuth.services.simple import _describe
+
+        card = DocumentCard(
+            title="소상공인 보호 및 지원에 관한 법률",
+            summary="소상공인의 자유로운 기업 활동 촉진과 경영안정을 도모하여 " * 20,
+            doc_type="법률",
+            language="ko",
+            topics=("소상공인", "창업 및 경영안정 지원", "손실보상", "디지털 전환", "손실보상"),
+            keywords=("소상공인", "창업 지원"),
+            entities=(),
+            answers_questions=(),
+        )
+
+        line = _describe(card)
+
+        assert (
+            line
+            == "소상공인 보호 및 지원에 관한 법률 | 법률 | 소상공인, 창업 및 경영안정 지원, 손실보상"
+        )
+        assert len(line) < 100
+        assert "경영안정을 도모하여" not in line, "the summary is prose about the inside"
+
+    def test_ten_documents_do_not_bury_the_folders(self) -> None:
+        from bismuth.domain.document import DocumentCard
+        from bismuth.services.simple import _describe
+
+        card = DocumentCard(
+            title="어떤 법률" * 3,
+            summary="본문 요약" * 200,
+            doc_type="법률",
+            language="ko",
+            topics=tuple(f"주제{index}" for index in range(20)),
+            keywords=(),
+            entities=(),
+            answers_questions=(),
+        )
+        folders = [
+            simple_prompts.Folder(path=PurePosixPath("금융"), note="금융 규제 전반", documents=5)
+        ]
+        documents = [(f"D{index}", _describe(card)) for index in range(1, 11)]
+
+        prompt = simple_prompts.build_filing(
+            folders=folders, documents=documents, loose=0, language="ko"
+        )
+
+        assert len(prompt.user) < 1500
+
+
 class TestLookingAtTheWholeTree:
     async def test_it_waits_until_the_collection_is_worth_judging(
         self, engine: Bismuth, script: ScriptedModel, llm

@@ -28,13 +28,22 @@ pick ONE without opening any of them. Every folder name is that reader's only ev
 You are shown the tree as it stands and a handful of documents. Put each document \
 somewhere.
 
-**Prefer a folder that already exists.** A tree that grows a folder per document is the \
-same list with a click in front of every entry.
+Go through it in this order, for every document.
 
-**Name a folder only when several of the documents in front of you belong together and \
-nothing standing here holds them.** One document is not a class. If a document belongs \
-nowhere yet, put it at the root and leave it -- a pile at the root is honest, and the next \
-batch may be what turns it into a folder.
+**1. Does a folder that already exists hold this?** If one does, that is the answer. A \
+tree that grows a folder per document is the same list with a click in front of every \
+entry, and a folder that exists is evidence that documents like this one have a home.
+
+**2. If none does, look at the other documents in front of you.** They arrived together \
+and you can see all of them at once, which is the only moment anything can. Two or more \
+that belong together are a folder; name it and put them in it. This is where most new \
+folders should come from.
+
+**3. Only then, the root.** ROOT means: no folder here holds it, and nothing else in this \
+batch belongs with it. It is a real answer and you should give it when it is true -- but it \
+is the answer of last resort, not the safe one. A batch that answers ROOT for everything \
+has decided nothing, and the pile it leaves is what the reader has to read instead of the \
+tree.
 
 **A folder name says what its documents are ABOUT.** Not what they are: their form, their \
 kind, their date, who issued them, what rank of instrument they are. Those are true of \
@@ -47,6 +56,9 @@ is inside, and everything that arrives later fits.
 You may name a path that does not exist yet, and you may nest: `금융/은행법` puts a folder \
 inside `금융`. Keep it shallow -- every level costs the reader a correct guess, and a wrong \
 guess at any level never reaches what they wanted.
+
+Before you answer, check the documents against each other once: any two that \
+are about the same thing belong in the same place, whatever that place turns out to be.
 
 Answer one line per document, and nothing else:
 
