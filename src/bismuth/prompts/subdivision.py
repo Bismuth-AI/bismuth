@@ -39,6 +39,16 @@ from bismuth.ports.llm import Prompt
 
 """What a folder name has to do, shared by every prompt that asks for one.
 
+No prompt in this module carries an example from any one collection. SPEC.md 2 forbids
+teaching classification by few-shot, because results lean toward whatever domain the
+examples came from, and docs/spec/subdivision.md 9 says where the evidence goes instead:
+the operational prompt gets the rule, the history gets the case that produced it.
+
+Twenty-one such examples were removed from six of these prompts. They named the statutes,
+ministries and instrument types of one 300-document legal corpus -- so a folder of photographs
+or of source code was being told, in every subdivision call, what a legal archive looks like.
+Every rule they illustrated stands without them.
+
 Each rule here was added after a measured failure, and the evidence for it lives in the
 git history rather than in the tokens: the compound-name rule after a folder called
 연구인프라 및 인력 지원 was given the child 국가연구인프라 및 인력 지원 with the rule already
@@ -366,9 +376,9 @@ One sentence, two clauses at most, in the documents' own language. Do not open w
 phrase about this folder or the documents in front of you.\
 """
 
-_AXIS_BELOW_ROOT = """WHICH law or work a document belongs to is allowed HERE, and only here. This folder has already been narrowed to a subject; a reader standing in it has chosen that subject and is now looking for one law's act, its decree and its rules, which belong on one shelf. 어느 법률에 속하는가 is a real question with several documents to each answer. It is forbidden at the top of a collection, where it gives every folder one document -- but you are not at the top.
+_AXIS_BELOW_ROOT = """WHICH work a document belongs to is allowed HERE, and only here. This folder has already been narrowed to a subject, and a reader standing in it has chosen that subject; what they are looking for now is one work together with whatever supplements, amends or implements it, and those belong on one shelf. That question has several documents to each answer. It is forbidden at the top of a collection, where it gives every folder a single document -- but you are not at the top.
 
-Never a yes-or-no. 이 법률은 과학관에 관한 것인가 draws one shelf and leaves a remainder nobody can name except as the ones that are not that, and that remainder can never be divided again. If what the picked documents share is one law, the property is which law -- not whether it is that one."""
+Never a yes-or-no. Asking whether a document is the one you just picked draws one shelf and leaves a remainder nobody can name except as the ones that are not that, and that remainder can never be divided again. If what the picked documents share is one work, the property is which work -- not whether it is that one."""
 
 _AXIS_SYSTEM = """\
 Some documents have been picked out of a folder because they share something. Write the \
@@ -387,10 +397,7 @@ documents are not part of the group you were shown; they are what the question w
 asked about next, and every one of them will need an answer. A question that fits the \
 picked documents perfectly and none of the others is the worst outcome available here: \
 the folder is then divided by something almost nothing in it answers, and every later \
-class is refused for answering a different question. Measured -- a collection of 300 laws \
-was divided on 어떤 분야의 상생협력을 촉진하는가, which was exactly right for the four \
-documents that suggested it. 중대재해, 소상공인 and 규제자유특구 were then proposed and \
-refused, correctly and uselessly, 103 times.
+class is refused for answering a different question. Measured: a folder fixed on a property that fitted only the handful of documents which suggested it then refused every later class, correctly and uselessly, 103 times in one round.
 
 A question a reader could ask of any document, ending in a question mark, in the \
 documents' own language. Not an instruction, not a rule about folders, not a description \
@@ -451,14 +458,13 @@ def build_group(
         user += "\n\n" + _render_children(children)
     if not axis:
         return Prompt(system=_GROUP_SYSTEM, user=in_their_language(user, language))
-    asked = axis_question or f"이 문서의 {axis}는 무엇인가?"
+    # No question is invented when the folder has none recorded. It used to be built from a
+    # Korean template, which would have put a Korean sentence in front of an English archive
+    # -- the collection's language is read off its cards, never assumed (SPEC.md 2).
+    asks = f"\nTHE QUESTION ITS FOLDERS ANSWER: {axis_question}" if axis_question else ""
     return Prompt(
         system=_GROUP_ALONG_SYSTEM,
-        user=in_their_language(
-            f"THIS FOLDER IS DIVIDED BY: {axis}\nTHE QUESTION ITS FOLDERS ANSWER: {asked}"
-            f"\n\n{user}",
-            language,
-        ),
+        user=in_their_language(f"THIS FOLDER IS DIVIDED BY: {axis}{asks}\n\n{user}", language),
     )
 
 
@@ -498,9 +504,7 @@ and has to open everything again.
 
 BESIDE if the name is the title of one law, work, series or programme, when the question \
 asks about something else -- who it applies to, what it regulates, what field it is in. \
-A title is a name, not an answer. Observed live: a collection divided on 적용 대상 -- who \
-the law applies to -- took 중대재해처벌법, 디지털포용법 and 테러자금금지법 as answers, \
-and a reader scanning for their own situation learns nothing from any of the three.
+A title is a name, not an answer. Where the question asks who a document applies to, a folder named after one work answers something else, and a reader scanning for their own situation learns nothing from it.
 
 BESIDE if the name answers a different question about the same documents: their form, \
 their issuer, their date, or which body administers them, when that is not what was \
@@ -547,9 +551,7 @@ every reader who trusts it walks past what they came for.
 
 WIDER if the standing name is about a different property of the documents than the \
 incoming folder is: who issues them against what they are about, their form against their \
-subject, the organisation that keeps them against the field they belong to. Observed \
-live: 42 documents of research law were moved under 중앙행정기관 조직 및 직제, whose name \
-is about which body a document describes and says nothing about research.
+subject, the organisation that keeps them against the field they belong to. A folder named for an issuing body says nothing about the subjects its documents cover, so a subject folder moved under it stops being findable.
 
 WIDER if a reader looking for what is in the incoming folder would not think to open the \
 standing one.
@@ -820,11 +822,7 @@ subject opens one folder.
 FAILS, anywhere and at any depth, if the property is what the documents ARE rather than \
 what they are about: the kind of document, its form, its rank in a hierarchy of \
 instruments, who issued it, when, or in what language. These are known for almost every \
-document, so they fill a tree neatly and scatter each subject across all of it. A folder \
-that is already about a subject is not licensed to sort by form inside itself -- observed \
-live: a folder about 과학기술 divided on "법령의 법적 체계(법률 또는 시행령)" and grew \
-시행령, 부령 and 시행규칙 as its children, which tell a reader looking for a subject \
-nothing at all.
+document, so they fill a tree neatly and scatter each subject across all of it. A folder that is already about a subject is not licensed to sort by form inside itself: its children then name kinds of document, which tell a reader looking for a subject nothing at all.
 
 WHICH single law or work a document belongs to is the one exception, and only below the \
 root. At the root it gives every folder one document and hands the reader the same list \
@@ -840,16 +838,14 @@ FAILS if the property is one the folders ABOVE are already divided on. Those are
 Every document here already has the same answer to them, so dividing on one again \
 separates nothing and only restates the parent's name in other words.
 
-Sharing a WORD with an ancestor's property is not the same thing. 규제 대상 산업 under a \
-parent divided on 규제 대상 및 목적 is a different question, and it HOLDS. The test is \
+Sharing a WORD with an ancestor's property is not the same thing. A property that narrows an ancestor's to one aspect of it asks a different question, and it HOLDS. The test is \
 whether the documents in front of you would give different answers to it -- not whether \
 it reads like something above.
 
 FAILS if almost every document here would give the SAME answer to it. That draws one \
 real shelf and a remainder nobody can name except as "the ones that are not that" -- a \
 folder holding everything except one thing, which excludes nothing and cannot be divided \
-again. Observed live: inside a folder already about 과학기술, dividing on which ministry \
-issued the documents produced one shelf and 비과학기술 분야 소관 beside it.
+again. Inside a folder already narrowed to one subject, dividing on who issued the documents produces one shelf and, beside it, a folder that can only be named for not being that.
 
 HOLDS if the property is about what the documents are about. HOLDS also when this \
 folder has already been narrowed by subject and the property is a sensible way to split \
@@ -1215,11 +1211,11 @@ def build_split_check(
             f"  {name}/  ({count})" + (f" — {note}" if note else "")
             for name, note, count in children
         )
-        or "  (하위 폴더 없음)"
+        or "  (none)"
     )
     beside = (
         "\n".join(f"  {name}/" + (f" — {note}" if note else "") for name, note in siblings)
-        or "  (없음)"
+        or "  (none)"
     )
     return Prompt(
         system=_SPLIT_SYSTEM,
@@ -1273,9 +1269,7 @@ thing: whether that name is a CLASS a reader could arrive wanting, or only a wor
 what these documents ARE. Answer with exactly CLASS or CONTAINER and nothing else.
 
 CONTAINER if the name is about the form of the documents rather than their subject -- \
-the kind of instrument, its rank, whether it is an act, a decree or a rule. Observed \
-live: 283 of 300 documents ended up behind one folder called 개별 법률 및 시행령, which \
-is true of almost every document in that collection and so excludes nothing.
+the kind of instrument, its rank, whether it is an act, a decree or a rule. A name that is true of almost every document in the collection excludes nothing, and a shelf built on one swallows the archive.
 
 CONTAINER if the name leans on a word meaning assorted, individual, various, other, \
 related or general, with or without a subject attached to it. The reader cannot tell \

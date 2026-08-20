@@ -1304,7 +1304,7 @@ class TestNamingTheLawIsAllowedBelowTheRoot:
 
         asked = llm.prompts_for(subdivision_prompts.Axis)
         assert asked
-        assert "어느 법률에 속하는가" not in asked[0].system
+        assert "WHICH work a document belongs to" not in asked[0].system
 
     async def test_a_subject_folder_is(self, engine: Bismuth, script: ScriptedModel, llm) -> None:  # type: ignore[no-untyped-def]
         ids = await _fill(engine, script, 8)
@@ -1318,7 +1318,7 @@ class TestNamingTheLawIsAllowedBelowTheRoot:
 
         asked = llm.prompts_for(subdivision_prompts.Axis)
         assert asked
-        assert "어느 법률에 속하는가" in asked[-1].system
+        assert "WHICH work a document belongs to" in asked[-1].system
 
 
 class TestTheAxisCheckSeesTheFolderItJudges:
