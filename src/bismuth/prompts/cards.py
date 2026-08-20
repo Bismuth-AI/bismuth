@@ -280,6 +280,22 @@ class ParsedCard:
     questions: tuple[str, ...] = ()
 
 
+def _items(value: str) -> list[str]:
+    """One tagged line, which is sometimes several items.
+
+    Asked for one per line, the model occasionally writes the whole list on one:
+    ``KEYWORD: 온누리상품권, 가맹점, 과징금, 판매대행자``. Read whole, that line is far
+    past what fits on a folder tab and the filter drops it -- so eight items were lost in
+    one run for being written with commas instead of newlines, which is not a difference
+    in what the model found.
+
+    Only a separator, never a rewrite: a value with no comma comes back as itself, and a
+    label that genuinely contains one keeps it if splitting would leave an empty piece.
+    """
+    parts = [part.strip() for part in value.split(",")]
+    return [part for part in parts if part] if all(parts) and len(parts) > 1 else [value]
+
+
 def parse_card(text: str) -> ParsedCard:
     """Read tagged lines into the fields a card is made of.
 
@@ -314,9 +330,9 @@ def parse_card(text: str) -> ParsedCard:
             case "SUMMARY":
                 found["summary"] = f"{found['summary']} {value}".strip()
             case "TOPIC":
-                found["topics"].append(value)
+                found["topics"].extend(_items(value))
             case "KEYWORD":
-                found["keywords"].append(value)
+                found["keywords"].extend(_items(value))
             case "QUESTION":
                 found["questions"].append(value)
             case "ENTITY":

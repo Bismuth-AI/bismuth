@@ -58,6 +58,11 @@ the reader cannot tell what is inside, and the next arrival always fits it.
 here are already a good top level for these subjects -- when what you would draw is what
 is there. Nothing is moved, and you will be asked again when the collection has doubled.
 A tree that is merely imperfect is better than a tree redrawn every time someone asks.
+
+A folder's second number, when it has one, is how many of its documents are still sitting
+in it rather than behind one of its own folders. A top level where those numbers are small
+is working, whatever you would have named it; one where a folder holds most of its
+documents in the hall is not sorting anything, and that is the case worth redrawing for.
 """
 
 
@@ -108,7 +113,7 @@ class Design(BaseModel):
 def build_design(
     *,
     vocabulary: list[str],
-    folders: list[tuple[str, str, int]],
+    folders: list[tuple[str, str, int, int]],
     refused: list[str] | None = None,
     language: str = "",
 ) -> Prompt:
@@ -125,8 +130,11 @@ def build_design(
     listed = ", ".join(vocabulary)
     standing = (
         "\n".join(
-            f"  {name}/  ({count} documents)" + (f" — {note}" if note else "")
-            for name, note, count in folders
+            f"  {name}/  ({count} documents"
+            + (f", {loose} of them loose in it" if loose else "")
+            + ")"
+            + (f" — {note}" if note else "")
+            for name, note, count, loose in folders
         )
         or "  (none)"
     )
