@@ -228,6 +228,7 @@ class RedesignService:
                     refused="too few of these answers could be built where they were drawn",
                 )
             placed = await self._assign(classes, standing, promotions)
+            classes, promotions, placed = self._without_clashes(classes, promotions, placed)
             placed = await self._only_classes(placed, classes, standing, promotions)
             if not placed and not promotions:
                 return Redesign(
@@ -238,6 +239,45 @@ class RedesignService:
                     refused="nothing found a place under the new top level",
                 )
             return self._apply(design, classes, placed, standing, promotions)
+
+    def _without_clashes(
+        self,
+        classes: list[tuple[str, str]],
+        promotions: dict[str, PurePosixPath],
+        placed: dict[str, list[PurePosixPath]],
+    ) -> tuple[list[tuple[str, str]], dict[str, PurePosixPath], dict[str, list[PurePosixPath]]]:
+        """Drop the classes whose promotion sits under something else that is moving.
+
+        A folder inside another folder that is also moving travels with its parent, and
+        ``placed`` is filtered for exactly that. A promotion never enters ``placed``, so it
+        was never held to the rule: 공정거래 was promoted out of 기업거래규제/공정거래 while
+        기업거래규제 moved to another class, both planned their moves from the tree as it
+        stood, and the second found the files already gone. The batch rolled back whole.
+
+        The class goes with the promotion. Dropping the promotion alone would build the
+        class at the root beside a buried folder of its own name, which is the duplicate
+        this mechanism exists to prevent. The next firing sees a settled tree.
+        """
+        moving = {item for items in placed.values() for item in items}
+        clashing = {
+            name
+            for name, rises in promotions.items()
+            if any(parent in moving for parent in rises.parents if parent.parts)
+        }
+        if not clashing:
+            return classes, promotions, placed
+        for name in sorted(clashing):
+            log_trace(
+                "redesign.dropped",
+                klass=name,
+                folder=str(promotions[name]),
+                reason="the folder it would rise from is travelling with its own parent",
+            )
+        return (
+            [(name, sign) for name, sign in classes if name not in clashing],
+            {name: rises for name, rises in promotions.items() if name not in clashing},
+            {name: items for name, items in placed.items() if name not in clashing},
+        )
 
     async def _only_classes(
         self,

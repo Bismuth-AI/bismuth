@@ -304,6 +304,28 @@ class TestAClassIsNotBuiltBesideItsOwnName:
         assert not (engine.vault.root / "문학/금융").exists()
         assert not (engine.vault.root / "금융/금융").exists()
 
+    async def test_a_promotion_under_a_moving_ancestor_is_not_attempted(
+        self, engine: Bismuth, script: ScriptedModel
+    ) -> None:
+        """Live failure, rolled back with nothing lost: 공정거래 was promoted out of
+        기업거래규제/공정거래 while 기업거래규제 moved to another class, both planned their
+        moves from the tree as it stood, and the second found the files already gone."""
+        from tests.conftest import seed_folder
+
+        await _three_folders(engine, script)
+        seed_folder(Path(engine.vault.root), PurePosixPath("문학/금융"))
+        script.set(placement_prompts.PlacementDecision, place_at("문학/금융"))
+        await add(engine, "은행법.txt", "은행 감독 문서")
+        _designed(script, "금융", "자연", "사회", "인문")
+        # 문학 carries 문학/금융 with it, so the promotion cannot also take it.
+        script.set_assigned({"문학": "C004", "역사": "C002", "과학": "C003"})
+
+        result = await engine.redesign.redesign()
+
+        assert result.applied
+        assert (engine.vault.root / "인문/문학/금융/은행법.txt").is_file()
+        assert not (engine.vault.root / "금융").exists()
+
     async def test_two_folders_of_that_name_keep_the_refusal(
         self, engine: Bismuth, script: ScriptedModel
     ) -> None:
