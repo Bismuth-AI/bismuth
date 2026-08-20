@@ -63,7 +63,6 @@ class NeedsAFolder(ABC):
 
     # -- what a decision writes down --------------------------------------------------
     @abstractmethod
-    @abstractmethod
     def _parent_note(
         self,
         folder: PurePosixPath,
@@ -72,7 +71,6 @@ class NeedsAFolder(ABC):
         *,
         documents: int,
     ) -> Charter: ...
-    @abstractmethod
     @abstractmethod
     def _stable_child_note_operations(
         self, folder: PurePosixPath, *, axis: str
