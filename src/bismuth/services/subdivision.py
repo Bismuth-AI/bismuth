@@ -154,6 +154,19 @@ class LibraryMaintenanceService:
         self._llm = llm
         self._barren: dict[tuple[str, str], int] = {}
         self._merged: dict[str, int] = {}
+        self._homogeneous: dict[tuple[str, str], bool] = {}
+        """Piles that answered "all of these belong together", keyed by their own signs.
+
+        Not a refusal to be repeated: it is the folder saying it has nothing to give up on
+        this axis, which stops being true only when what is in it changes. Keyed the same
+        way routing memory is, so an arrival invalidates it and nothing else needs to.
+        """
+        self._not_an_answer: dict[tuple[str, str], set[str]] = {}
+        """Names the check turned down here, keyed by the question they failed to answer.
+
+        A name refused under one question can be the right name under another, so the
+        question is part of the key and a redrawn boundary forgets everything.
+        """
         self._declined: dict[tuple[str, str], set[str]] = {}
         """Documents that answered STAY to a folder's signs, keyed by those signs: a new
         sign invalidates the memory, and nothing else needs to."""
@@ -771,7 +784,7 @@ class LibraryMaintenanceService:
         # not belong behind any of these will not belong behind the same ones tomorrow,
         # and the pile it sits in only grows: 8,416 of these questions placed twelve
         # documents in one run, because every arrival asked the whole pile again.
-        signs = _signs_fingerprint(contents.children)
+        signs = _shown_fingerprint(contents.children)
         already = self._declined.setdefault((str(folder), signs), set())
         asking = [line for line in contents.lines if line[0] not in already]
         if not asking:
@@ -851,12 +864,33 @@ class LibraryMaintenanceService:
             )
             return prompts.Emerging(emerged=False), ()
 
+        # A pile that already answered "all of these belong together" is not asked again
+        # until it changes. The answer is not wrong so much as final: this folder is
+        # homogeneous on this axis and has no class to give up. Unremembered it was bought
+        # 43 times in one run, 20 of them from the same folder, each time paying for the
+        # grouping call and throwing the whole chain away.
+        pile = _shown_fingerprint(documents)
+        if self._homogeneous.get((str(folder), pile)):
+            log_trace(
+                "subdivide.skipped",
+                folder=str(folder),
+                reason="this pile already answered that all of it belongs together",
+                documents=len(documents),
+            )
+            return prompts.Emerging(emerged=False), ()
+
         gathered: list[prompts.Gathered] = []
+        took_everything = False
         for packet in _document_packets(documents, build):
             found = await self._llm.structured(build(packet), schema=prompts.Gathered)
-            if kept := self._kept_members(found, packet, folder=folder):
+            kept = self._kept_members(found, packet, folder=folder)
+            if kept:
                 gathered.append(prompts.Gathered(members=kept, shared=found.shared.strip()))
+            elif len(dict.fromkeys(found.members)) >= len(packet):
+                took_everything = True
         if not gathered:
+            if took_everything:
+                self._homogeneous[(str(folder), pile)] = True
             return prompts.Emerging(emerged=False), ()
 
         # The thickest, decided here rather than asked. The prompt already says to return
@@ -926,6 +960,25 @@ class LibraryMaintenanceService:
         # the names it was supposed to be producing, so a folder divided on 적용 대상 --
         # who the law applies to -- grew 중대재해처벌법 and 테러자금금지법 as answers.
         # Asked here, before the sign is written and long before the membership loop.
+        #
+        # Once per name and question, though. The same name was proposed and turned down
+        # nine times under one question in a single run, and the check has no way to
+        # answer differently the ninth time: it reads the name and the question, and
+        # neither has changed.
+        refused_here = self._not_an_answer.setdefault(
+            (str(folder), normalise_label(question)), set()
+        )
+        if normalise_label(name) in refused_here:
+            log_trace(
+                "subdivide.name_refused",
+                folder=str(folder),
+                axis=settled_axis,
+                question=question,
+                proposed=[name],
+                remembered=True,
+            )
+            return prompts.Emerging(emerged=False), ()
+
         answers = await self._llm.choose(
             prompts.build_name_check(
                 path=str(folder),
@@ -936,12 +989,14 @@ class LibraryMaintenanceService:
             choices=("ANSWERS", "BESIDE"),
         )
         if answers.strip().upper() == "BESIDE":
+            refused_here.add(normalise_label(name))
             log_trace(
                 "subdivide.name_refused",
                 folder=str(folder),
                 axis=settled_axis,
                 question=question,
                 proposed=[name],
+                remembered=False,
             )
             return prompts.Emerging(emerged=False), ()
 
@@ -2171,13 +2226,14 @@ def _vocabulary(contents: _Contents, *, taken: set[str], most: int = 40) -> list
     return [topic for topic, _ in counted.most_common(most)]
 
 
-def _signs_fingerprint(children: list[tuple[str, str]]) -> str:
-    """What a routing question offered, as one comparable string.
+def _shown_fingerprint(pairs: list[tuple[str, str]]) -> str:
+    """What a question offered, as one comparable string.
 
-    The answer a document gave depends on the signs it was shown and on nothing else, so
-    the memory of that answer lasts exactly as long as they do.
+    An answer depends on what was in front of it and on nothing else, so a memory of that
+    answer lasts exactly as long as the list does. Used for the signs a routing question
+    offered, and for the pile a grouping question was asked about.
     """
-    return "\u0000".join(f"{name}\u0001{note}" for name, note in sorted(children))
+    return "\u0000".join(f"{name}\u0001{note}" for name, note in sorted(pairs))
 
 
 def _describe(card: DocumentCard, *, with_type: bool = True) -> str:

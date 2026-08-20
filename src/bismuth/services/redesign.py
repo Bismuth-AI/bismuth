@@ -78,8 +78,13 @@ class Redesign:
 class _Standing:
     """The top of the vault as it is now."""
 
-    folders: list[tuple[str, str, int]] = field(default_factory=list)
-    """(name, sign, documents through the subtree)."""
+    folders: list[tuple[str, str, int, int]] = field(default_factory=list)
+    """(name, sign, documents through the subtree, documents loose in it).
+
+    The second count is what says whether the folder is working. A folder of 61 that has
+    filed all 61 and a folder of 61 with 31 sitting directly in it are the same number and
+    opposite states, and the pass was shown only the number.
+    """
     documents: list[tuple[PurePosixPath, str]] = field(default_factory=list)
     """Loose at the root: (path, one-line description)."""
     vocabulary: list[str] = field(default_factory=list)
@@ -213,6 +218,7 @@ class RedesignService:
 
             classes = [(sanitize_segment(item.name), item.sign.strip()) for item in design.classes]
             placed = await self._assign(classes, standing)
+            placed = await self._only_classes(placed, classes)
             if not placed:
                 return Redesign(
                     question=design.question,
@@ -222,6 +228,44 @@ class RedesignService:
                     refused="nothing found a place under the new top level",
                 )
             return self._apply(design, classes, placed, standing)
+
+    async def _only_classes(
+        self,
+        placed: dict[str, list[PurePosixPath]],
+        classes: list[tuple[str, str]],
+    ) -> dict[str, list[PurePosixPath]]:
+        """Drop the classes that name what their contents are rather than what they are about.
+
+        The same closed question a new shelf is held to, and the pass that invents the
+        whole top level was the one operator it was never asked. 특수 분야 지원 collected
+        여성·장애인기업 and 중대재해 -- two unrelated things under a name meaning assorted
+        support -- and split dissolved it six minutes later, having paid to move eight
+        files twice.
+
+        Asked once per class that actually collected something, so a design of nine costs
+        as many calls as it has live classes and none for the ones nothing chose.
+        """
+        signs = dict(classes)
+        for name, items in list(placed.items()):
+            verdict = await self._llm.choose(
+                subdivision_prompts.build_shelf_check(
+                    path="",
+                    name=name,
+                    sign=signs.get(name, ""),
+                    moving=[item.name for item in items],
+                    staying=[other for other in placed if other != name],
+                ),
+                choices=("CLASS", "CONTAINER"),
+            )
+            if verdict.strip().upper() == "CONTAINER":
+                log_trace(
+                    "redesign.dropped",
+                    klass=name,
+                    reason="the name says what its contents are, not what they are about",
+                    members=[item.name for item in items],
+                )
+                placed.pop(name)
+        return placed
 
     async def _design(self, standing: _Standing) -> prompts.Design | None:
         """The one call that decides the top of the tree, held to the same property
@@ -294,7 +338,7 @@ class RedesignService:
             note = ""
             if (loaded := self._charters.load(folder)) is not None:
                 note = loaded.purpose
-            standing.folders.append((str(folder), note, self._count(folder)))
+            standing.folders.append((str(folder), note, self._count(folder), self._loose(folder)))
         contents = self._read(PurePosixPath())
         for _, description, path in contents.documents:
             standing.documents.append((path, description))
@@ -303,15 +347,40 @@ class RedesignService:
         # about, not from whatever happens to be loose at the root today.
         whole = self._read(PurePosixPath(), recursive=True)
         counted: dict[str, int] = {}
-        for _, topics in whole.topics:
+        homes: dict[str, set[str]] = {}
+        for document_id, topics in whole.topics:
+            path = whole.path_of(document_id)
+            home = path.parts[0] if path is not None and path.parts else ""
             for topic in topics:
                 if cleaned := topic.strip():
                     counted[cleaned] = counted.get(cleaned, 0) + 1
+                    homes.setdefault(cleaned, set()).add(home)
+        # Fewest homes first, and only then the most common. A subject that appears under
+        # every folder distinguishes nothing, however often it is written down, and this
+        # collection's most common subjects were exactly those: 과태료, 벌칙, 대통령령 and
+        # 규제 재검토 each appeared under all six roots, while 전통시장, 온누리상품권 and
+        # 연구개발비 each appeared under one. Ranked by count, twelve of the top fifteen
+        # were boilerplate -- the model was told not to divide on what documents ARE and
+        # then handed a list sorted by it.
+        #
+        # Self-relative and it degrades on its own: while one folder stands, every subject
+        # has one home and this is the old ranking exactly.
         standing.vocabulary = [
-            topic for topic, _ in sorted(counted.items(), key=lambda item: (-item[1], item[0]))
+            topic
+            for topic, _ in sorted(
+                counted.items(), key=lambda item: (len(homes[item[0]]), -item[1], item[0])
+            )
         ][:120]
         standing.language = whole.language
         return standing
+
+    def _loose(self, folder: PurePosixPath) -> int:
+        """Documents sitting in this folder rather than behind one of its children."""
+        return sum(
+            1
+            for path in self._vault.iter_files(folder, recursive=False)
+            if not path.parts or path.parts[0] != INBOX.parts[0]
+        )
 
     def _count(self, folder: PurePosixPath) -> int:
         """Documents the collection holds, which is not the same as files in the vault.
@@ -360,7 +429,7 @@ class RedesignService:
         placed: dict[str, list[PurePosixPath]] = {name: [] for name, _ in classes}
         taken = {normalise_label(name) for name, _ in classes}
 
-        for name, note, count in standing.folders:
+        for name, note, count, _ in standing.folders:
             folder = PurePosixPath(name)
             # A folder the new top level names again IS that class, standing where it
             # already stands. 행정조직 was drawn beside 행정·조직 and both survived,
@@ -396,17 +465,28 @@ class RedesignService:
         # folder, no documents, and a name that says what that folder already says. Three
         # of those were built in one redesign -- 금융 및 금융소비자 over 금융업 및
         # 금융소비자, holding 89 of its 90 documents in that single child.
-        folder_paths = {PurePosixPath(name) for name, _, _ in standing.folders}
+        folder_paths = {name for name, _, _, _ in standing.folders}
         for name, items in list(placed.items()):
-            # Only folders. A class that collected one document whose filename happens to
-            # repeat it has not built a pass-through: 공정거래 and 규제자유특구 were both
-            # dropped for holding a single PDF named after the law they are about.
-            if len(items) != 1 or items[0] not in folder_paths:
+            # Counted in folders, not in items. A class that collected one document whose
+            # filename happens to repeat it has not built a pass-through -- 공정거래 and
+            # 규제자유특구 were both dropped for holding a single PDF named after the law
+            # they are about -- but a document travelling alongside the folder used to
+            # skip this rule altogether, because two items is not one. 소비자 보호 over
+            # 소비자 was dropped correctly at 112 documents and built at 224, the same
+            # pair, because one document came with it. The reader gains a click either way.
+            folders_taken = [item for item in items if str(item) in folder_paths]
+            if len(folders_taken) != 1:
                 continue
-            only = items[0].name
+            only = folders_taken[0].name
             if not _says_the_same(name, only):
                 continue
-            log_trace("redesign.dropped", klass=name, folder=only, reason="one folder alone")
+            log_trace(
+                "redesign.dropped",
+                klass=name,
+                folder=only,
+                reason="one folder alone",
+                documents=len(items) - 1,
+            )
             placed.pop(name)
 
         return {name: items for name, items in placed.items() if items}
@@ -423,7 +503,7 @@ class RedesignService:
         """Every move in one journal entry, so a stopped redesign cannot exist."""
         operations: list[Operation] = []
         payloads: dict[PurePosixPath, bytes] = {}
-        folder_names = {name for name, _, _ in standing.folders}
+        folder_names = {name for name, _, _, _ in standing.folders}
         moved_folders: list[str] = []
         moved_documents = 0
 
@@ -464,7 +544,7 @@ class RedesignService:
             update={
                 "split_basis": design.axis.strip(),
                 "split_question": design.question.strip(),
-                "split_at_documents": sum(count for _, _, count in standing.folders),
+                "split_at_documents": sum(count for _, _, count, _ in standing.folders),
                 "redrawn_at_documents": self._count(PurePosixPath()),
             }
         )
