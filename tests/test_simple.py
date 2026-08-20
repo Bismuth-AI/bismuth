@@ -100,6 +100,37 @@ class TestFilingAHandfulAtOnce:
         assert "문학/  (2 here) — 소설과 시" in shown
 
 
+class TestTheQuestionSaysWhatItIsShowing:
+    """Compressed, a line stops explaining itself. `소상공인 보호 및 지원에 관한 법률 | 법률 |
+    소상공인, 창업 및 경영안정 지원` has to be read as title, kind and subjects, and nothing
+    said so -- the same for a folder's count, which is its own documents and not its
+    subtree."""
+
+    def test_filing_explains_both_shapes_it_shows(self) -> None:
+        prompt = simple_prompts.build_filing(
+            folders=[
+                simple_prompts.Folder(path=PurePosixPath("금융"), note="금융 규제", documents=5)
+            ],
+            documents=[("D1", "은행법 | 법률 | 은행, 감독")],
+            loose=0,
+        )
+
+        assert "<what kind of document it is>" in prompt.system
+        assert "<a few things it is about>" in prompt.system
+        assert "the folder's own documents and not what is under its sub-folders" in prompt.system
+
+    def test_review_explains_the_count_it_judges_on(self) -> None:
+        prompt = simple_prompts.build_review(
+            folders=[
+                simple_prompts.Folder(path=PurePosixPath("금융"), note="금융 규제", documents=5)
+            ],
+            total=50,
+            loose=3,
+        )
+
+        assert "the folder's own documents and not what is under its sub-folders" in prompt.system
+
+
 class TestWhatOneDocumentLooksLikeInTheQuestion:
     """The card is already a summary; a filing question does not need the summary inside it.
 

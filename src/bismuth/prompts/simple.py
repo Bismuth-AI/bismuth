@@ -28,6 +28,22 @@ pick ONE without opening any of them. Every folder name is that reader's only ev
 You are shown the tree as it stands and a handful of documents. Put each document \
 somewhere.
 
+This is what you are shown. Every folder that exists is one line:
+
+  <path>/  (<how many documents sit in that folder itself>) — <what it says it holds>
+
+That count is the folder's own documents and not what is under its sub-folders, so a \
+folder with a large count standing beside its own sub-folders is one whose sub-folders are \
+not holding much. A folder with no sentence after it has not been given one yet.
+
+Every document to file is one line:
+
+  [D<n>] <its own title> | <what kind of document it is> | <a few things it is about>
+
+The handle is how you name it in your answer and means nothing outside this request. None \
+of these lines is the document itself -- they are what was read out of it, so what you are \
+comparing is subjects, not text.
+
 Go through it in this order, for every document.
 
 **1. Does a folder that already exists hold this?** If one does, that is the answer. A \
@@ -74,6 +90,14 @@ SIGN: <folder path> | <one sentence>\
 _REVIEW = """\
 You are looking at a folder tree that an agent walks with `ls`. Judge whether it is still \
 worth walking, and say so.
+
+Every folder is one line:
+
+  <path>/  (<how many documents sit in that folder itself>) — <what it says it holds>
+
+That count is the folder's own documents and not what is under its sub-folders, so a \
+folder whose own count is larger than everything filed beneath it has not really divided \
+anything.
 
 The reader lists a folder, sees the names inside it, and picks one without opening any. \
 So the tree is working when the names at each level divide what is under them, and failing \
