@@ -358,6 +358,49 @@ class TestAClassIsHeldToTheQuestionAShelfIs:
         assert (engine.vault.root / "문학").is_dir()
         assert (engine.vault.root / "역사").is_dir()
 
+    async def test_a_class_that_only_collected_documents_is_not_asked(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The question is whether a name over these FOLDERS is a class. Handed the loose
+        documents too it read a list of acts and decrees and answered CONTAINER, correctly
+        for what it was shown -- five classes were lost that way in one run."""
+        await _three_folders(engine, script)
+        script.set(placement_prompts.PlacementDecision, place_at(""))
+        for index in range(2):
+            await add(engine, f"법률{index}.txt", f"법률 문서 {index}")
+        _designed(script, "인문", "자연", "사회")
+        script.set_assigned(
+            {"문학": "C001", "역사": "C001", "법률 문서 0": "C003", "법률 문서 1": "C003"}
+        )
+        script.set_shelf_is_container()
+        llm.calls.clear()
+
+        result = await engine.redesign.redesign()
+
+        asked = [
+            p.user.split("THE BROADER NAME: ", 1)[1].splitlines()[0]
+            for p in llm.prompts_for(None)
+            if "THE BROADER NAME: " in p.user
+        ]
+        assert asked == ["인문"], "사회 collected only documents, so there is no shelf to judge"
+        del result
+
+    async def test_only_folders_are_listed_as_standing_here(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        await _three_folders(engine, script)
+        script.set(placement_prompts.PlacementDecision, place_at(""))
+        await add(engine, "법률.txt", "법률 문서 하나")
+        _designed(script, "인문", "자연", "사회")
+        script.set_assigned({"문학": "C001", "역사": "C001", "법률 문서 하나": "C001"})
+        llm.calls.clear()
+
+        await engine.redesign.redesign()
+
+        shown = next(p for p in llm.prompts_for(None) if "THE BROADER NAME: " in p.user).user
+        assert "문학/" in shown and "역사/" in shown
+        assert "법률" not in shown
+
     async def test_it_is_only_asked_about_classes_that_collected_something(
         self, engine: Bismuth, script: ScriptedModel, llm
     ) -> None:  # type: ignore[no-untyped-def]
