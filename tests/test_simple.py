@@ -19,7 +19,7 @@ class Answers:
         self.asked: list[str] = []
 
     def __call__(self, prompt, schema):  # type: ignore[no-untyped-def]
-        if "DOCUMENTS TO FILE" in prompt.user or "THE TREE:" in prompt.user:
+        if "배치할 문서" in prompt.user or "트리:" in prompt.user:
             self.asked.append(prompt.user)
             return self.replies.pop(0) if self.replies else "KEEP"
         return self.script(prompt, schema)
@@ -97,7 +97,7 @@ class TestFilingAHandfulAtOnce:
         await engine.simple.file(_batch(second))
 
         shown = answers.asked[-1]
-        assert "문학/  (2 here) — 소설과 시" in shown
+        assert "문학/  (2건) — 소설과 시" in shown
 
 
 class TestTheQuestionSaysWhatItIsShowing:
@@ -115,9 +115,9 @@ class TestTheQuestionSaysWhatItIsShowing:
             loose=0,
         )
 
-        assert "<what kind of document it is>" in prompt.system
-        assert "<a few things it is about>" in prompt.system
-        assert "the folder's own documents and not what is under its sub-folders" in prompt.system
+        assert "<어떤 종류의 문서인지>" in prompt.system
+        assert "<무엇에 관한 것인지 몇 가지>" in prompt.system
+        assert "그 폴더에 직접 놓인 문서 수" in prompt.system
 
     def test_review_explains_the_count_it_judges_on(self) -> None:
         prompt = simple_prompts.build_review(
@@ -128,7 +128,7 @@ class TestTheQuestionSaysWhatItIsShowing:
             loose=3,
         )
 
-        assert "the folder's own documents and not what is under its sub-folders" in prompt.system
+        assert "그 폴더에 직접 놓인 문서 수" in prompt.system
 
 
 class TestWhatOneDocumentLooksLikeInTheQuestion:

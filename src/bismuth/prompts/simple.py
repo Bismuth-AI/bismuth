@@ -21,109 +21,102 @@ from pathlib import PurePosixPath
 from bismuth.ports.llm import Prompt
 
 _FILING = """\
-You are filing documents into a folder tree. The only reader is an agent with `ls`, \
-`grep` and `read`: it lists a folder, sees the names of the folders inside it, and has to \
-pick ONE without opening any of them. Every folder name is that reader's only evidence.
+너는 문서를 폴더 트리에 배치한다. 이 트리를 읽는 것은 오직 `ls`, `grep`, `read` 만 가진 \
+에이전트다. 폴더를 나열하면 그 안의 폴더 이름들이 보이고, 하나도 열어보지 않은 채 \
+그중 하나를 골라야 한다. 폴더 이름이 그 에이전트가 가진 유일한 단서다.
 
-You are shown the tree as it stands and a handful of documents. Put each document \
-somewhere.
+지금 서 있는 트리와 문서 몇 건을 보여줄 테니, 각 문서를 어딘가에 두어라.
 
-This is what you are shown. Every folder that exists is one line:
+보여주는 형식은 이렇다. 이미 있는 폴더는 한 줄씩:
 
-  <path>/  (<how many documents sit in that folder itself>) — <what it says it holds>
+  <경로>/  (<그 폴더 자체에 놓인 문서 수>) — <무엇을 담는다고 적혀 있는지>
 
-That count is the folder's own documents and not what is under its sub-folders, so a \
-folder with a large count standing beside its own sub-folders is one whose sub-folders are \
-not holding much. A folder with no sentence after it has not been given one yet.
+괄호 안 숫자는 **그 폴더에 직접 놓인 문서 수**이고 하위 폴더에 들어 있는 것은 세지 않는다. \
+그래서 하위 폴더를 여럿 거느리고도 이 숫자가 큰 폴더는, 하위 폴더들이 별로 걸러주지 \
+못하고 있는 폴더다. 뒤에 문장이 없는 폴더는 아직 설명이 붙지 않은 것이다.
 
-Every document to file is one line:
+배치할 문서도 한 줄씩:
 
-  [D<n>] <its own title> | <what kind of document it is> | <a few things it is about>
+  [D<번호>] <문서 자신의 제목> | <어떤 종류의 문서인지> | <무엇에 관한 것인지 몇 가지>
 
-The handle is how you name it in your answer and means nothing outside this request. None \
-of these lines is the document itself -- they are what was read out of it, so what you are \
-comparing is subjects, not text.
+번호는 네 답에서 그 문서를 가리키는 이름일 뿐이고 이 요청 밖에서는 아무 뜻이 없다. \
+이 줄들은 문서 자체가 아니라 **문서에서 읽어낸 것**이다. 그러니 네가 견주는 것은 본문이 \
+아니라 주제다.
 
-Go through it in this order, for every document.
+문서마다 이 순서로 판단하라.
 
-**1. Does a folder that already exists hold this?** If one does, that is the answer. A \
-tree that grows a folder per document is the same list with a click in front of every \
-entry, and a folder that exists is evidence that documents like this one have a home.
+**1. 이미 있는 폴더 중에 이 문서를 담는 곳이 있나?** 있으면 그게 답이다. 문서마다 폴더가 \
+하나씩 생기는 트리는 항목마다 클릭이 하나 더 붙은 같은 목록일 뿐이고, 이미 서 있는 \
+폴더는 이런 문서에게 집이 있다는 증거다.
 
-**2. If none does, look at the other documents in front of you.** They arrived together \
-and you can see all of them at once, which is the only moment anything can. Two or more \
-that belong together are a folder; name it and put them in it. This is where most new \
-folders should come from.
+**2. 없으면, 눈앞의 다른 문서들을 봐라.** 이들은 함께 도착했고 지금 이 순간에만 한꺼번에 \
+볼 수 있다. 둘 이상이 함께 속한다면 그게 폴더다. 이름을 붙이고 거기에 넣어라. 새 폴더는 \
+대부분 여기서 나와야 한다.
 
-**3. Only then, the root.** ROOT means: no folder here holds it, and nothing else in this \
-batch belongs with it. It is a real answer and you should give it when it is true -- but it \
-is the answer of last resort, not the safe one. A batch that answers ROOT for everything \
-has decided nothing, and the pile it leaves is what the reader has to read instead of the \
-tree.
+**3. 그다음에야 루트다.** ROOT 는 "여기 있는 어느 폴더도 이 문서를 담지 않고, 이번에 함께 \
+온 문서 중에도 짝이 없다" 는 뜻이다. 참일 때는 그렇게 답해야 하는 정당한 답이지만, \
+안전한 답이 아니라 **마지막 수단**이다. 전부 ROOT 라고 답한 배치는 아무것도 정하지 않은 \
+것이고, 그렇게 남은 더미는 읽는 사람이 트리 대신 읽어야 할 목록이 된다.
 
-**A folder name says what its documents are ABOUT.** Not what they are: their form, their \
-kind, their date, who issued them, what rank of instrument they are. Those are true of \
-almost everything and split nothing. A name that would be true of most of the collection \
-excludes nothing.
+**폴더 이름은 그 문서들이 무엇에 관한 것인지를 말한다.** 문서가 무엇인지가 아니다 — \
+형식, 종류, 날짜, 발행 주체, 법령의 위계 같은 것은 거의 모든 문서에 해당해서 아무것도 \
+가르지 못한다. 장서 대부분에 참인 이름은 아무것도 배제하지 못한다.
 
-**Nothing is named "other", "misc", "general" or "related".** The reader cannot tell what \
-is inside, and everything that arrives later fits.
+**"기타", "일반", "관련", "그 외" 같은 이름은 쓰지 않는다.** 안에 뭐가 있는지 알 수 없고, \
+나중에 오는 것이 전부 거기 들어맞는다.
 
-You may name a path that does not exist yet, and you may nest: `금융/은행법` puts a folder \
-inside `금융`. Keep it shallow -- every level costs the reader a correct guess, and a wrong \
-guess at any level never reaches what they wanted.
+아직 없는 경로를 지어도 되고, 중첩해도 된다. `금융/은행법` 은 `금융` 안에 폴더를 만든다. \
+다만 얕게 유지하라 — 층이 하나 늘 때마다 읽는 사람이 맞혀야 할 선택이 하나 늘고, 어느 \
+한 층에서 틀리면 찾던 것에 영영 닿지 못한다.
 
-Before you answer, check the documents against each other once: any two that \
-are about the same thing belong in the same place, whatever that place turns out to be.
+답하기 전에 문서들끼리 한 번 대조하라. 같은 것을 다루는 둘은, 그곳이 어디로 정해지든 \
+같은 곳에 있어야 한다.
 
-Answer one line per document, and nothing else:
+답은 문서당 한 줄이고, 그 외에는 아무것도 쓰지 마라:
 
-D1: <folder path, or ROOT>
-D2: <folder path, or ROOT>
+D1: <폴더 경로, 또는 ROOT>
+D2: <폴더 경로, 또는 ROOT>
 
-For every path you name that is not in the list above, add one line saying what it holds, \
-written for someone who cannot see the documents:
+위 목록에 없던 경로를 새로 지었다면, 그 폴더가 무엇을 담는지 한 줄씩 덧붙여라. 이 폴더를 \
+처음 보는 사람, 안에 든 문서를 볼 수 없는 사람에게 설명하듯 써라:
 
-SIGN: <folder path> | <one sentence>\
+SIGN: <폴더 경로> | <한 문장>\
 """
 
 _REVIEW = """\
-You are looking at a folder tree that an agent walks with `ls`. Judge whether it is still \
-worth walking, and say so.
+너는 에이전트가 `ls` 로 걸어다니는 폴더 트리를 보고 있다. 이 트리가 아직 걸어다닐 만한지 \
+판단하고 그대로 말하라.
 
-Every folder is one line:
+폴더는 한 줄씩 보여준다:
 
-  <path>/  (<how many documents sit in that folder itself>) — <what it says it holds>
+  <경로>/  (<그 폴더 자체에 놓인 문서 수>) — <무엇을 담는다고 적혀 있는지>
 
-That count is the folder's own documents and not what is under its sub-folders, so a \
-folder whose own count is larger than everything filed beneath it has not really divided \
-anything.
+괄호 안 숫자는 **그 폴더에 직접 놓인 문서 수**이고 하위 폴더에 들어 있는 것은 세지 않는다. \
+그래서 자기 숫자가 아래에 정리된 것 전부보다 큰 폴더는, 실은 아무것도 나누지 못한 폴더다.
 
-The reader lists a folder, sees the names inside it, and picks one without opening any. \
-So the tree is working when the names at each level divide what is under them, and failing \
-when a reader cannot tell the names apart, when one folder holds most of the collection, \
-when a folder's own pile is larger than everything filed under it, or when the same \
-subject sits in two places.
+읽는 사람은 폴더를 나열하고, 그 안의 이름들을 보고, 하나도 열지 않은 채 하나를 고른다. \
+그러니 각 층의 이름들이 그 아래 있는 것을 갈라줄 때 트리가 제 일을 하는 것이고, 이름들을 \
+서로 구별할 수 없을 때, 한 폴더가 장서 대부분을 안고 있을 때, 어느 폴더의 자기 더미가 \
+그 아래 정리된 것 전부보다 클 때, 같은 주제가 두 곳에 나뉘어 있을 때 실패한 것이다.
 
-Depth is not free: every level is another guess that has to be right, and a wrong one \
-never recovers. Width is cheap by comparison -- a dozen clear names in one listing is one \
-judgement, and a name that means nothing is worse than ten that do.
+깊이는 공짜가 아니다. 층 하나하나가 맞혀야 할 선택이고 한 번 틀리면 회복되지 않는다. \
+그에 비하면 폭은 싸다 — 뜻이 분명한 이름 열두 개를 한 번에 훑는 것은 판단 한 번이고, \
+아무 뜻 없는 이름 하나가 뜻 있는 이름 열 개보다 나쁘다.
 
-If the tree is good enough, say so and stop. **A tree that is merely imperfect is better \
-than a tree redrawn every time someone asks**, because every redraw moves documents a \
-reader may already have learned where to find.
+트리가 충분히 괜찮으면 그렇다고 말하고 끝내라. **어설픈 트리가, 물어볼 때마다 다시 그리는 \
+트리보다 낫다.** 다시 그릴 때마다 읽는 사람이 이미 익힌 자리에서 문서가 옮겨지기 때문이다.
 
-If it is not, say what to move. You may move a folder under another, rename one by moving \
-it to a new path, or lift one to the root. Documents travel with the folder they are in.
+괜찮지 않다면 무엇을 옮길지 말하라. 폴더를 다른 폴더 아래로 옮기거나, 새 경로로 옮겨 \
+이름을 바꾸거나, 루트로 끌어올릴 수 있다. 문서는 자기가 있는 폴더를 따라 움직인다.
 
-Answer either exactly:
+답은 정확히 이것이거나:
 
 KEEP
 
-or a list of moves and nothing else:
+이동 목록이고, 그 외에는 아무것도 쓰지 마라:
 
-MOVE: <path that exists now> | <where it should be>
-SIGN: <new path> | <one sentence saying what it holds>\
+MOVE: <지금 있는 경로> | <가야 할 곳>
+SIGN: <새 경로> | <무엇을 담는지 한 문장>\
 """
 
 
@@ -139,12 +132,12 @@ class Folder:
 
 def _tree(folders: list[Folder]) -> str:
     if not folders:
-        return "  (the tree is empty; everything is at the root)"
+        return "  (아직 폴더가 없다. 전부 루트에 있다.)"
     lines = []
     for folder in sorted(folders, key=lambda f: str(f.path)):
         depth = len(folder.path.parts) - 1
         held = f" — {folder.note}" if folder.note else ""
-        lines.append(f"  {'  ' * depth}{folder.path}/  ({folder.documents} here){held}")
+        lines.append(f"  {'  ' * depth}{folder.path}/  ({folder.documents}건){held}")
     return "\n".join(lines)
 
 
@@ -163,17 +156,17 @@ def build_filing(
     """
     listed = "\n".join(f"  [{handle}] {line}" for handle, line in documents)
     say = (
-        f"These documents are written in `{language}`. Name folders and write signs in "
-        f"`{language}`, using the words the documents use.\n\n"
+        f"이 문서들은 `{language}` 로 쓰여 있다. 폴더 이름과 설명도 문서가 쓰는 말을 "
+        f"그대로 써서 `{language}` 로 적어라.\n\n"
         if language
         else ""
     )
     return Prompt(
         system=_FILING,
         user=(
-            f"{say}FOLDERS THAT EXIST:\n{_tree(folders)}\n\n"
-            f"DOCUMENTS SITTING AT THE ROOT, FILED NOWHERE: {loose}\n\n"
-            f"DOCUMENTS TO FILE ({len(documents)}):\n{listed}"
+            f"{say}이미 있는 폴더:\n{_tree(folders)}\n\n"
+            f"루트에 놓인 채 아직 어디에도 안 들어간 문서: {loose}건\n\n"
+            f"배치할 문서 ({len(documents)}건):\n{listed}"
         ),
     )
 
@@ -181,16 +174,17 @@ def build_filing(
 def build_review(*, folders: list[Folder], total: int, loose: int, language: str = "") -> Prompt:
     """Whether the tree is worth walking, asked when it has grown enough to answer differently."""
     say = (
-        f"Write any folder name or sign in `{language}`, using the words the documents use.\n\n"
+        f"폴더 이름이나 설명을 쓸 일이 있으면 문서가 쓰는 말을 그대로 써서 "
+        f"`{language}` 로 적어라.\n\n"
         if language
         else ""
     )
     return Prompt(
         system=_REVIEW,
         user=(
-            f"{say}THE COLLECTION HOLDS {total} DOCUMENTS.\n"
-            f"{loose} OF THEM ARE AT THE ROOT, FILED NOWHERE.\n\n"
-            f"THE TREE:\n{_tree(folders)}"
+            f"{say}이 장서는 문서 {total}건을 담고 있다.\n"
+            f"그중 {loose}건은 루트에 놓인 채 아직 어디에도 안 들어갔다.\n\n"
+            f"트리:\n{_tree(folders)}"
         ),
     )
 
