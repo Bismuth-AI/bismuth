@@ -26,6 +26,7 @@ from bismuth.container import Bismuth, build
 from bismuth.domain.errors import BismuthError
 from bismuth.logging_setup import configure_logging
 from bismuth.ports.vault import INBOX
+from bismuth.services import simple as simple_service
 
 
 def _force_utf8_output() -> None:
@@ -242,6 +243,101 @@ def tree(vault: VaultOption = None) -> None:
         nodes[folder.parts] = parent.add(label)
 
     console.print(root)
+
+
+@app.command()
+def replay(
+    vault: VaultOption = None,
+    into: Annotated[
+        Path | None, typer.Option("--into", help="결과를 담을 폴더. 비우면 임시 폴더를 만듭니다.")
+    ] = None,
+    only: Annotated[int, typer.Option("--only", help="앞에서 몇 건만. 0 이면 전부.", min=0)] = 0,
+    seed: Annotated[
+        int, typer.Option("--seed", help="문서 순서를 섞습니다. 순서 독립성 확인용.")
+    ] = 0,
+) -> None:
+    """이미 읽은 장서를 다시 읽지 않고, 폴더 배치만 새 볼트에 다시 돌립니다.
+
+    문서 카드는 사이드카에서 그대로 가져오므로 카드 만드는 호출이 없습니다. 300건 기준으로
+    21분이 1분대로 줄고, 원본 볼트는 건드리지 않습니다.
+    """
+    import random
+    import tempfile
+
+    from bismuth.services import replay as replay_service
+
+    source = _engine(vault)
+    pinned = replay_service.read_pinned(source.vault.root)
+    if not pinned:
+        error_console.print(
+            f"{source.vault.root} 에 사이드카가 있는 문서가 없습니다. "
+            "한 번은 정상 처리를 돌려야 다시 돌릴 카드가 생깁니다."
+        )
+        raise typer.Exit(1)
+    if seed:
+        random.Random(seed).shuffle(pinned)
+    if only:
+        pinned = pinned[:only]
+
+    target = (into or Path(tempfile.mkdtemp(prefix="bismuth-replay-"))).expanduser().resolve()
+    if into is not None and target.exists() and any(target.iterdir()):
+        error_console.print(f"{target} 가 비어 있지 않습니다. 빈 폴더를 주세요.")
+        raise typer.Exit(1)
+    target.mkdir(parents=True, exist_ok=True)
+
+    settings = source.settings.model_copy(update={"vault_path": target})
+    engine = build(settings)
+    console.print(f"\n  문서 [bold]{len(pinned)}[/]건, 카드 재사용 → [cyan]{target}[/]\n")
+
+    began = time.monotonic()
+    filed = 0
+    reviews = 0
+
+    def nonlocal_reviews() -> None:
+        nonlocal reviews
+        reviews += 1
+        console.print(f"  [yellow]마지막 구조 점검 #{reviews}[/]")
+
+    async def run() -> None:
+        nonlocal filed, reviews
+        batch: list[tuple[PurePosixPath, object, object]] = []
+        for one in pinned:
+            rel = engine.ingest.stage(one.path.read_bytes(), one.name)
+            batch.append(replay_service.staged(one, rel))
+            if len(batch) < simple_service.BATCH:
+                continue
+            await engine.simple.file(batch)  # type: ignore[arg-type]
+            filed += len(batch)
+            batch.clear()
+            console.print(f"  [dim]{filed}/{len(pinned)} 배치[/]")
+            if await engine.simple.regroup():
+                console.print("  [cyan]최상위가 넓어져서 묶었습니다[/]")
+            if engine.simple.due():
+                reviews += 1
+                console.print(f"  [yellow]전체 구조 점검 #{reviews}[/] ({filed}건 시점)")
+                await engine.simple.review()
+        if batch:
+            await engine.simple.file(batch)  # type: ignore[arg-type]
+            filed += len(batch)
+        if engine.simple.due(settling=True):
+            nonlocal_reviews()
+            await engine.simple.review(ending=True)
+        else:
+            await engine.simple.regroup(ending=True)
+
+    try:
+        anyio.run(run)
+    finally:
+        anyio.run(litellm_adapter.close_clients)
+
+    took = time.monotonic() - began
+    loose = engine.vault.count_files(PurePosixPath())
+    folders = [f for f in engine.vault.iter_folders() if f.parts and f.parts[0] != INBOX.parts[0]]
+    console.print(
+        f"\n  [green]{filed}건[/] 배치, 점검 {reviews}회, [bold]{took:.0f}초[/]\n"
+        f"  폴더 {len(folders)}개 · 루트에 남은 문서 {loose}건\n"
+    )
+    console.print(f"  트리를 보려면: [cyan]bismuth tree --vault {target}[/]\n")
 
 
 @app.command()

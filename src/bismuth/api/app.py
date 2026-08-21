@@ -25,6 +25,7 @@ from bismuth.adapters.llm import (
     suggest_model,
     supports_response_schema,
 )
+from bismuth.api import diagnostics
 from bismuth.api.progress import ProgressBus, stream
 from bismuth.config import (
     PROVIDERS,
@@ -37,10 +38,12 @@ from bismuth.config import (
 from bismuth.container import Bismuth, build
 from bismuth.domain.document import sidecar_name
 from bismuth.domain.errors import BismuthError
+from bismuth.domain.journal import Actor, JournalEntry
 from bismuth.domain.progress import Progress, Stage
 from bismuth.logging_setup import configure_logging, finish_run_manifest, update_run_manifest
 from bismuth.ports.llm import Spend
 from bismuth.ports.vault import INBOX
+from bismuth.services import replay as replay_service
 from bismuth.services import simple as simple_service
 from bismuth.services.agent import DEFAULT_ORGANIZE_INSTRUCTION
 from bismuth.services.ingest import IngestResult, Prepared
@@ -155,6 +158,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
     app.state.ingest_lock = asyncio.Lock()
     app.state.batches = {}
     app.state.batch_tasks = set()
+    app.include_router(diagnostics.router)
 
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception) -> JSONResponse:
@@ -420,6 +424,8 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                         return
                     batch.completed += len(taken)
                     _drain(engine)
+                    await engine.simple.regroup()
+                    _drain(engine)
                     if engine.simple.due():
                         report(Progress(stage=Stage.DIVIDING, filename="", note="전체 구조 점검"))
                         await engine.simple.review()
@@ -443,6 +449,13 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                         await flush()
                 await flush()
                 await reader
+                if engine.simple.due(settling=True):
+                    report(Progress(stage=Stage.DIVIDING, filename="", note="마지막 구조 점검"))
+                    await engine.simple.review(ending=True)
+                    _drain(engine)
+                else:
+                    await engine.simple.regroup(ending=True)
+                    _drain(engine)
             batch.status = "done"
         except asyncio.CancelledError:
             batch.status = "interrupted"
@@ -655,6 +668,123 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         return {"applied": applied}
 
+    @app.post("/api/tree/empty")
+    def empty_tree(engine: Engine) -> dict[str, Any]:
+        """Take the folder tree apart. Documents and their cards stay where they can be re-filed."""
+        emptied = replay_service.emptying(engine.vault)
+        if not emptied.operations:
+            return {"documents": 0, "folders": 0}
+        engine.transactor.execute(
+            JournalEntry(
+                actor=Actor.USER,
+                reason=f"폴더 구조 비우기: 문서 {emptied.documents}건을 루트로",
+                operations=emptied.operations,
+            )
+        )
+        return {"documents": emptied.documents, "folders": emptied.folders}
+
+    @app.post("/api/refile-all", response_model=BatchOut, status_code=202)
+    async def refile_all(engine: Engine) -> BatchOut:
+        """File the whole collection again from the cards already on disk.
+
+        No document is read: the sidecars carry what the filing question is shown, so this
+        costs one call per ten documents plus the reviews, and is the loop for judging a
+        change to the tree-building itself.
+        """
+        pinned = replay_service.read_pinned(engine.vault.root)
+        if not pinned:
+            raise HTTPException(400, "다시 배치할 문서가 없습니다. 사이드카가 있어야 합니다.")
+        batch_id = uuid.uuid4().hex[:12]
+        batch = BatchOut(
+            id=batch_id,
+            total=len(pinned),
+            filenames=[one.name for one in pinned],
+            created_at=time.time(),
+        )
+        app.state.batches[batch_id] = batch
+        task = asyncio.create_task(
+            run_refile(batch_id, pinned, engine), name=f"bismuth-refile-{batch_id}"
+        )
+        app.state.batch_tasks.add(task)
+        task.add_done_callback(app.state.batch_tasks.discard)
+        return batch.model_copy(deep=True)
+
+    async def run_refile(batch_id: str, pinned: list[Any], engine: Bismuth) -> None:
+        """Empty the tree, then file every card into it again, in tens, reviewing as it grows."""
+        batch: BatchOut = app.state.batches[batch_id]
+        batch.status = "running"
+        update_run_manifest(
+            status="running",
+            activity_status="refiling",
+            active_batch={"id": batch_id, "documents": len(pinned), "status": "running"},
+        )
+        try:
+            async with app.state.ingest_lock:
+                # Into the inbox, not the root: a document at the root is already part of
+                # the collection, so three hundred of them there would have the first
+                # review see the whole corpus at once. Filing ten at a time is the thing
+                # being measured, and this makes it start from the same place an upload does.
+                emptied = replay_service.emptying(engine.vault, into=INBOX)
+                if emptied.operations:
+                    engine.transactor.execute(
+                        JournalEntry(
+                            actor=Actor.BISMUTH,
+                            reason="다시 배치를 위해 폴더 구조 비우기",
+                            operations=emptied.operations,
+                        )
+                    )
+                engine.simple.forget_reviews()
+                # Read again, and only now: emptying moved every document, so the paths
+                # gathered before it point at places that no longer hold anything.
+                flat = replay_service.read_pinned(engine.vault.root, under=INBOX.parts[0])
+                batch.total = len(flat)
+                taken: list[tuple[PurePosixPath, Any, Any]] = []
+                for one in flat:
+                    taken.append(replay_service.here(one, engine.vault))
+                    if len(taken) < simple_service.BATCH:
+                        continue
+                    await engine.simple.file(taken)
+                    batch.completed += len(taken)
+                    batch.current = taken[-1][0].name
+                    taken.clear()
+                    await engine.simple.regroup()
+                    app.state.progress.publish(
+                        Progress(
+                            stage=Stage.PLACED,
+                            filename="",
+                            note=f"{batch.completed}/{batch.total} 배치",
+                        )
+                    )
+                    if engine.simple.due():
+                        app.state.progress.publish(
+                            Progress(stage=Stage.DIVIDING, filename="", note="전체 구조 점검")
+                        )
+                        await engine.simple.review()
+                if taken:
+                    await engine.simple.file(taken)
+                    batch.completed += len(taken)
+                if engine.simple.due(settling=True):
+                    app.state.progress.publish(
+                        Progress(stage=Stage.DIVIDING, filename="", note="마지막 구조 점검")
+                    )
+                    await engine.simple.review(ending=True)
+                else:
+                    await engine.simple.regroup(ending=True)
+            batch.status = "done"
+        except asyncio.CancelledError:
+            batch.status = "interrupted"
+            raise
+        except Exception:
+            batch.status = "failed"
+            logger.exception("refile %s stopped unexpectedly", batch_id)
+        finally:
+            batch.finished_at = time.time()
+            update_run_manifest(
+                status="idle" if batch.status == "done" else batch.status,
+                activity_status="idle",
+                active_batch=None,
+            )
+
     @app.get("/api/journal", response_model=list[dict[str, Any]])
     def journal(engine: Engine, limit: int = 30) -> list[dict[str, Any]]:
         return [e.model_dump(mode="json") for e in engine.journal.iter_entries(limit=limit)]
@@ -666,6 +796,11 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             return engine.transactor.undo(entry_id).model_dump(mode="json")
         except BismuthError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/trace", include_in_schema=False)
+    def trace() -> FileResponse:
+        """The run inspector: every call, its prompt and its reply."""
+        return FileResponse(STATIC / "trace.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:

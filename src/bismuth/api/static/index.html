@@ -230,7 +230,10 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
   <span class="hstat spend hidden" id="hs-spend" title="이 볼트에 지금까지 쓴 양 (.bismuth/spend.jsonl)"></span>
   <button class="ghost" id="btn-organize">구조 정리</button>
   <button class="ghost" id="btn-redesign" title="장서 전체를 보고 최상위를 다시 그립니다. 한 번에 적용되고, 기록에서 한 번에 되돌립니다.">전체 재설계</button>
+  <button class="ghost" id="btn-empty" title="폴더만 해체하고 문서와 카드는 그대로 둡니다. 기록에서 되돌릴 수 있습니다.">폴더 비우기</button>
+  <button class="ghost" id="btn-refile" title="문서를 다시 읽지 않고, 이미 만들어둔 카드로 전체를 다시 배치합니다.">카드로 다시 배치</button>
   <button class="ghost" id="btn-history">기록</button>
+  <button class="ghost" onclick="location.href='/trace'" title="모델에 무엇이 들어가고 무엇이 나왔는지, 호출 하나씩">추적</button>
   <button class="ghost" id="btn-settings">설정</button>
 </header>
 
@@ -1269,6 +1272,30 @@ function renderPlan(plan) {
 /* The one operation not asked from inside a folder, so it is the only one that can see
    two folders on the same subject in different branches. It applies in a single batch:
    there is nothing to approve first, and one entry in 기록 undoes all of it. */
+// Emptying and re-filing are the tuning loop: the reading of a document is fixed, the
+// tree built from it is what changes, so both of these leave every card alone.
+$("btn-empty").addEventListener("click", async () => {
+  const docs = state.documents ?? 0, folders = state.folders ?? 0;
+  if (!folders) return alert("해체할 폴더가 없습니다.");
+  if (!confirm(`폴더 ${folders}개를 해체하고 문서 ${docs}건을 모두 루트로 되돌립니다.\n\n문서와 문서 카드(사이드카)는 그대로 남습니다. 지워지는 것은 폴더와 폴더 설명뿐이고, [기록]에서 한 번에 되돌릴 수 있습니다.\n\n진행할까요?`)) return;
+  try {
+    const result = await api("/tree/empty", { method: "POST" });
+    await refresh();
+    alert(`폴더 ${result.folders}개를 해체했습니다. 문서 ${result.documents}건이 루트에 있습니다.`);
+  } catch (err) { alert(err.message); }
+});
+
+$("btn-refile").addEventListener("click", async () => {
+  const docs = state.documents ?? 0;
+  if (!docs) return alert("배치할 문서가 없습니다.");
+  if (!confirm(`문서 ${docs}건을 다시 읽지 않고, 이미 만들어둔 카드로 폴더를 처음부터 다시 짭니다.\n\n먼저 지금 폴더를 전부 해체하고, 10건씩 배치하면서 중간중간 전체 구조를 점검합니다. 문서를 읽는 호출은 없으므로 ${Math.max(1, Math.round(docs / 10 * 3 / 60))}분 안팎이면 끝납니다.\n\n진행할까요?`)) return;
+  try {
+    await api("/refile-all", { method: "POST" });
+    ensureBatchPolling();
+    syncBatches();
+  } catch (err) { alert(err.message); }
+});
+
 $("btn-redesign").addEventListener("click", async () => {
   if (!confirm("장서 전체를 보고 최상위 폴더를 다시 그립니다.\n\n폴더는 통째로 움직이고 문서는 자기 폴더에 그대로 있습니다. 한 번에 적용되며, 마음에 안 들면 [기록]에서 한 번에 되돌릴 수 있습니다.\n\n진행할까요?")) return;
   $("redesign").classList.remove("hidden");
