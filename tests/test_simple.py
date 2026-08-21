@@ -1,27 +1,54 @@
-"""The two-question pipeline: file a batch, look at the tree when it has grown."""
+"""Filing in three questions, and looking at the whole tree when it has grown.
+
+A batch is asked *where it is near*, then *what to do there*, and a level that has gone
+wide is asked separately *which of these belong together* -- the three are separate because
+answered as one the reply satisfied all of them at once and organised nothing.
+"""
 
 from __future__ import annotations
 
 from pathlib import PurePosixPath
 
 from bismuth.container import Bismuth
+from bismuth.prompts import shaping as shaping_prompts
 from bismuth.prompts import simple as simple_prompts
 from bismuth.services import simple as simple_service
 from tests.conftest import ScriptedModel
 
+NEAREST = "자리를 짚을 문서"
+SHAPING = "지금 서 있는 폴더:"
+REVIEW = "이 장서는 문서"
+REFILE = "지금 정리하는 책장"
+GROUPING = "늘어서 있다"
+
 
 class Answers:
-    """A model that replies with whatever the test lined up, in order."""
+    """A model that replies with whatever the test lined up for each question.
+
+    Keyed by stage rather than by order: one batch now costs a nearest and a shaping, and a
+    list of replies in order would have every test counting calls it does not care about.
+    """
 
     def __init__(self, script: ScriptedModel) -> None:
         self.script = script
-        self.replies: list[str] = []
+        self.nearest: list[str] = []
+        self.shaping: list[str] = []
+        self.review: list[str] = []
+        self.refile: list[str] = []
+        self.grouping: list[str] = []
         self.asked: list[str] = []
 
     def __call__(self, prompt, schema):  # type: ignore[no-untyped-def]
-        if "배치할 문서" in prompt.user or "트리:" in prompt.user:
-            self.asked.append(prompt.user)
-            return self.replies.pop(0) if self.replies else "KEEP"
+        for mark, queued, quiet in (
+            (NEAREST, self.nearest, ""),
+            (SHAPING, self.shaping, ""),
+            (REVIEW, self.review, "KEEP"),
+            (REFILE, self.refile, ""),
+            (GROUPING, self.grouping, "없음"),
+        ):
+            if mark in prompt.user:
+                self.asked.append(prompt.user)
+                return queued.pop(0) if queued else quiet
         return self.script(prompt, schema)
 
 
@@ -38,21 +65,30 @@ def _batch(prepared: list) -> list:
     return [(one.rel, one.card, one) for one in prepared]
 
 
+def _handle(answers: Answers, name: str) -> str:
+    """The ``F`` number a folder was listed under in the last question asked."""
+    for line in answers.asked[-1].splitlines():
+        if f"] {name}/" in line:
+            return line.split("]")[0].strip().lstrip("[")
+    raise AssertionError(f"{name} was not listed: {answers.asked[-1]}")
+
+
 class TestFilingAHandfulAtOnce:
-    async def test_one_call_files_the_whole_batch(
+    async def test_two_calls_file_the_whole_batch(
         self, engine: Bismuth, script: ScriptedModel, llm
     ) -> None:  # type: ignore[no-untyped-def]
         answers = Answers(script)
         llm._handler = answers  # type: ignore[attr-defined]
         prepared = await _staged(engine, 3)
-        answers.replies = ["D1: 문학\nD2: 문학\nD3: ROOT\nSIGN: 문학 | 소설과 시를 모아둔다"]
+        answers.nearest = ["D1: 없음\nD2: 없음\nD3: 없음"]
+        answers.shaping = ["넣기: 문학 | D1, D2\n루트: D3\nSIGN: 문학 | 소설과 시를 모아둔다"]
 
         await engine.simple.file(_batch(prepared))
 
-        assert len(answers.asked) == 1, "one call for the batch, not one per document"
+        assert len(answers.asked) == 2, "one pair for the batch, not one pair per document"
         assert (engine.vault.root / "문학/doc0.txt").is_file()
         assert (engine.vault.root / "문학/doc1.txt").is_file()
-        assert (engine.vault.root / "doc2.txt").is_file(), "ROOT means the pile, honestly"
+        assert (engine.vault.root / "doc2.txt").is_file(), "the root means the pile, honestly"
         assert (engine.vault.root / "문학/_folder.md").is_file()
 
     async def test_a_named_folder_carries_the_sign_it_was_given(
@@ -61,7 +97,8 @@ class TestFilingAHandfulAtOnce:
         answers = Answers(script)
         llm._handler = answers  # type: ignore[attr-defined]
         prepared = await _staged(engine, 2)
-        answers.replies = ["D1: 문학\nD2: 문학\nSIGN: 문학 | 소설과 시를 모아둔다"]
+        answers.nearest = ["D1: 없음\nD2: 없음"]
+        answers.shaping = ["넣기: 문학 | D1, D2\nSIGN: 문학 | 소설과 시를 모아둔다"]
 
         await engine.simple.file(_batch(prepared))
 
@@ -69,122 +106,89 @@ class TestFilingAHandfulAtOnce:
         assert note is not None
         assert note.purpose == "소설과 시를 모아둔다"
 
-    async def test_a_nested_path_makes_every_level(
+    async def test_a_folder_drawn_for_one_document_is_not_drawn(
         self, engine: Bismuth, script: ScriptedModel, llm
     ) -> None:  # type: ignore[no-untyped-def]
         answers = Answers(script)
         llm._handler = answers  # type: ignore[attr-defined]
         prepared = await _staged(engine, 2)
-        answers.replies = ["D1: 인문/문학\nD2: 인문/문학"]
+        answers.nearest = ["D1: 없음\nD2: 없음"]
+        answers.shaping = ["넣기: 문학 | D1\n루트: D2"]
 
         await engine.simple.file(_batch(prepared))
 
-        assert (engine.vault.root / "인문/문학/doc0.txt").is_file()
-        assert (engine.vault.root / "인문/_folder.md").is_file()
-        assert (engine.vault.root / "인문/문학/_folder.md").is_file()
+        assert not (engine.vault.root / "문학").exists(), "one document is not a class"
+        assert (engine.vault.root / "doc0.txt").is_file()
 
-    async def test_the_tree_it_is_shown_is_the_tree_that_stands(
+    async def test_a_second_batch_is_shown_what_the_first_built(
         self, engine: Bismuth, script: ScriptedModel, llm
     ) -> None:  # type: ignore[no-untyped-def]
         answers = Answers(script)
         llm._handler = answers  # type: ignore[attr-defined]
         first = await _staged(engine, 2)
-        answers.replies = ["D1: 문학\nD2: 문학\nSIGN: 문학 | 소설과 시"]
+        answers.nearest = ["D1: 없음\nD2: 없음"]
+        answers.shaping = ["넣기: 문학 | D1, D2\nSIGN: 문학 | 소설과 시"]
         await engine.simple.file(_batch(first))
         second = await _staged(engine, 1)
-        answers.replies = ["D1: 문학"]
+        answers.nearest = ["D1: 문학"]
+        answers.shaping = ["안에: F1 | D1"]
 
         await engine.simple.file(_batch(second))
 
-        shown = answers.asked[-1]
-        assert "문학/  (2건) — 소설과 시" in shown
+        assert "문학/  (2건) — 소설과 시" in answers.asked[-2], "the tree, as it now stands"
+        landed = list((engine.vault.root / "문학").glob("*.txt"))
+        assert len(landed) == 3, "the third document joined the two already there"
+
+    async def test_a_document_may_be_turned_away_from_where_it_was_sent(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The first question picks the nearest place, not the right one; the second may refuse."""
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        first = await _staged(engine, 2)
+        answers.nearest = ["D1: 없음\nD2: 없음"]
+        answers.shaping = ["넣기: 문학 | D1, D2\nSIGN: 문학 | 소설과 시"]
+        await engine.simple.file(_batch(first))
+        stray = await _staged(engine, 1)
+        answers.nearest = ["D1: 문학"]
+        answers.shaping = ["루트: D1"]
+
+        await engine.simple.file(_batch(stray))
+
+        assert list(engine.vault.root.glob("*.txt")), "turned away, and left at the root"
+        assert len(list((engine.vault.root / "문학").glob("*.txt"))) == 2, "not taken in"
 
 
 class TestTheQuestionSaysWhatItIsShowing:
-    """Compressed, a line stops explaining itself. `소상공인 보호 및 지원에 관한 법률 | 법률 |
-    소상공인, 창업 및 경영안정 지원` has to be read as title, kind and subjects, and nothing
-    said so -- the same for a folder's count, which is its own documents and not its
-    subtree."""
+    """Compressed, a line stops explaining itself, and a folder that has been divided reads
+    as an empty one unless the line says what is below it."""
 
-    def test_filing_explains_both_shapes_it_shows(self) -> None:
-        prompt = simple_prompts.build_filing(
-            folders=[
-                simple_prompts.Folder(path=PurePosixPath("금융"), note="금융 규제", documents=5)
-            ],
-            documents=[("D1", "은행법 | 법률 | 은행, 감독")],
-            loose=0,
+    def test_a_divided_folder_does_not_read_as_an_empty_one(self) -> None:
+        folder = simple_prompts.Folder(
+            path=PurePosixPath("금융"), note="금융 규제", documents=0, held=70, children=6
         )
+        line = simple_prompts._size(folder)
 
-        assert "<어떤 종류의 문서인지>" in prompt.system
-        assert "<무엇에 관한 것인지 몇 가지>" in prompt.system
-        assert "그 폴더에 직접 놓인 문서 수" in prompt.system
+        assert "70건" in line and "직접 0건" in line and "하위 6개" in line
 
-    def test_review_explains_the_count_it_judges_on(self) -> None:
-        prompt = simple_prompts.build_review(
-            folders=[
-                simple_prompts.Folder(path=PurePosixPath("금융"), note="금융 규제", documents=5)
-            ],
-            total=50,
-            loose=3,
+    def test_an_undivided_folder_says_only_its_own_count(self) -> None:
+        folder = simple_prompts.Folder(path=PurePosixPath("금융"), note="", documents=4)
+
+        assert simple_prompts._size(folder) == "(4건)"
+
+    def test_the_shaping_question_says_how_big_the_place_really_is(self) -> None:
+        place = shaping_prompts.Place(
+            folder=PurePosixPath("금융"),
+            note="금융 규제",
+            holding=["은행법 | 법률 | 은행"] * 12,
+            held=32,
+            children=[],
+            arriving=[("D1", "보험업법 | 법률 | 보험")],
         )
+        prompt = shaping_prompts.build_shaping(folders=[], places=[place], homeless=[])
 
-        assert "그 폴더에 직접 놓인 문서 수" in prompt.system
-
-
-class TestWhatOneDocumentLooksLikeInTheQuestion:
-    """The card is already a summary; a filing question does not need the summary inside it.
-
-    Sent whole, ten cards came to 5,700 characters against 250 of folders to choose from,
-    and the reply put all ten at the root -- including two copies of the same law."""
-
-    def test_the_line_is_a_title_a_kind_and_a_few_topics(self) -> None:
-        from bismuth.domain.document import DocumentCard
-        from bismuth.services.simple import _describe
-
-        card = DocumentCard(
-            title="소상공인 보호 및 지원에 관한 법률",
-            summary="소상공인의 자유로운 기업 활동 촉진과 경영안정을 도모하여 " * 20,
-            doc_type="법률",
-            language="ko",
-            topics=("소상공인", "창업 및 경영안정 지원", "손실보상", "디지털 전환", "손실보상"),
-            keywords=("소상공인", "창업 지원"),
-            entities=(),
-            answers_questions=(),
-        )
-
-        line = _describe(card)
-
-        assert (
-            line
-            == "소상공인 보호 및 지원에 관한 법률 | 법률 | 소상공인, 창업 및 경영안정 지원, 손실보상"
-        )
-        assert len(line) < 100
-        assert "경영안정을 도모하여" not in line, "the summary is prose about the inside"
-
-    def test_ten_documents_do_not_bury_the_folders(self) -> None:
-        from bismuth.domain.document import DocumentCard
-        from bismuth.services.simple import _describe
-
-        card = DocumentCard(
-            title="어떤 법률" * 3,
-            summary="본문 요약" * 200,
-            doc_type="법률",
-            language="ko",
-            topics=tuple(f"주제{index}" for index in range(20)),
-            keywords=(),
-            entities=(),
-            answers_questions=(),
-        )
-        folders = [
-            simple_prompts.Folder(path=PurePosixPath("금융"), note="금융 규제 전반", documents=5)
-        ]
-        documents = [(f"D{index}", _describe(card)) for index in range(1, 11)]
-
-        prompt = simple_prompts.build_filing(
-            folders=folders, documents=documents, loose=0, language="ko"
-        )
-
-        assert len(prompt.user) < 1500
+        assert "직접 들고 있는 문서 32건" in prompt.user
+        assert "외 20건" in prompt.user, "a list cut short must say it was cut"
 
 
 class TestLookingAtTheWholeTree:
@@ -194,10 +198,34 @@ class TestLookingAtTheWholeTree:
         answers = Answers(script)
         llm._handler = answers  # type: ignore[attr-defined]
         prepared = await _staged(engine, 3)
-        answers.replies = ["D1: 문학\nD2: 문학\nD3: 문학"]
+        answers.nearest = ["D1: 없음\nD2: 없음\nD3: 없음"]
+        answers.shaping = ["넣기: 문학 | D1, D2, D3"]
         await engine.simple.file(_batch(prepared))
 
         assert not engine.simple.due(), "three documents is not a tree to judge"
+
+    async def test_the_end_of_an_upload_is_looked_at_even_without_a_doubling(
+        self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setattr(simple_service, "FIRST_REVIEW", 2)
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        prepared = await _staged(engine, 2)
+        answers.nearest = ["D1: 없음\nD2: 없음"]
+        answers.shaping = ["넣기: 문학 | D1, D2"]
+        await engine.simple.file(_batch(prepared))
+        await engine.simple.review()
+
+        assert not engine.simple.due(), "just judged, and nothing has arrived since"
+        assert engine.simple.due(settling=True) is False, "nor has anything been left unjudged"
+
+        more = await _staged(engine, 1)
+        answers.nearest = ["D1: 문학"]
+        answers.shaping = ["안에: F1 | D1"]
+        await engine.simple.file(_batch(more))
+
+        assert not engine.simple.due(), "three is not twice two"
+        assert engine.simple.due(settling=True), "but the third document has never been judged"
 
     async def test_keep_moves_nothing(
         self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
@@ -206,8 +234,10 @@ class TestLookingAtTheWholeTree:
         answers = Answers(script)
         llm._handler = answers  # type: ignore[attr-defined]
         prepared = await _staged(engine, 2)
-        answers.replies = ["D1: 문학\nD2: 문학", "KEEP"]
+        answers.nearest = ["D1: 없음\nD2: 없음"]
+        answers.shaping = ["넣기: 문학 | D1, D2"]
         await engine.simple.file(_batch(prepared))
+        answers.review = ["검사1: 없음\n검사5: 1개\n\nKEEP"]
 
         assert engine.simple.due()
         assert not await engine.simple.review()
@@ -220,11 +250,10 @@ class TestLookingAtTheWholeTree:
         answers = Answers(script)
         llm._handler = answers  # type: ignore[attr-defined]
         prepared = await _staged(engine, 2)
-        answers.replies = [
-            "D1: 문학\nD2: 문학\nSIGN: 문학 | 소설과 시",
-            "MOVE: 문학 | 인문/문학\nSIGN: 인문 | 사람이 쓴 것",
-        ]
+        answers.nearest = ["D1: 없음\nD2: 없음"]
+        answers.shaping = ["넣기: 문학 | D1, D2\nSIGN: 문학 | 소설과 시"]
         await engine.simple.file(_batch(prepared))
+        answers.review = ["MOVE: 문학 | 인문/문학\nSIGN: 인문 | 사람이 쓴 것"]
 
         assert await engine.simple.review()
 
@@ -234,25 +263,6 @@ class TestLookingAtTheWholeTree:
         note = engine.charters.load(PurePosixPath("인문"))
         assert note is not None and note.purpose == "사람이 쓴 것"
 
-    async def test_it_is_not_asked_again_until_the_collection_doubles(
-        self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
-    ) -> None:  # type: ignore[no-untyped-def]
-        monkeypatch.setattr(simple_service, "FIRST_REVIEW", 2)
-        answers = Answers(script)
-        llm._handler = answers  # type: ignore[attr-defined]
-        prepared = await _staged(engine, 2)
-        answers.replies = ["D1: 문학\nD2: 문학", "KEEP"]
-        await engine.simple.file(_batch(prepared))
-        await engine.simple.review()
-
-        assert not engine.simple.due(), "two documents were just judged"
-
-        more = await _staged(engine, 2)
-        answers.replies = ["D1: 문학\nD2: 문학"]
-        await engine.simple.file(_batch(more))
-
-        assert engine.simple.due(), "four is twice two"
-
     async def test_a_folder_cannot_be_moved_inside_itself(
         self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
     ) -> None:  # type: ignore[no-untyped-def]
@@ -260,11 +270,90 @@ class TestLookingAtTheWholeTree:
         answers = Answers(script)
         llm._handler = answers  # type: ignore[attr-defined]
         prepared = await _staged(engine, 2)
-        answers.replies = ["D1: 문학\nD2: 문학", "MOVE: 문학 | 문학/하위"]
+        answers.nearest = ["D1: 없음\nD2: 없음"]
+        answers.shaping = ["넣기: 문학 | D1, D2"]
         await engine.simple.file(_batch(prepared))
+        answers.review = ["MOVE: 문학 | 문학/하위"]
 
         assert not await engine.simple.review()
         assert (engine.vault.root / "문학/doc0.txt").is_file()
+
+
+class TestGroupingALevelThatWentWide:
+    """Folders only. Shown documents as well, the reply answered with document numbers
+    where folder numbers were wanted, and nothing was ever grouped."""
+
+    async def _spread(self, engine: Bismuth, answers: Answers, names: list[str]) -> None:
+        prepared = await _staged(engine, len(names) * 2)
+        answers.nearest = ["\n".join(f"D{i}: 없음" for i in range(1, len(names) * 2 + 1))]
+        answers.shaping = [
+            "\n".join(f"넣기: {name} | D{i * 2 + 1}, D{i * 2 + 2}" for i, name in enumerate(names))
+        ]
+        await engine.simple.file(_batch(prepared))
+
+    async def test_a_narrow_level_is_left_alone(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._spread(engine, answers, ["가", "나"])
+        before = len(answers.asked)
+
+        assert not await engine.simple.regroup()
+        assert len(answers.asked) == before, "two folders are not a level worth asking about"
+
+    async def test_a_wide_level_is_grouped(
+        self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setattr(simple_service, "WIDE", 2)
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._spread(engine, answers, ["가", "나", "다"])
+        answers.grouping = ["묶기: 묶음 | F1, F2", "없음"]
+
+        assert await engine.simple.regroup()
+
+        assert (engine.vault.root / "묶음/가").is_dir()
+        assert (engine.vault.root / "묶음/나").is_dir()
+        assert (engine.vault.root / "다").is_dir(), "what was left out stays where it was"
+
+    async def test_a_parent_that_would_hold_one_folder_is_refused(
+        self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setattr(simple_service, "WIDE", 2)
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._spread(engine, answers, ["가", "나", "다"])
+        answers.grouping = ["묶기: 묶음 | F1"]
+
+        assert not await engine.simple.regroup()
+        assert not (engine.vault.root / "묶음").exists()
+
+    async def test_one_stray_may_move_under_a_folder_that_already_stands(
+        self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The two-folder rule is about inventing a parent, not about using one."""
+        monkeypatch.setattr(simple_service, "WIDE", 2)
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._spread(engine, answers, ["가", "나", "다"])
+        answers.grouping = ["묶기: F1 | F3", "없음"]
+
+        assert await engine.simple.regroup()
+        assert (engine.vault.root / "가/다").is_dir()
+
+    async def test_a_folder_cannot_be_put_under_itself(
+        self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setattr(simple_service, "WIDE", 2)
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._spread(engine, answers, ["가", "나", "다"])
+        answers.grouping = ["묶기: 가 | F1, F2"]
+
+        assert await engine.simple.regroup()
+        assert (engine.vault.root / "가/나").is_dir(), "the one that was not itself moved"
+        assert (engine.vault.root / "가").is_dir() and not (engine.vault.root / "가/가").exists()
 
 
 class TestWhatTheReplyMaySay:
@@ -280,6 +369,246 @@ class TestWhatTheReplyMaySay:
         assert not signs
 
     def test_keep_and_an_empty_reply_mean_the_same(self) -> None:
-        assert simple_prompts.parse_review("KEEP")[0]
-        assert simple_prompts.parse_review("")[0]
-        assert simple_prompts.parse_review("이 트리는 괜찮습니다.")[0]
+        assert simple_prompts.parse_review("KEEP").keep
+        assert simple_prompts.parse_review("").keep
+        assert simple_prompts.parse_review("이 트리는 괜찮습니다.").keep
+
+    def test_a_refile_line_names_a_folder_to_redraw(self) -> None:
+        asked = simple_prompts.parse_review("REFILE: 금융\nREFILE: /금융/\nMOVE: 가 | 나")
+
+        assert asked.refile == (PurePosixPath("금융"),), "the same folder twice is once"
+        assert not asked.keep, "asking for a refile is not keeping the tree"
+
+    def test_a_refile_may_rename_the_shelf_it_divides(self) -> None:
+        placed, signs = simple_prompts.parse_filing("D1: 은행\n이름: 금융업 규제")
+
+        assert placed == {"D1": "은행"}
+        assert signs[simple_prompts.RENAME] == "금융업 규제"
+
+    def test_folders_are_named_by_handle_and_documents_by_handle(self) -> None:
+        folders = [
+            simple_prompts.Folder(path=PurePosixPath(name), note="", documents=2)
+            for name in ("가", "나")
+        ]
+        shaped = shaping_prompts.parse_shaping(
+            "안에: F2 | D1, D3\n하위: F1 | 아래 | D2\n넣기: 새것 | D4, D5\n루트: D9", folders
+        )
+
+        assert shaped.inside == {"나": ["D1", "D3"]}
+        assert shaped.below == {"가/아래": ["D2"]}
+        assert shaped.made == {"새것": ["D4", "D5"]}
+        assert shaped.loose == ["D9"]
+
+    def test_a_document_named_where_a_folder_belongs_is_dropped(self) -> None:
+        """The reply once answered with document titles where folder numbers were wanted."""
+        folders = [simple_prompts.Folder(path=PurePosixPath("가"), note="", documents=2)]
+        groups, _ = shaping_prompts.parse_grouping(
+            "묶기: 새 부모 | 어떤 문서 제목, 또 다른 제목", folders
+        )
+
+        assert groups == []
+
+
+class TestRedrawingOneFolder:
+    """A folder that outgrew its own name is divided from the inside, and only inside."""
+
+    async def _piled(self, engine: Bismuth, answers: Answers, count: int) -> None:
+        prepared = await _staged(engine, count)
+        answers.nearest = ["\n".join(f"D{i}: 없음" for i in range(1, count + 1))]
+        answers.shaping = ["넣기: 금융 | " + ", ".join(f"D{i}" for i in range(1, count + 1))]
+        await engine.simple.file(_batch(prepared))
+
+    async def test_the_pile_becomes_sub_folders_of_the_same_folder(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._piled(engine, answers, 4)
+        answers.refile = ["D1: 은행\nD2: 은행\nD3: 보험\nD4: 보험\nSIGN: 은행 | 은행이 하는 일"]
+
+        assert await engine.simple.refile(PurePosixPath("금융"))
+
+        assert (engine.vault.root / "금융/은행/doc0.txt").is_file()
+        assert (engine.vault.root / "금융/보험/doc3.txt").is_file()
+        assert (engine.vault.root / "금융/은행/doc0.txt.md").is_file(), "the sidecar travels too"
+        note = engine.charters.load(PurePosixPath("금융/은행"))
+        assert note is not None and note.purpose == "은행이 하는 일"
+
+    async def test_nothing_leaves_the_folder_being_redrawn(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._piled(engine, answers, 4)
+        answers.refile = ["D1: 과학\nD2: 과학\nD3: /과학/물리\nD4: 금융/과학"]
+
+        assert await engine.simple.refile(PurePosixPath("금융"))
+
+        assert not (engine.vault.root / "과학").exists(), "an answer is a name below, not a path"
+        assert (engine.vault.root / "금융/과학/doc0.txt").is_file()
+        assert (engine.vault.root / "금융/과학/doc3.txt").is_file(), "금융/과학 is 과학, once"
+
+    async def test_a_document_that_fits_nowhere_stays(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._piled(engine, answers, 4)
+        answers.refile = ["D1: 은행\nD2: 은행\nD3: 은행\nD4: STAY"]
+
+        assert await engine.simple.refile(PurePosixPath("금융"))
+
+        assert (engine.vault.root / "금융/doc3.txt").is_file()
+        assert (engine.vault.root / "금융/은행/doc0.txt").is_file()
+
+    async def test_one_sub_folder_taking_everything_is_refused(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._piled(engine, answers, 4)
+        answers.refile = ["D1: 금융법\nD2: 금융법\nD3: 금융법\nD4: 금융법"]
+
+        assert not await engine.simple.refile(PurePosixPath("금융"))
+
+        assert (engine.vault.root / "금융/doc0.txt").is_file()
+        assert not (engine.vault.root / "금융/금융법").exists()
+
+    async def test_a_small_folder_is_left_alone(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._piled(engine, answers, 2)
+        before = len(answers.asked)
+
+        assert not await engine.simple.refile(PurePosixPath("금융"))
+        assert len(answers.asked) == before, "two documents are not a pile"
+
+    async def test_the_whole_redraw_is_one_journal_entry(
+        self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setattr(simple_service, "BATCH", 2)
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._piled(engine, answers, 4)
+        before = len(list(engine.journal.iter_entries()))
+        answers.refile = ["D1: 은행\nD2: 은행", "D1: 보험\nD2: 보험"]
+
+        assert await engine.simple.refile(PurePosixPath("금융"))
+
+        entries = list(engine.journal.iter_entries())
+        assert len(entries) - before == 1, "two calls, one entry: half a refile is the worst one"
+
+    async def test_a_later_batch_sees_what_an_earlier_one_drew(
+        self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setattr(simple_service, "BATCH", 2)
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._piled(engine, answers, 4)
+        answers.refile = ["D1: 은행\nD2: 은행\nSIGN: 은행 | 은행이 하는 일", "D1: 보험\nD2: 보험"]
+
+        await engine.simple.refile(PurePosixPath("금융"))
+
+        assert "은행/  (2건) — 은행이 하는 일" in answers.asked[-1]
+
+    async def test_a_refile_may_rename_the_shelf_it_divides(
+        self, engine: Bismuth, script: ScriptedModel, llm
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The name was written when the folder held three documents and forty arrived after."""
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._piled(engine, answers, 4)
+        answers.refile = ["D1: 은행\nD2: 은행\nD3: 보험\nD4: 보험\n이름: 금융업 규제"]
+
+        assert await engine.simple.refile(PurePosixPath("금융"))
+
+        assert (engine.vault.root / "금융업 규제/은행/doc0.txt").is_file()
+        assert not (engine.vault.root / "금융").exists()
+
+    async def test_a_review_may_ask_for_one_folder_to_be_redrawn(
+        self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setattr(simple_service, "FIRST_REVIEW", 2)
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._piled(engine, answers, 4)
+        answers.review = ["REFILE: 금융"]
+        answers.refile = ["D1: 은행\nD2: 은행\nD3: 보험\nD4: 보험"]
+
+        assert await engine.simple.review()
+
+        assert (engine.vault.root / "금융/은행/doc0.txt").is_file()
+        assert (engine.vault.root / "금융/보험/doc2.txt").is_file()
+
+    async def test_a_folder_is_redrawn_where_the_moves_left_it(
+        self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setattr(simple_service, "FIRST_REVIEW", 2)
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._piled(engine, answers, 4)
+        answers.review = ["MOVE: 금융 | 경제/금융\nREFILE: 금융"]
+        answers.refile = ["D1: 은행\nD2: 은행\nD3: 보험\nD4: 보험"]
+
+        assert await engine.simple.review()
+
+        assert (engine.vault.root / "경제/금융/은행/doc0.txt").is_file()
+        assert "지금 정리하는 책장: 경제/금융/" in answers.asked[-1]
+
+
+class TestWhatAMoveMeans:
+    """``MOVE: A | B`` says A becomes B. Asked to gather folders under a parent, the reply
+    names the parent alone -- and read literally that renames one folder and then pours the
+    next one into it, which turned twelve folders into a pile of sixty-two documents."""
+
+    async def _three(self, engine: Bismuth, answers: Answers) -> None:
+        prepared = await _staged(engine, 6)
+        answers.nearest = ["\n".join(f"D{i}: 없음" for i in range(1, 7))]
+        answers.shaping = ["넣기: 가 | D1, D2\n넣기: 나 | D3, D4\n넣기: 다 | D5, D6"]
+        await engine.simple.file(_batch(prepared))
+
+    async def test_two_moves_onto_one_name_mean_that_name_is_a_parent(
+        self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setattr(simple_service, "FIRST_REVIEW", 2)
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._three(engine, answers)
+        answers.review = ["MOVE: 가 | 묶음\nMOVE: 나 | 묶음"]
+
+        assert await engine.simple.review()
+
+        assert (engine.vault.root / "묶음/가").is_dir(), "under it, not renamed onto it"
+        assert (engine.vault.root / "묶음/나").is_dir()
+        assert not list((engine.vault.root / "묶음").glob("*.txt")), "not poured into a pile"
+
+    async def test_one_move_onto_a_folder_that_stands_goes_under_it(
+        self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setattr(simple_service, "FIRST_REVIEW", 2)
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._three(engine, answers)
+        answers.review = ["MOVE: 가 | 다"]
+
+        assert await engine.simple.review()
+
+        assert (engine.vault.root / "다/가").is_dir()
+        assert len(list((engine.vault.root / "다").glob("*.txt"))) == 2, "what 다 held stays"
+
+    async def test_one_move_onto_a_name_nobody_uses_is_a_rename(
+        self, engine: Bismuth, script: ScriptedModel, llm, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setattr(simple_service, "FIRST_REVIEW", 2)
+        answers = Answers(script)
+        llm._handler = answers  # type: ignore[attr-defined]
+        await self._three(engine, answers)
+        answers.review = ["MOVE: 가 | 새이름"]
+
+        assert await engine.simple.review()
+
+        assert (engine.vault.root / "새이름").is_dir()
+        assert not (engine.vault.root / "가").exists()
+        assert not (engine.vault.root / "새이름/가").exists(), "a rename, not a nesting"

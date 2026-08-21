@@ -30,8 +30,8 @@ def _reads(llm: FakeLLM, *, later: bool = False) -> list[Prompt]:
         prompt
         for prompt, schema in llm.calls
         if schema is None
-        and "PLAIN LINES" in prompt.system
-        and ("SUMMARY is required" in prompt.system) is later
+        and "일반 텍스트 줄" in prompt.system
+        and ("SUMMARY 는 반드시 있어야 한다" in prompt.system) is later
     ]
 
 
@@ -158,15 +158,15 @@ class TestDescribe:
         # The point of striding: the end of the document is read, not just the top.
         read = [p.user for p in _reads(llm, later=True)]
         last = coverage.windows_total
-        assert f"This is part {last}/{last}" in read[-1]
-        assert f"This is part 2/{last}" not in read[0]
+        assert f"이번은 {last}/{last} 부분이다" in read[-1]
+        assert f"이번은 2/{last} 부분이다" not in read[0]
 
     async def test_a_failed_window_keeps_the_card_built_so_far(self, llm: FakeLLM) -> None:
         calls = {"n": 0}
         script = ScriptedModel()
 
         def flaky(prompt, schema):  # type: ignore[no-untyped-def]
-            if "SUMMARY is required" in prompt.system:
+            if "SUMMARY 는 반드시 있어야 한다" in prompt.system:
                 calls["n"] += 1
                 if calls["n"] == 2:
                     raise StructuredOutputError("scripted failure")
@@ -185,19 +185,19 @@ class TestDescribe:
             _extraction("짧고 온전한 문서"), filename="짧은.pdf"
         )
         sent = _reads(llm)[0].user
-        assert "NOTE:" not in sent
+        assert "참고:" not in sent
 
     async def test_a_cut_off_document_says_so_in_the_prompt(self, llm: FakeLLM) -> None:
         await CardService(llm, context_chars=10_000).describe(
             _extraction("잘린 문서", truncated=True), filename="잘린.pdf"
         )
-        assert "stopped before the end of the file" in _reads(llm)[0].user
+        assert "추출기가 파일 끝에 닿기 전에 멈췄다" in _reads(llm)[0].user
 
     async def test_later_windows_are_announced_as_parts(self, llm: FakeLLM) -> None:
         await CardService(llm, context_chars=100).describe(
             _extraction(_long(500)), filename="긴문서.pdf"
         )
-        assert "part 1 of" in _reads(llm)[0].user
+        assert "부분 중 첫 부분" in _reads(llm)[0].user
 
     async def test_extraction_truncation_is_still_reported(self, llm: FakeLLM) -> None:
         card = await CardService(llm, context_chars=10_000).describe(

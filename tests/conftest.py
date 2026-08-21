@@ -276,11 +276,11 @@ class ScriptedModel:
 
     def _card(self, prompt: Prompt) -> str | None:
         """Reading a document is open text now, so it arrives with no schema to key on."""
-        if "PLAIN LINES" not in prompt.system:
+        if "일반 텍스트 줄" not in prompt.system:
             return None
         scripted = self.responses[
             card_prompts.CardUpdate
-            if "SUMMARY is required" in prompt.system
+            if "SUMMARY 는 반드시 있어야 한다" in prompt.system
             else card_prompts.CardDraft
         ]
         if callable(scripted):
