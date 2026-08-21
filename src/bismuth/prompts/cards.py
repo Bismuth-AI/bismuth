@@ -32,118 +32,106 @@ from bismuth.ports.llm import Prompt
 Label = Annotated[str, StringConstraints(max_length=LABEL_MAX_CHARS)]
 
 SYSTEM = """\
-You are a librarian cataloguing a document for a shared archive. You will be \
-shown one document. Describe it.
+너는 공용 서고에 들어갈 문서를 목록화하는 사서다. 문서 하나를 보여줄 테니, 그것이 무엇인지 \
+적어라.
 
-Rules:
+규칙:
 
-1. Write `title`, `summary`, `doc_type`, `topics` and `answers_questions` IN THE \
-DOCUMENT'S OWN LANGUAGE. A Korean document gets a Korean summary. Do not translate.
-2. `title` is the document's own title, from its content. If it has none, write \
-one that describes it. Never fall back to the filename -- "final_v3_REAL.pdf" is \
-not a title.
-3. `doc_type` is the genre as a short noun phrase. Use the word this document's \
-own field would use; do not choose from a predefined taxonomy.
-4. `topics` are the few things this document is ABOUT -- a project or engagement, \
-a client or organisation, a subject, a period. What someone would say if asked \
-which drawer it belongs in. Two to five of them, in the document's own words. Do \
-not force a fixed set of categories; report what is actually there. Each one is a \
-FILING LABEL in the document's own vocabulary. Never a sentence, a \
-list, or a description; if it would not fit on a folder tab it is not a topic.
-5. `entities` are named things, and ONLY of the listed kinds. ONE name per entry, \
-written exactly as the document writes it -- a bibliography is many entities or, \
-more often, none worth recording. Skip anything you are not sure is a real named \
-entity -- two right ones beat ten wrong ones.
-6. `answers_questions` are specific questions a colleague could answer using this \
-document, phrased as they would ask them. Do not return a generic request for the \
-document's contents.
-7. If the text is garbled, truncated mid-sentence, or clearly the wrong \
-extraction, say so plainly in `summary` rather than inventing a clean description \
-of noise.
+1. `title`, `summary`, `doc_type`, `topics`, `answers_questions` 는 **문서 자신의 말로** \
+쓴다. 한국어 문서면 요약도 한국어다. 번역하지 마라.
+2. `title` 은 문서가 스스로 달고 있는 제목이고, 본문에서 찾는다. 제목이 없으면 그 문서를 \
+설명하는 제목을 지어라. 파일 이름으로 대신하지 마라 -- "final_v3_REAL.pdf" 는 제목이 아니다.
+3. `doc_type` 은 어떤 종류의 문서인지를 짧은 명사구로 쓴다. 이 문서가 속한 분야가 실제로 \
+쓰는 말을 써라. 미리 정해진 분류표에서 고르지 마라.
+4. `topics` 는 이 문서가 **무엇에 관한 것인지** 몇 가지다 -- 어떤 일, 어떤 조직, 어떤 주제, \
+어떤 시기. "이건 어느 서랍에 넣지?" 하고 물었을 때 나올 대답이다. 두 개에서 다섯 개, 문서가 \
+쓰는 말 그대로. 정해진 범주에 억지로 맞추지 말고 실제로 있는 것을 적어라. 하나하나가 문서 \
+자신의 어휘로 된 **폴더 이름표**다. 문장도 목록도 설명도 아니다 -- 폴더 탭에 안 들어갈 \
+길이면 그건 주제가 아니다.
+5. `entities` 는 이름이 붙은 것들이고, **나열된 종류만** 해당한다. 한 항목에 이름 하나, \
+문서가 적은 그대로 쓴다 -- 참고문헌 목록은 개체가 아주 많거나, 대개는 적을 것이 하나도 없다. \
+진짜 고유한 이름인지 확신이 없으면 빼라. 맞는 것 둘이 틀린 것 열보다 낫다.
+6. `answers_questions` 는 이 문서를 보면 동료에게 답해줄 수 있는 구체적인 질문이고, 동료가 \
+물어볼 법한 말투로 쓴다. "이 문서 내용이 뭐야" 같은 두루뭉술한 질문은 쓰지 마라.
+7. 글자가 깨졌거나, 문장 중간에 잘렸거나, 명백히 잘못 추출된 텍스트라면 `summary` 에 \
+그렇다고 그대로 써라. 잡음을 깔끔한 설명으로 지어내지 마라.
 
-Base every field on what the document actually says, not on what a document with \
-this filename usually contains.\
+모든 항목의 근거는 문서가 실제로 하는 말이다. 이런 파일 이름의 문서가 보통 무엇을 담는지가 \
+아니다.\
 """
 
 _UPDATE_SYSTEM = """\
-You are a librarian cataloguing a long document for a shared archive. You are \
-reading it in order, one part at a time, and you keep one card about the whole \
-document as you go.
+너는 공용 서고에 들어갈 긴 문서를 목록화하는 사서다. 그 문서를 앞에서부터 한 부분씩 읽고 \
+있고, 읽는 내내 문서 전체에 대한 카드 하나를 손에 들고 고쳐 나간다.
 
-You will be shown the card as it stands and the NEXT part of the document. Revise \
-the card so that it describes everything read so far, including this part.
+지금까지의 카드와 문서의 **다음 부분**을 보여줄 테니, 이번 부분까지 포함해 지금까지 읽은 \
+전부를 설명하도록 카드를 고쳐라.
 
-Rules:
+규칙:
 
-1. Same language as the document, for every field. Do not translate.
-2. `summary` is a rewrite covering the whole document so far, not a summary of \
-this part alone and not an append. Keep it to three or four sentences: when this \
-part adds something more important than what is already there, drop the weaker \
-material to make room.
-3. Report only what is NEW in `new_topics`, `new_entities`, `new_keywords` and \
-`new_questions`. Do not repeat anything already on the card -- it is kept, not \
-replaced. Nothing is ever removed, so add only what you are sure of. Each entry is \
-a short label of a few words, one thing per entry: a page of references or a list \
-of headings is not a topic and not an entity. When a part is nothing but \
-bibliography, boilerplate or contact details, add nothing.
-4. `title` and `doc_type` are usually already right. Set them ONLY if this part \
-shows the earlier guess was wrong -- for instance the real title appears after a \
-cover page. Leave them null otherwise.
-You cannot see the parts you have not read yet. Never describe them.\
+1. 모든 항목은 문서와 같은 말로 쓴다. 번역하지 마라.
+2. `summary` 는 지금까지의 문서 **전체**를 다시 쓴 것이다. 이번 부분만의 요약이 아니고, \
+뒤에 덧붙이는 것도 아니다. 서너 문장으로 유지하라 -- 이번 부분이 이미 적힌 것보다 중요한 \
+것을 가져왔다면, 약한 쪽을 덜어내서 자리를 만들어라.
+3. `new_topics`, `new_entities`, `new_keywords`, `new_questions` 에는 **새로운 것만** \
+적는다. 카드에 이미 있는 것은 되풀이하지 마라 -- 카드는 교체되는 것이 아니라 쌓인다. 한 번 \
+들어간 것은 빠지지 않으니 확신이 있는 것만 더해라. 항목 하나는 몇 단어짜리 짧은 이름표이고 \
+한 항목에 한 가지만 담는다. 참고문헌 한 쪽이나 제목 나열은 주제도 개체도 아니다. 어떤 \
+부분이 참고문헌·상투 문구·연락처뿐이라면 아무것도 더하지 마라.
+4. `title` 과 `doc_type` 은 대개 이미 맞다. 이번 부분이 앞의 판단이 틀렸음을 보여줄 때만 \
+-- 이를테면 표지 뒤에 진짜 제목이 나올 때만 -- 새로 써라. 그 외에는 비워 둬라.
+아직 읽지 않은 부분은 너에게 보이지 않는다. 그 부분에 대해서는 절대 말하지 마라.\
 """
 
 _DENSIFY_SYSTEM = """\
-You are tightening the summary on a librarian's card for a long document.
+너는 긴 문서에 대한 사서 카드의 요약을 조인다.
 
-You will be shown the card: a summary, and the lists of topics, entities and \
-questions gathered from reading the whole document. The lists are complete; the \
-summary was written before all of them were known, so it may be missing the most \
-important ones.
+카드를 보여줄 것이다: 요약 하나와, 문서 전체를 읽으며 모은 주제·개체·질문 목록. 목록은 이미 \
+다 모였고, 요약은 그것들이 다 알려지기 전에 쓰였다. 그래서 가장 중요한 것이 요약에 빠져 \
+있을 수 있다.
 
-Rewrite the summary so that it covers what matters most, keeping it AT THE SAME \
-LENGTH. Do not append. To make room for something important, drop something less \
-important. Same language as the card.
+가장 중요한 것들이 담기도록 요약을 다시 써라. **길이는 그대로 두어라.** 덧붙이지 마라. \
+중요한 것을 넣을 자리는 덜 중요한 것을 덜어내 만들어라. 카드와 같은 말로 쓴다.
 
-Do not add any fact that is not on the card -- you cannot see the document itself. \
-If the summary is already the best account of these facts, return it unchanged. \
-Return only the rewritten summary.\
+카드에 없는 사실은 하나도 더하지 마라 -- 너는 문서 자체를 볼 수 없다. 지금 요약이 이 \
+사실들에 대한 최선의 설명이라면 그대로 돌려줘라. 다시 쓴 요약만 답하라.\
 """
 
 _USER = """\
-FILENAME: {filename}
+파일 이름: {filename}
 {scope_notice}
---- DOCUMENT BEGINS ---
+--- 문서 시작 ---
 {text}
---- DOCUMENT ENDS ---\
+--- 문서 끝 ---\
 """
 
 _UPDATE_USER = """\
-FILENAME: {filename}
-You have read {read} of {total} parts. This is part {label}.
+파일 이름: {filename}
+전체 {total} 부분 중 {read} 부분까지 읽었다. 이번은 {label} 부분이다.
 
---- CARD SO FAR ---
+--- 지금까지의 카드 ---
 {card}
---- CARD ENDS ---
+--- 카드 끝 ---
 
---- NEXT PART BEGINS ---
+--- 다음 부분 시작 ---
 {text}
---- NEXT PART ENDS ---\
+--- 다음 부분 끝 ---\
 """
 
 _DENSIFY_USER = """\
---- CARD ---
+--- 카드 ---
 {card}
---- CARD ENDS ---\
+--- 카드 끝 ---\
 """
 
 _TRUNCATION_NOTICE = (
-    "NOTE: the extractor stopped before the end of the file, so the text below is "
-    "not the whole document. Describe what you can see and do not guess at the rest.\n"
+    "참고: 추출기가 파일 끝에 닿기 전에 멈췄다. 그래서 아래 텍스트는 문서 전체가 아니다. "
+    "보이는 것만 설명하고 나머지는 짐작하지 마라.\n"
 )
 
 _FIRST_OF_MANY_NOTICE = (
-    "NOTE: this is part 1 of {total} of a long document; you will be shown the rest "
-    "in later turns. Describe what you can see here and do not guess at the rest.\n"
+    "참고: 이것은 긴 문서의 전체 {total} 부분 중 첫 부분이고, 나머지는 다음 차례에 보여줄 "
+    "것이다. 여기 보이는 것만 설명하고 나머지는 짐작하지 마라.\n"
 )
 
 
@@ -187,9 +175,9 @@ class DensifiedSummary(BaseModel):
 
 
 _TAB = (
-    "A label that will not fit on a folder tab is not a label. TOPIC and KEYWORD stay "
-    f"under {LABEL_MAX_CHARS} characters, a QUESTION under {QUESTION_MAX_CHARS}. If an item "
-    "needs a clause to explain it, it is two items or none."
+    "폴더 탭에 안 들어갈 이름표는 이름표가 아니다. TOPIC 과 KEYWORD 는 "
+    f"{LABEL_MAX_CHARS}자, QUESTION 은 {QUESTION_MAX_CHARS}자를 넘기지 마라. 설명하는 절이 "
+    "붙어야 뜻이 서는 항목이면, 그건 두 항목이거나 아예 항목이 아니다."
 )
 """The one ceiling the model is told about, and the same number the filter applies.
 
@@ -201,22 +189,21 @@ them.
 
 _LINES = (
     """\
-Answer in PLAIN LINES. Never JSON, never markdown, never a bullet or a number.
+답은 **일반 텍스트 줄**로 하라. JSON 도, 마크다운도, 글머리표도, 번호도 쓰지 마라.
 
-One fact per line. Every line begins with its tag and a colon:
+한 줄에 한 가지. 모든 줄은 자기 태그와 콜론으로 시작한다. 태그 이름은 아래 그대로 쓴다:
 
-TITLE: <the document's own title>
-DOCTYPE: <the genre, a short noun phrase>
-LANGUAGE: <the document's language code, such as ko or en>
-SUMMARY: <two to four sentences, on ONE line>
-TOPIC: <a filing label, a few words>
-ENTITY: <name> | <organization|person|project|product|location|date>
-KEYWORD: <a word or two>
-QUESTION: <a question this document answers>
+TITLE: <문서 자신의 제목>
+DOCTYPE: <어떤 종류의 문서인지, 짧은 명사구>
+LANGUAGE: <문서의 언어 코드, 예를 들어 ko 나 en>
+SUMMARY: <두 문장에서 네 문장, 반드시 한 줄에>
+TOPIC: <폴더 이름표, 몇 단어>
+ENTITY: <이름> | <organization|person|project|product|location|date>
+KEYWORD: <한두 단어>
+QUESTION: <이 문서가 답해주는 질문>
 
-Repeat TOPIC, ENTITY, KEYWORD and QUESTION as many times as you need, one item per \
-line. Write nothing else -- no heading, no blank line, no closing remark. Stop when you \
-have nothing left to add.
+TOPIC, ENTITY, KEYWORD, QUESTION 은 필요한 만큼 되풀이하되 한 줄에 하나씩 쓴다. 그 밖에는 \
+아무것도 쓰지 마라 -- 머리말도, 빈 줄도, 맺음말도. 더 쓸 것이 없으면 거기서 멈춰라.
 
 """
     + _TAB
@@ -224,20 +211,20 @@ have nothing left to add.
 
 _UPDATE_LINES = (
     """\
-Answer in PLAIN LINES. Never JSON, never markdown, never a bullet or a number.
+답은 **일반 텍스트 줄**로 하라. JSON 도, 마크다운도, 글머리표도, 번호도 쓰지 마라.
 
-One fact per line. Every line begins with its tag and a colon:
+한 줄에 한 가지. 모든 줄은 자기 태그와 콜론으로 시작한다. 태그 이름은 아래 그대로 쓴다:
 
-SUMMARY: <the whole document so far, rewritten, two to four sentences on ONE line>
-TOPIC: <a filing label that is NEW in this part>
-ENTITY: <name> | <organization|person|project|product|location|date>
-KEYWORD: <a word or two that is NEW in this part>
-QUESTION: <a question this part lets the document answer>
-TITLE: <only if the earlier title turned out to be wrong>
-DOCTYPE: <only if the earlier genre turned out to be wrong>
+SUMMARY: <지금까지의 문서 전체를 다시 쓴 것, 두 문장에서 네 문장, 반드시 한 줄에>
+TOPIC: <이번 부분에서 새로 나온 폴더 이름표>
+ENTITY: <이름> | <organization|person|project|product|location|date>
+KEYWORD: <이번 부분에서 새로 나온 한두 단어>
+QUESTION: <이번 부분 덕분에 이 문서가 답할 수 있게 된 질문>
+TITLE: <앞의 제목이 틀렸던 경우에만>
+DOCTYPE: <앞의 종류가 틀렸던 경우에만>
 
-SUMMARY is required. Everything else is repeated as many times as it is needed and \
-omitted entirely when this part adds nothing. Write no other line.
+SUMMARY 는 반드시 있어야 한다. 나머지는 필요한 만큼 되풀이하고, 이번 부분이 더하는 것이 \
+없으면 아예 쓰지 않는다. 다른 줄은 쓰지 마라.
 
 """
     + _TAB
