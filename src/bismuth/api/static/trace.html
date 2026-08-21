@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bismuth · 실행 추적</title>
+<style>
+/*
+  One file, no build step, no CDN -- the same rule as index.html.
+
+  The layout is a transcript reader, not a graph: the question being asked is always
+  "what did this document (or this step) send, and what came back", and a box-and-arrow
+  picture answers that worse than two panes of text do.
+*/
+:root {
+  --bg: #fbfaf9; --panel: #fff; --line: #e7e3df; --ink: #1c1a19; --dim: #6f6862;
+  --accent: #8b6f47; --accent-soft: #f0ebe3; --ok: #3f7d58; --warn: #a8761f; --danger: #a13c32;
+  --in: #35618f; --out: #2f7a5e;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17161a; --panel: #1f1e23; --line: #33313a; --ink: #eceaf0; --dim: #9a949f;
+    --accent: #c9a875; --accent-soft: #2a2620; --ok: #6bbf8b; --warn: #d6a24a; --danger: #e0736a;
+    --in: #7fb0e0; --out: #6bbf8b;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 14px/1.55 "Pretendard", -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", ui-sans-serif, system-ui, sans-serif;
+  display: flex; flex-direction: column; word-break: keep-all;
+}
+.mono, pre, code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+button, select, input {
+  font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+}
+button { cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+a { color: var(--accent); }
+
+header {
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+header h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 650; letter-spacing: -.01em; }
+header .stat { color: var(--dim); font-size: 12.5px; }
+header .stat b { color: var(--ink); font-weight: 600; }
+
+#chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+.chip {
+  border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px; font-size: 12.5px;
+  background: var(--panel); cursor: pointer; color: var(--dim);
+}
+.chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+.chip b { color: var(--ink); }
+
+main { flex: 1; display: grid; grid-template-columns: minmax(300px, 27%) 1fr; min-height: 0; }
+#list { border-right: 1px solid var(--line); overflow: auto; }
+#detail { overflow: auto; padding: 16px 20px 60px; }
+
+.group { padding: 7px 14px; font-size: 12px; color: var(--dim); background: var(--bg);
+         position: sticky; top: 0; border-bottom: 1px solid var(--line); z-index: 1; }
+.row { padding: 8px 14px; border-bottom: 1px solid var(--line); cursor: pointer; display: grid;
+       grid-template-columns: 1fr auto; gap: 3px 10px; }
+.row:hover { background: var(--accent-soft); }
+.row.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.row .who { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .meta { font-size: 11.5px; color: var(--dim); text-align: right; white-space: nowrap; }
+.row .sub { grid-column: 1 / -1; font-size: 11.5px; color: var(--dim);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 5px;
+         background: var(--accent-soft); color: var(--dim); margin-right: 6px; }
+.badge.fail { background: var(--danger); color: #fff; }
+.badge.event { background: transparent; border: 1px dashed var(--line); }
+
+.pane { border: 1px solid var(--line); border-radius: 9px; background: var(--panel); margin-bottom: 14px; }
+.pane > h3 {
+  margin: 0; padding: 9px 13px; font-size: 12px; letter-spacing: .02em; font-weight: 650;
+  border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center;
+}
+.pane.input > h3 { color: var(--in); }
+.pane.output > h3 { color: var(--out); }
+.pane pre {
+  margin: 0; padding: 13px; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap;
+  word-break: break-word; max-height: 46vh; overflow: auto;
+}
+.pane.folded pre { display: none; }
+.facts { display: flex; gap: 14px; flex-wrap: wrap; color: var(--dim); font-size: 12.5px; margin-bottom: 14px; }
+.facts b { color: var(--ink); font-weight: 600; }
+.empty { color: var(--dim); padding: 40px 10px; text-align: center; }
+h2.title { font-size: 16px; margin: 0 0 4px; }
+mark { background: var(--warn); color: #1c1a19; border-radius: 3px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>실행 추적</h1>
+  <select id="run"></select>
+  <span class="stat" id="runstat"></span>
+  <span style="flex:1"></span>
+  <input id="q" placeholder="이름으로 거르기 · Enter 치면 프롬프트 안까지 검색" style="width: 300px">
+  <select id="where" title="Enter 로 검색할 범위">
+    <option value="all">입력+출력</option>
+    <option value="input">보낸 것만</option>
+    <option value="output">받은 것만</option>
+  </select>
+  <button id="mode">문서별 보기</button>
+  <button id="reload">새로고침</button>
+  <a href="/" style="font-size:12.5px">← 볼트</a>
+</header>
+<div id="chips"></div>
+<main>
+  <div id="list"></div>
+  <div id="detail"><div class="empty">왼쪽에서 호출을 하나 고르면 그 호출에 들어간 입력과 나온 출력이 그대로 보입니다.</div></div>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const state = { run: null, calls: [], events: [], stages: new Set(), grouped: false, q: "", picked: null, found: null, term: "" };
+
+const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const ms = (n) => (n == null ? "" : n >= 1000 ? (n / 1000).toFixed(1) + "s" : n + "ms");
+const clock = (t) => (t ? new Date(t).toLocaleTimeString("ko-KR", { hour12: false }) : "");
+
+async function get(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function loadRuns() {
+  const runs = await get("/api/runs");
+  $("#run").innerHTML = runs
+    .map((r) => `<option value="${r.run_id}">${r.run_id.slice(0, 15)} · ${r.calls}콜${r.active ? " · 진행중" : ""}</option>`)
+    .join("");
+  // A server start writes a run directory before it has anything to show, and two of them
+  // when the CLI configures logging twice. Open the newest run that actually called out.
+  const worth = runs.find((r) => r.calls > 0) || runs[0];
+  if (worth) {
+    $("#run").value = worth.run_id;
+    await loadRun(worth.run_id);
+  } else $("#list").innerHTML = '<div class="empty">기록된 실행이 없습니다.</div>';
+}
+
+async function loadRun(runId) {
+  const data = await get(`/api/runs/${runId}/calls`);
+  state.run = data.run;
+  state.calls = data.calls;
+  // Events are the consequences -- what the pipeline did with the reply. Shown inline so a
+  // document's row of calls reads as one story instead of a list of requests.
+  state.events = await get(`/api/runs/${runId}/events?event=card.done,simple.filed,simple.reviewed,simple.refiled,simple.refile_refused,simple.review_applied,document.read`);
+  state.stages = new Set(Object.keys(state.run.stages));
+  state.picked = null;
+  const r = state.run;
+  const span = r.first_at && r.last_at ? Math.round((new Date(r.last_at) - new Date(r.first_at)) / 1000) : 0;
+  $("#runstat").innerHTML =
+    `<b>${r.calls}</b>콜 · <b>${Math.floor(span / 60)}분 ${span % 60}초</b> · 문서 <b>${r.documents}</b>건 · ` +
+    `${esc(r.model || "")}${r.failed ? ` · <b style="color:var(--danger)">실패 ${r.failed}</b>` : ""}`;
+  drawChips();
+  draw();
+}
+
+function drawChips() {
+  const stages = state.run.stages;
+  $("#chips").innerHTML = Object.entries(stages)
+    .sort((a, b) => b[1].calls - a[1].calls)
+    .map(([name, s]) => {
+      const on = state.stages.has(name) ? " on" : "";
+      return `<span class="chip${on}" data-stage="${esc(name)}">${esc(name)} <b>${s.calls}</b> · ${ms(s.ms)}</span>`;
+    })
+    .join("");
+  $("#chips").querySelectorAll(".chip").forEach((chip) =>
+    chip.onclick = () => {
+      const name = chip.dataset.stage;
+      state.stages.has(name) ? state.stages.delete(name) : state.stages.add(name);
+      drawChips();
+      draw();
+    });
+}
+
+function visible() {
+  const q = state.q.trim().toLowerCase();
+  return state.calls.filter((c) => {
+    if (!state.stages.has(c.stage)) return false;
+    if (!q) return true;
+    return [c.filename, c.stage, c.folder, c.document_id, c.call_id].some((v) => String(v || "").toLowerCase().includes(q));
+  });
+}
+
+function rowHTML(c) {
+  const who = c.filename || (c.document_id ? c.document_id : "구조 판단 (문서 없음)");
+  const fail = c.ok === false ? ' <span class="badge fail">실패</span>' : "";
+  return `<div class="row" data-call="${c.call_id}">
+    <div class="who">${esc(who)}</div>
+    <div class="meta">${ms(c.ms)}</div>
+    <div class="sub"><span class="badge">${esc(c.stage)}</span>${fail} ${clock(c.t)} · ${esc(c.n || "")}${c.folder ? " · " + esc(c.folder) : ""}</div>
+  </div>`;
+}
+
+function draw() {
+  if (state.found) return drawFound();
+  const rows = visible();
+  if (!rows.length) { $("#list").innerHTML = '<div class="empty">해당하는 호출이 없습니다.</div>'; return; }
+  let html = "";
+  if (state.grouped) {
+    const groups = new Map();
+    for (const c of rows) {
+      const key = c.document_id || "__structure__";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(c);
+    }
+    for (const [key, list] of groups) {
+      const name = key === "__structure__" ? "구조 판단 (배치 · 점검 · 재배치)" : list[0].filename || key;
+      const total = list.reduce((sum, c) => sum + (c.ms || 0), 0);
+      html += `<div class="group">${esc(name)} · ${list.length}콜 · ${ms(total)}</div>` + list.map(rowHTML).join("");
+    }
+  } else {
+    html = rows.map(rowHTML).join("");
+  }
+  $("#list").innerHTML = html;
+  $("#list").querySelectorAll(".row").forEach((row) => (row.onclick = () => open(row.dataset.call)));
+  if (state.picked) markPicked();
+}
+
+// -- searching inside the prompts and the replies -------------------------------------
+
+function lit(text, term) {
+  const at = text.toLowerCase().indexOf(term.toLowerCase());
+  if (at < 0 || !term) return esc(text);
+  return esc(text.slice(0, at)) + "<mark>" + esc(text.slice(at, at + term.length)) + "</mark>" + esc(text.slice(at + term.length));
+}
+
+async function look() {
+  const term = $("#q").value.trim();
+  if (!term) return clearFound();
+  const where = $("#where").value;
+  $("#list").innerHTML = '<div class="empty">찾는 중…</div>';
+  const result = await get(`/api/runs/${state.run.run_id}/search?q=${encodeURIComponent(term)}&where=${where}`);
+  state.found = result;
+  state.term = term;
+  drawFound();
+}
+
+function clearFound() {
+  state.found = null;
+  state.term = "";
+  draw();
+}
+
+function drawFound() {
+  const { hits, truncated } = state.found;
+  const head = `<div class="group">"${esc(state.term)}" 가 든 호출 <b>${hits.length}</b>개${truncated ? " (이후 생략)" : ""}
+    <button class="ghost" id="unfind" style="float:right;padding:0 6px">검색 지우기</button></div>`;
+  const rows = hits
+    .filter((h) => state.stages.has(h.stage))
+    .map((h) => {
+      const cuts = [...(h.snippets.input || []), ...(h.snippets.output || [])].slice(0, 3);
+      return `<div class="row" data-call="${h.call_id}">
+        <div class="who">${esc(h.filename || "구조 판단 (문서 없음)")}</div>
+        <div class="meta">${ms(h.ms)}</div>
+        <div class="sub"><span class="badge">${esc(h.stage)}</span> ${clock(h.t)} · ${h.where.map((w) => (w === "input" ? "보낸 것" : "받은 것")).join(" + ")}</div>
+        ${cuts.map((c) => `<div class="sub mono" style="white-space:normal">${lit(c, state.term)}</div>`).join("")}
+      </div>`;
+    });
+  $("#list").innerHTML = head + (rows.join("") || '<div class="empty">이 단계에는 없습니다. 위 칩을 켜보세요.</div>');
+  $("#list").querySelectorAll(".row").forEach((row) => (row.onclick = () => open(row.dataset.call)));
+  $("#unfind").onclick = clearFound;
+  if (state.picked) markPicked();
+}
+
+function markPicked() {
+  $("#list").querySelectorAll(".row").forEach((r) => r.classList.toggle("on", r.dataset.call === state.picked));
+}
+
+function pane(kind, title, body, folded) {
+  if (!body) return "";
+  // A pane holding the searched-for text opens even when it would normally be folded --
+  // the system prompt is folded by default, and that is exactly where a match may be.
+  const term = state.term;
+  const hit = term && body.toLowerCase().includes(term.toLowerCase());
+  const marked = hit ? every(body, term) : esc(body);
+  return `<div class="pane ${kind}${folded && !hit ? " folded" : ""}">
+    <h3>${esc(title)}${hit ? ` <span class="badge">"${esc(term)}" 있음</span>` : ""}
+      <button class="fold">${folded && !hit ? "펼치기" : "접기"}</button></h3>
+    <pre>${marked}</pre></div>`;
+}
+
+function every(text, term) {
+  const low = text.toLowerCase(), needle = term.toLowerCase();
+  let out = "", at = 0, found;
+  while ((found = low.indexOf(needle, at)) !== -1) {
+    out += esc(text.slice(at, found)) + "<mark>" + esc(text.substr(found, term.length)) + "</mark>";
+    at = found + term.length;
+  }
+  return out + esc(text.slice(at));
+}
+
+async function open(callId) {
+  state.picked = callId;
+  markPicked();
+  const c = await get(`/api/runs/${state.run.run_id}/calls/${callId}`);
+  const after = state.events.filter((e) => e.document_id && e.document_id === c.document_id);
+  let html = `<h2 class="title">${esc(c.filename || c.stage)}</h2>
+    <div class="facts">
+      <span><b>${esc(c.stage)}</b></span><span>${clock(c.t)}</span><span>${ms(c.ms)}</span>
+      <span>${esc(c.model || "")}</span>
+      ${c.window_id ? `<span>창 ${esc(c.window_id.split(":").pop())}</span>` : ""}
+      ${c.folder ? `<span>폴더 ${esc(c.folder)}</span>` : ""}
+      <span class="mono" style="font-size:11.5px">${esc(c.call_id)}</span>
+    </div>`;
+  html += pane("input", `입력 · 시스템 프롬프트 (${c.system.length.toLocaleString()}자)`, c.system, true);
+  html += pane("input", `입력 · 이번 요청 (${c.user.length.toLocaleString()}자)`, c.user, false);
+  for (const a of c.attempts) {
+    const label = `출력 · 시도 ${a.n}${a.finish_reason ? " · " + a.finish_reason : ""} · ${ms(a.ms)}` +
+      (a.error ? " · 오류" : "");
+    html += pane("output", `${label} (${(a.content || "").length.toLocaleString()}자)`, a.content || a.error || "(빈 응답)", false);
+    if (a.reasoning) html += pane("output", "출력 · 생각한 내용", a.reasoning, true);
+  }
+  if (after.length) {
+    const said = after.map((e) => `[${clock(e.t)}] ${e.event}  ${JSON.stringify(
+      Object.fromEntries(Object.entries(e).filter(([k]) => !["t", "schema_version", "run_id", "event", "document_id", "filename"].includes(k))), null, 1)}`).join("\n\n");
+    html += pane("output", "이 문서에 대해 파이프라인이 기록한 것", said, true);
+  }
+  $("#detail").innerHTML = html;
+  $("#detail").querySelectorAll(".fold").forEach((b) =>
+    b.onclick = () => {
+      const p = b.closest(".pane");
+      p.classList.toggle("folded");
+      b.textContent = p.classList.contains("folded") ? "펼치기" : "접기";
+    });
+  $("#detail").scrollTop = 0;
+}
+
+$("#run").onchange = (e) => loadRun(e.target.value);
+$("#reload").onclick = () => loadRun(state.run.run_id);
+$("#mode").onclick = () => {
+  state.grouped = !state.grouped;
+  $("#mode").classList.toggle("on", state.grouped);
+  $("#mode").textContent = state.grouped ? "시간순 보기" : "문서별 보기";
+  draw();
+};
+$("#q").oninput = (e) => {
+  state.q = e.target.value;
+  if (state.found) return; // a content search stands until Enter or 검색 지우기
+  draw();
+};
+$("#q").onkeydown = (e) => {
+  if (e.key === "Enter") look();
+  if (e.key === "Escape") { $("#q").value = ""; state.q = ""; clearFound(); }
+};
+$("#where").onchange = () => { if (state.found) look(); };
+loadRuns().catch((err) => ($("#list").innerHTML = `<div class="empty">${esc(err.message)}</div>`));
+</script>
+</body>
+</html>
