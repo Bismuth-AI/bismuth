@@ -352,3 +352,164 @@ class TestImportOrdering:
         )
         assert "RIGHT" in result.stdout, result.stdout
         assert "WRONG" not in result.stdout
+
+
+class TestTwoModels:
+    """Filing and answering are separate jobs; they may be separate models."""
+
+    def _settings(self, **over: object) -> Settings:
+        base = {
+            "provider_id": "custom",
+            "model": "filing-model",
+            "api_base": "http://a/v1",
+            "api_key": "key-a",
+            "api_headers": {"Cookie": "session-a"},
+            "api_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        }
+        return Settings(**{**base, **over})  # type: ignore[arg-type]
+
+    def test_one_model_by_default(self) -> None:
+        one = self._settings()
+
+        assert one.chat() == one.librarian()
+        assert not one.chat_is_separate
+
+    def test_a_second_model_keeps_the_same_server_and_key(self) -> None:
+        two = self._settings(chat_model="answering-model")
+
+        assert two.chat().model.endswith("answering-model")
+        assert two.librarian().model.endswith("filing-model")
+        assert two.chat().api_base == two.librarian().api_base
+        assert two.chat().api_key == "key-a"
+        assert two.chat_is_separate
+
+    def test_a_second_server_does_not_get_the_first_ones_credential(self) -> None:
+        far = self._settings(chat_model="answering-model", chat_api_base="http://b/v1")
+
+        assert far.chat().api_base == "http://b/v1"
+        assert far.chat().api_key == ""
+        assert far.chat().headers == {}
+        assert far.librarian().api_key == "key-a"  # untouched
+
+    def test_the_chat_body_is_merged_not_swapped(self) -> None:
+        """A body naming only temperature must not drop the switch that turns thinking off."""
+        tuned = self._settings(chat_model="answering-model", chat_api_body={"temperature": 0.7})
+
+        assert tuned.chat().body["temperature"] == 0.7
+        assert tuned.chat().body["chat_template_kwargs"] == {"enable_thinking": False}
+
+    def test_its_own_provider_inherits_nothing(self) -> None:
+        """A key, a header and a sampling switch belong to the endpoint they were set for."""
+        apart = self._settings(
+            chat_provider_id="anthropic",
+            chat_model="claude-x",
+            chat_api_key="key-b",
+        )
+
+        answering = apart.chat()
+
+        assert answering.model == "anthropic/claude-x"
+        assert answering.api_key == "key-b"
+        assert answering.headers == {}  # the other server's cookie stays there
+        assert answering.body == {}  # and so does the other server's thinking switch
+        assert apart.librarian().model == "openai/filing-model"
+        assert apart.chat_is_separate
+
+    def test_its_own_provider_falls_back_to_that_providers_address(self) -> None:
+        apart = self._settings(chat_provider_id="openai", chat_model="gpt-x", chat_api_key="key-b")
+
+        assert apart.chat().api_base is None or "openai" in str(apart.chat().api_base)
+        assert apart.chat().model == "openai/gpt-x"
+
+    def test_its_own_provider_can_answer_with_the_same_model_name(self) -> None:
+        """Same name, another company: the prefix is what decides where it is sent."""
+        apart = self._settings(chat_provider_id="anthropic", chat_api_key="key-b")
+
+        assert apart.chat().model == "anthropic/filing-model"
+
+    def test_neither_key_is_printable(self) -> None:
+        both = self._settings(chat_api_key="key-b")
+
+        printed = both.redacted()
+
+        assert "key-a" not in str(printed) and "key-b" not in str(printed)
+        assert printed["chat_api_key"].endswith("ey-b")
+
+
+class TestModelRuntimeSettings:
+    def test_openai_gpt56_tools_use_responses_and_low_by_default(self) -> None:
+        settings = Settings(
+            provider_id="openai",
+            api_key="sk-test",
+            model="gpt-5.6-luna",
+        )
+
+        endpoint = settings.chat().for_workload(uses_tools=True)
+
+        assert endpoint.model == "openai/responses/gpt-5.6-luna"
+        assert endpoint.body["reasoning_effort"] == "low"
+
+    def test_filing_does_not_get_the_tool_calling_rule(self) -> None:
+        settings = Settings(
+            provider_id="openai",
+            api_key="sk-test",
+            model="gpt-5.6-luna",
+        )
+
+        endpoint = settings.librarian().for_workload(uses_tools=False)
+
+        assert endpoint.model == "openai/gpt-5.6-luna"
+        assert "reasoning_effort" not in endpoint.body
+
+    def test_chat_completions_tools_turn_reasoning_off(self) -> None:
+        settings = Settings(
+            provider_id="openai",
+            api_key="sk-test",
+            model="gpt-5.6-luna",
+            chat_api_mode="chat_completions",
+            chat_api_body={"reasoning_effort": "high"},
+        )
+
+        endpoint = settings.chat().for_workload(uses_tools=True)
+
+        assert endpoint.model == "openai/gpt-5.6-luna"
+        assert endpoint.body["reasoning_effort"] == "none"
+
+    def test_chat_completions_cannot_be_forced_to_an_incompatible_effort(self) -> None:
+        settings = Settings(
+            provider_id="openai",
+            api_key="sk-test",
+            model="gpt-5.6-luna",
+            chat_api_mode="chat_completions",
+            chat_reasoning_effort="high",
+        )
+
+        endpoint = settings.chat().for_workload(uses_tools=True)
+
+        assert endpoint.body["reasoning_effort"] == "none"
+
+    def test_an_explicit_responses_profile_keeps_its_effort(self) -> None:
+        settings = Settings(
+            provider_id="openai",
+            api_key="sk-test",
+            model="gpt-5.6-luna",
+            chat_api_mode="responses",
+            chat_reasoning_effort="high",
+        )
+
+        endpoint = settings.chat().for_workload(uses_tools=True)
+
+        assert endpoint.model == "openai/responses/gpt-5.6-luna"
+        assert endpoint.body["reasoning_effort"] == "high"
+
+    def test_custom_openai_compatible_servers_are_not_assumed_to_support_responses(self) -> None:
+        settings = Settings(
+            provider_id="custom",
+            api_base="http://localhost:8000/v1",
+            model="gpt-5.6-luna",
+        )
+
+        endpoint = settings.chat().for_workload(uses_tools=True)
+
+        assert endpoint.model == "openai/gpt-5.6-luna"
+        assert "reasoning_effort" not in endpoint.body

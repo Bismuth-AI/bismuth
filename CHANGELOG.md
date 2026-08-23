@@ -7,6 +7,31 @@ that below `1.0.0` the interface may break between minor versions.
 
 ## [Unreleased]
 
+### Added
+
+- **`grep` searches one file, not only a folder.** Given a document path it reports
+  where inside that document a thing is said, so the next `read` goes straight to the
+  line instead of walking the sidecar a few lines at a time.
+- **Context budgeting in agentkit.**
+  The agent loop sizes its transcript from what the provider counted for the last request
+  plus an estimate of what has happened since, and under pressure clips over-long tool
+  results, clears the oldest ones (keeping the recent), and evicts from the front only as
+  a last resort. One turn's results are bounded together as well as individually, since
+  tools run in parallel. `chat_context_tokens` says how big the window is.
+
+### Changed
+
+- **A run ends on tokens spent, not on a turn count.** `max_turns` remains only as a
+  backstop against a looping model. A cap on turns says nothing about how big a turn is:
+  it cut off cheap questions with the answer half-found and let expensive ones overflow
+  the window.
+- **A spent run answers instead of falling silent.** When the budget runs out the agent
+  gets one last turn with its tools withdrawn and is told to answer from what it has.
+- **`grep` groups its hits under one path per document** instead of repeating the path
+  on every line. The same whole-vault search went from 11.7k characters to 5.9k, which
+  matters because an over-long result is clipped in the middle — quietly dropping hits.
+  Sized so the tool stops on its own boundary and says what it left out.
+
 ## [0.1.1] — 2026-08-02
 
 No change to what Bismuth does. This release exists because 0.1.0 shipped a test

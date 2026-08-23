@@ -41,6 +41,24 @@ def vault_path(tmp_path: Path) -> Path:
     return tmp_path / "vault"
 
 
+@pytest.fixture(autouse=True)
+def _config_stays_out_of_this(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No test reads or writes the config of whoever is running them.
+
+    ``Settings`` binds its ``json_file`` when the class is defined, so the path has to
+    be rebound as well as the module globals -- patching only the globals leaves every
+    ``Settings()`` still reading ~/.bismuth/config.json. Until this existed a suite run
+    inherited whatever model and key the machine was set up with, and an API test that
+    saved a configuration wrote over them.
+    """
+    home = tmp_path_factory.mktemp("bismuth-home")
+    monkeypatch.setattr("bismuth.config.CONFIG_DIR", home)
+    monkeypatch.setattr("bismuth.config.CONFIG_FILE", home / "config.json")
+    monkeypatch.setitem(Settings.model_config, "json_file", home / "config.json")
+
+
 @pytest.fixture
 def settings(vault_path: Path) -> Settings:
     return Settings(vault_path=vault_path)
@@ -374,7 +392,10 @@ def engine(settings: Settings, llm: FakeLLM) -> Bismuth:
 
 @pytest.fixture
 def client(settings: Settings, llm: FakeLLM) -> Iterator[TestClient]:
-    app = create_app(settings)
+    # Wider than the product's own list on purpose: these tests are about upload,
+    # placement and undo, and a real PDF fixture would only add bytes to read. What the
+    # product accepts is checked on its own, against the default, in test_api.
+    app = create_app(settings, accepted_uploads=frozenset({".pdf", ".txt", ".md", ".csv"}))
     engine = build(settings, llm=llm)
     seed_folder(Path(engine.vault.root))
     app.state.engine = engine

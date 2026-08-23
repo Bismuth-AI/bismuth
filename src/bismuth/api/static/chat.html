@@ -1,0 +1,1071 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bismuth · 서고에 묻기</title>
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" href="/favicon.png" type="image/png" sizes="180x180">
+<link rel="apple-touch-icon" href="/favicon.png">
+<style>
+/*
+  One file, no build step, no CDN -- the same rule as index.html.
+
+  A transcript, not a search box. The answer to "그중 최신은?" only exists if the turn
+  before it is still on screen, so the conversation is the interface and the search the
+  agent did is shown inside each turn rather than in a panel beside it: what it opened and
+  what it grepped for is how a person decides whether to believe the answer.
+*/
+:root {
+  --bg: #fbfaf9; --panel: #fff; --line: #e7e3df; --ink: #1c1a19; --dim: #6f6862;
+  --accent: #8b6f47; --accent-soft: #f0ebe3; --ok: #3f7d58; --danger: #a13c32;
+  --mine: #f0ebe3;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17161a; --panel: #1f1e23; --line: #33313a; --ink: #eceaf0; --dim: #9a949f;
+    --accent: #c9a875; --accent-soft: #2a2620; --ok: #6bbf8b; --danger: #e0736a;
+    --mine: #2a2620;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+.hidden { display: none !important; }
+body {
+  background: var(--bg); color: var(--ink); display: flex; flex-direction: column;
+  font: 15px/1.65 "Pretendard", -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", ui-sans-serif, system-ui, sans-serif;
+  word-break: keep-all;
+}
+.mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .86em; }
+button, input, select, textarea {
+  font: inherit; border-radius: 9px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--ink);
+}
+button { cursor: pointer; font-size: 13px; padding: 7px 13px; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+a { color: var(--accent); }
+
+header {
+  display: flex; gap: 10px; align-items: center; padding: 10px 16px;
+  border-bottom: 1px solid var(--line); background: var(--panel);
+}
+header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+header .stat { color: var(--dim); font-size: 12.5px; }
+
+main { flex: 1; overflow: auto; display: flex; justify-content: center; gap: 8px; }
+#thread { max-width: 780px; flex: 1; padding: 22px 18px 8px; }
+
+.turn { margin-bottom: 26px; }
+.mine {
+  background: var(--mine); border-radius: 12px; padding: 10px 14px; margin-left: auto;
+  max-width: 82%; width: fit-content; white-space: pre-wrap;
+}
+.theirs { margin-top: 16px; }
+.theirs > :first-child { margin-top: 0; }
+.theirs p { margin: 0 0 10px; white-space: pre-wrap; }
+.theirs h2, .theirs h3 { font-size: 15px; margin: 18px 0 8px; letter-spacing: -.01em; }
+.theirs ul { margin: 0 0 10px; padding-left: 20px; }
+.theirs li { margin: 2px 0; }
+.theirs code {
+  font-family: ui-monospace, Consolas, monospace; font-size: .88em;
+  background: var(--accent-soft); padding: 1px 5px; border-radius: 5px;
+}
+.theirs hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+.theirs table { border-collapse: collapse; margin: 0 0 12px; font-size: 14px; display: block; overflow-x: auto; }
+.theirs th, .theirs td { border: 1px solid var(--line); padding: 5px 10px; text-align: left; }
+.theirs th { background: var(--accent-soft); }
+
+.work { margin: 10px 0 0; border-left: 2px solid var(--line); padding-left: 12px; }
+.work summary {
+  color: var(--dim); font-size: 12.5px; cursor: pointer; list-style: none; user-select: none;
+}
+.work summary::-webkit-details-marker { display: none; }
+.work summary::before { content: "▸ "; }
+.work[open] summary::before { content: "▾ "; }
+/* A long search runs to thirty calls and would push the answer off the screen.
+   The log keeps its height and scrolls inside itself instead. */
+.work .steps { max-height: 168px; overflow-y: auto; overscroll-behavior: contain; }
+.work[open] .steps { border-bottom: 1px solid var(--line); }
+.work .steps::-webkit-scrollbar { width: 6px; }
+.work .steps::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+.step { color: var(--dim); font-size: 12.5px; padding: 2px 0; }
+.step b { color: var(--ink); font-weight: 600; }
+.step.said { color: var(--ink); padding: 4px 0 6px; white-space: pre-wrap; }
+.answer-spend {
+  color: var(--dim); font-size: 11.5px; margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.spin::after {
+  content: ""; display: inline-block; width: 7px; height: 7px; margin-left: 6px;
+  border-radius: 50%; background: var(--accent); animation: pulse 1s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: .25 } 50% { opacity: 1 } }
+.err { color: var(--danger); }
+
+/*
+  The stacks. The vault drawn as what it is called: shelves of books, one spine per
+  document, lit by the events the agent emits while it works.
+
+  A list was the obvious shape and the wrong one -- seventy-five rows scroll, and a
+  highlight below the fold is not a highlight. Shelves hold the whole vault at one size,
+  and they carry the metaphor the rest of the product already uses: a librarian, a shelf
+  note, a document filed where a person would look for it.
+
+  Nothing moves on its own. A book lights when a search lands on it and slides out when
+  the agent reads it, so a still shelf means the agent is thinking rather than looking.
+*/
+#map {
+  width: 380px; flex: none; align-self: flex-start; position: sticky; top: 0;
+  padding: 16px 18px; border-left: 1px solid var(--line); min-height: 100%;
+}
+#map h2 {
+  font-size: 11.5px; margin: 0; color: var(--dim); font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase;
+}
+#mapstat { color: var(--dim); font-size: 11.5px; }
+#mapwhere {
+  height: 32px; margin: 10px 0 4px; font-size: 12px; line-height: 1.35;
+  color: var(--accent); font-weight: 650; overflow: hidden;
+}
+#mapwhere small { display: block; color: var(--dim); font-weight: 400; }
+
+.shelf { margin-bottom: 9px; }
+.shelf .label {
+  font-size: 11px; color: var(--dim); margin-bottom: 2px; display: flex; gap: 5px;
+  transition: color .2s;
+}
+.shelf .label .n { margin-left: auto; opacity: .65; }
+.shelf.seen .label { color: var(--ink); }
+.shelf.now .label { color: var(--accent); font-weight: 650; }
+
+.books {
+  display: flex; align-items: flex-end; gap: 1px; height: 26px; padding: 0 1px;
+}
+.plank {
+  height: 2px; border-radius: 1px; background: var(--line); transition: background .25s;
+}
+.shelf.now .plank { background: var(--accent); }
+
+/* One spine per document. Heights vary so a shelf reads as books and not as a bar chart. */
+.book {
+  flex: 1 1 auto; min-width: 2px; max-width: 7px; height: 62%;
+  background: var(--line); border-radius: 1px 1px 0 0;
+  transition: background .25s, height .25s, transform .25s, box-shadow .25s;
+}
+.book:nth-child(3n) { height: 78% }
+.book:nth-child(4n) { height: 54% }
+.book:nth-child(5n) { height: 88% }
+.book:nth-child(7n) { height: 68% }
+.book.seen { background: var(--dim); }
+.book.hit { background: var(--accent); }
+.book.reading {
+  background: var(--accent); transform: translateY(-9px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .35);
+}
+
+/* A search over the whole vault runs a light down every shelf, once. */
+#shelves.sweep .book { animation: shine .9s ease-out; }
+@keyframes shine { 0%, 100% { background: var(--line) } 45% { background: var(--accent) } }
+#shelves.sweep .book.seen, #shelves.sweep .book.hit { animation: none }
+
+@media (max-width: 1200px) { #map { display: none } }
+@media (prefers-reduced-motion: reduce) {
+  .book.reading { transform: none }
+  #shelves.sweep .book { animation: none }
+}
+footer { border-top: 1px solid var(--line); background: var(--panel); }
+/* The same two columns as ``main``: the box you type into belongs under the conversation,
+   not under the window. Without the spacer the map pushes one and not the other. */
+footer .bar { display: flex; justify-content: center; gap: 8px; }
+footer .col { flex: 1; max-width: 780px; min-width: 0; }
+footer .pad { width: 320px; flex: none; }
+@media (max-width: 1120px) { footer .pad { display: none } }
+#composer { padding: 12px 18px; display: flex; gap: 8px; }
+#q { flex: 1; resize: none; padding: 11px 13px; max-height: 40vh; }
+#q:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.hint { padding: 0 18px 10px; color: var(--dim); font-size: 12px; }
+.empty { color: var(--dim); text-align: center; padding: 60px 20px; }
+.empty h2 { font-size: 17px; color: var(--ink); margin-bottom: 6px; }
+.seed {
+  display: inline-block; margin: 4px; padding: 7px 12px; border: 1px solid var(--line);
+  border-radius: 999px; cursor: pointer; font-size: 13px; background: var(--panel);
+}
+.seed:hover { border-color: var(--accent); }
+
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 50;
+  display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px;
+  overflow-y: auto;
+}
+.overlay .card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  padding: 26px; width: 100%; max-width: 560px;
+}
+.cardhead { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.cardhead h2 { flex: 1; margin: 0; font-size: 20px; }
+.card .sub { color: var(--dim); font-size: 12.5px; margin: 6px 0 0; line-height: 1.5; }
+.card .field { margin: 16px 0; }
+.card .field > label { display: block; font-size: 14px; font-weight: 550; margin-bottom: 6px; }
+.card .field > label .muted { font-size: 12.5px; font-weight: 400; margin-left: 4px; }
+.card input, .card select { width: 100%; padding: 9px 11px; }
+.cardfoot {
+  display: flex; align-items: center; gap: 8px; margin-top: 20px;
+  padding-top: 16px; border-top: 1px solid var(--line);
+}
+.cardfoot .sub { flex: 1; margin: 0; }
+.card .choices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.card .choice {
+  flex: 1 1 150px; display: flex; align-items: center; gap: 8px; padding: 9px 11px;
+  border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 13.5px;
+}
+.card .choice:hover { border-color: var(--accent); }
+.card .choice.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.card .choice input { width: auto; }
+.card textarea { width: 100%; padding: 9px 11px; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; }
+.card .hrow { display: grid; grid-template-columns: 170px 1fr 30px; gap: 6px; margin-bottom: 6px; max-width: 480px; }
+.card .hrow input { min-width: 0; font-family: ui-monospace, monospace; font-size: 13px; }
+.card .hrow button { padding: 0; color: var(--dim); border-color: transparent; background: transparent; }
+.card .hrow button:hover { color: var(--danger); }
+button.small { padding: 4px 9px; font-size: 12px; }
+.more > summary {
+  cursor: pointer; font-size: 12.5px; color: var(--dim); padding: 10px 0 2px;
+  user-select: none; list-style: none;
+}
+.more > summary::-webkit-details-marker { display: none; }
+.more > summary::before { content: "▸ "; }
+.more[open] > summary::before { content: "▾ "; }
+.cardfoot a { color: var(--dim); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>서고에 묻기</h1>
+  <span class="stat" id="stat"></span>
+  <span style="flex:1"></span>
+  <button id="reset">새 대화</button>
+  <button id="btn-model">답변 모델</button>
+  <a href="/" style="font-size:12.5px">← 볼트</a>
+</header>
+
+<!--
+  Which model answers is a decision made here, where the answers are read. The rest of
+  the configuration -- the server, the credential, the model that files documents -- is
+  the vault's, and this panel links there rather than carrying a second copy of it.
+-->
+<div id="modal" class="overlay hidden"><div class="card">
+  <div class="cardhead"><h2>답변 모델</h2><button id="m-close">닫기</button></div>
+  <p class="sub" id="m-filing"></p>
+
+  <div class="field">
+    <label>모델 제공자</label>
+    <div id="m-providers" class="choices"></div>
+    <p class="sub" id="m-hint"></p>
+  </div>
+
+  <div id="m-own" class="hidden">
+    <div class="field">
+      <label id="m-key-label">API 키</label>
+      <input type="password" id="m-key" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="field" id="m-base-field">
+      <label>엔드포인트 주소</label>
+      <input type="text" id="m-base" spellcheck="false">
+    </div>
+    <details id="m-advanced" class="more">
+      <summary>고급 — 헤더, 요청 본문</summary>
+      <div class="field">
+        <label>추가 헤더</label>
+        <div id="m-headers-rows"></div>
+        <button type="button" id="m-headers-add" class="small">+ 헤더 추가</button>
+        <p class="sub">게이트웨이가 쿠키나 자체 헤더로 인증할 때만 사용합니다.</p>
+      </div>
+      <div class="field">
+        <label>요청 본문 추가값</label>
+        <textarea id="m-body" spellcheck="false" rows="5" placeholder='{"temperature": 0.7, "chat_template_kwargs": {"enable_thinking": false}}'></textarea>
+        <p class="sub">JSON. 답변 모델에만 적용할 샘플링 값이나 서버 옵션을 적습니다.</p>
+        <div id="m-body-error" class="err hidden"></div>
+      </div>
+    </details>
+  </div>
+
+  <div id="m-pick" class="hidden">
+    <hr>
+    <div class="field">
+      <label>답변 모델 <span class="muted">서고를 찾아 질문에 답합니다</span></label>
+      <input type="text" id="m-model" list="m-list" spellcheck="false" autocomplete="off">
+      <datalist id="m-list"></datalist>
+      <p class="sub" id="m-note"></p>
+    </div>
+    <div class="field">
+      <label>API 방식</label>
+      <select id="m-api-mode">
+        <option value="auto">자동 — 모델에 맞게 선택</option>
+        <option value="responses">Responses API</option>
+        <option value="chat_completions">Chat Completions</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>추론 강도</label>
+      <select id="m-reasoning-effort">
+        <option value="auto">자동 — 모델 기본값</option>
+        <option value="none">없음</option>
+        <option value="minimal">minimal</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+        <option value="xhigh">xhigh</option>
+        <option value="max">max</option>
+      </select>
+      <p class="sub" id="m-runtime-hint"></p>
+    </div>
+  </div>
+
+  <div id="m-error" class="err hidden"></div>
+  <div class="cardfoot">
+    <a href="/?setup" class="sub">정리 모델 설정 →</a>
+    <button id="m-cancel" class="hidden">취소</button>
+    <button id="m-check" class="primary">다음</button>
+    <button id="m-save" class="primary hidden">저장</button>
+  </div>
+</div></div>
+
+<main><div id="thread">
+  <div class="empty" id="blank">
+    <h2>이 서고에 대해 물어보세요</h2>
+    <div>폴더를 뒤지고 본문을 찾아 근거와 함께 답합니다.</div>
+    <div style="margin-top:14px">
+      <span class="seed">이 서고에 어떤 문서들이 있고, 어떤 갈래로 나뉘어 있어?</span>
+      <span class="seed">가상자산위원회의 구성 인원과 위원장은 누구야?</span>
+      <span class="seed">'연 100분의 15' 지연배상금 이율을 정한 시행령을 모두 찾아줘</span>
+      <span class="seed">「전통시장 및 상점가 육성을 위한 특별법」 네 버전 중 '시장의 인정 등' 조문이 있는 건?</span>
+      <span class="seed">형법 제250조 살인죄 조문의 내용을 알려줘</span>
+    </div>
+  </div>
+</div>
+<aside id="map" hidden>
+  <h2>서고</h2>
+  <div id="mapstat"></div>
+  <div id="mapwhere"></div>
+  <div id="shelves"></div>
+</aside>
+</main>
+
+<footer>
+  <div class="bar">
+    <div class="col">
+      <div id="composer">
+        <textarea id="q" rows="1" placeholder="무엇이든 물어보세요.  Enter 로 전송, Shift+Enter 로 줄바꿈"></textarea>
+        <button id="send">보내기</button>
+      </div>
+      <div class="hint">답은 이 서고의 문서에서만 나옵니다. 근거가 없으면 없다고 답합니다.</div>
+    </div>
+    <div class="pad"></div>
+  </div>
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+let conversation = null, busy = false;
+
+const TOOLS = {
+  ls: "폴더 열기", tree: "구조 보기", read_note: "폴더 설명 읽기",
+  grep: "본문 검색", read: "문서 읽기",
+};
+
+/*
+  The stacks: one shelf per top folder, one spine per document, lit by real tool calls.
+
+  The number of books on a shelf is the real number of documents under that folder. Which
+  spine stands for which document is not known until the agent touches one -- there is no
+  endpoint that lists every file, and asking for seventy-five folder listings to draw a
+  picture would be a poor trade. A spine is claimed by the first path that lands on it and
+  keeps it for the rest of the conversation.
+*/
+const vault = { shelves: new Map(), spines: new Map(), racks: new Map(), seen: new Set(), built: false };
+
+const parent = (path) => path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+const isFile = (path) => /\.[a-z0-9]{2,5}$/i.test(path);
+const rootOf = (path) => (path.includes("/") ? path.split("/")[0] : "");
+
+async function buildMap() {
+  if (vault.built) return;
+  vault.built = true;
+  let all = [];
+  try { all = await fetch("/api/tree").then((r) => r.json()); } catch { return; }
+  all = all.filter((f) => !f.path.startsWith("_inbox"));
+  const folders = all.filter((f) => f.depth >= 1);
+  // Documents filed at the root are on a shelf too -- 43 of the 300 here. Leaving them
+  // off would have the stacks quietly disagree with the count in the header.
+  const loose = all.find((f) => f.depth === 0);
+  const tops = folders.filter((f) => f.depth === 1);
+  if (loose && loose.files) tops.push({ path: "", name: "그 밖", files: loose.files, depth: 1 });
+  if (!tops.length) return;
+
+  const under = (t) =>
+    t.files + folders.filter((f) => f.depth === 2 && rootOf(f.path) === t.path)
+      .reduce((sum, f) => sum + f.files, 0);
+
+  const stacks = $("shelves");
+  let books = 0;
+  for (const t of tops.sort((a, b) => under(b) - under(a))) {
+    const held = under(t);
+    books += held;
+    const shelf = document.createElement("div");
+    shelf.className = "shelf";
+    shelf.innerHTML =
+      `<div class="label"><span>${esc(t.name)}</span><span class="n">${held}</span></div>` +
+      `<div class="books"></div><div class="plank"></div>`;
+    const row = shelf.querySelector(".books");
+    const spines = [];
+    for (let i = 0; i < held; i++) {
+      const book = document.createElement("i");
+      book.className = "book";
+      row.append(book);
+      spines.push(book);
+    }
+    stacks.append(shelf);
+    vault.shelves.set(t.path, shelf);
+
+    // The shelf is divided the way the folder is: the documents filed directly under
+    // it first, then a block for each sub-folder, each as wide as it holds. A book
+    // then stands where its folder stands, so two documents from the same sub-folder
+    // light up next to each other and a different sub-folder lights somewhere else.
+    const kids = folders.filter((f) => f.depth === 2 && rootOf(f.path) === t.path);
+    const blocks = new Map();
+    let at = 0;
+    for (const part of [{ path: t.path, files: t.files }, ...kids]) {
+      blocks.set(part.path, { from: at, size: part.files });
+      at += part.files;
+    }
+    vault.racks.set(t.path, { books: spines, blocks, taken: new Set() });
+    for (const kid of kids) vault.shelves.set(kid.path, shelf);
+  }
+  $("mapstat").textContent = `문서 ${books}권 · 책장 ${tops.length}칸`;
+  $("map").hidden = false;
+}
+
+/** A number from a string, so the same document always lands in the same place. */
+function digest(text) {
+  let n = 5381;
+  for (let i = 0; i < text.length; i++) n = ((n << 5) + n + text.charCodeAt(i)) | 0;
+  return Math.abs(n);
+}
+
+/**
+ * The spine standing for this document -- claimed from its shelf the first time.
+ *
+ * Handing out the leftmost free book put every search at the front of the shelf: the
+ * same dozen spines lit no matter which folder the answer came from, and the other
+ * two hundred never moved. A document now goes to its own folder's block and, within
+ * it, to the place its name hashes to, so where a book lights says something.
+ */
+function spine(path) {
+  if (vault.spines.has(path)) return vault.spines.get(path);
+  const rack = vault.racks.get(rootOf(path));
+  if (!rack) return null;
+  const block = rack.blocks.get(parent(path)) ?? { from: 0, size: rack.books.length };
+  const size = block.size || rack.books.length;
+  const wanted = block.from + (digest(path) % size);
+  // Taken already: the next free place, first inside the block and then anywhere. Two
+  // documents wanting one spot is ordinary -- the count is real, the assignment is not.
+  let book = null;
+  for (let i = 0; i < rack.books.length && !book; i++) {
+    const at = i < size ? block.from + ((wanted - block.from + i) % size) : (wanted + i) % rack.books.length;
+    if (!rack.taken.has(at)) { rack.taken.add(at); book = rack.books[at]; }
+  }
+  if (book) vault.spines.set(path, book);
+  return book;
+}
+
+const short = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+function where(path, note) {
+  const parts = path.split("/").filter(Boolean);
+  const last = (parts.pop() || "").replace(/\.[a-z0-9]+$/i, "");
+  $("mapwhere").innerHTML =
+    `${esc(short(last, 26))}<small>${esc(note || short(parts.join(" › "), 34))}</small>`;
+}
+
+function light(path, how) {
+  const shelf = vault.shelves.get(isFile(path) ? parent(path) : path)
+    ?? vault.shelves.get(rootOf(path));
+  const book = isFile(path) ? spine(path) : null;
+  if (!shelf && !book) return;
+
+  if (how === "now" || how === "read") {
+    for (const s of vault.shelves.values()) s.classList.remove("now");
+    for (const b of vault.spines.values()) b.classList.remove("reading");
+    shelf?.classList.add("now", "seen");
+    if (how === "read" && book) book.classList.add("reading", "seen");
+    where(path);
+  }
+  if (how === "hit") {
+    shelf?.classList.add("seen");
+    book?.classList.add("hit", "seen");
+  }
+  vault.seen.add(path);
+  $("mapstat").textContent = `${vault.seen.size}곳 확인`;
+}
+
+function sweep() {
+  const stacks = $("shelves");
+  stacks.classList.remove("sweep");
+  void stacks.offsetWidth;
+  stacks.classList.add("sweep");
+  where("서고 전체", "훑는 중");
+  setTimeout(() => stacks.classList.remove("sweep"), 950);
+}
+
+/** Where a tool call went. An empty path means the whole vault, which is a sweep. */
+function follow(event) {
+  const to = (event.arguments || {}).path ?? (event.arguments || {}).folder ?? "";
+  if (event.tool === "tree" || !to) { sweep(); return; }
+  light(to, event.tool === "read" ? "read" : "now");
+}
+
+/** Which documents a search actually landed on -- the paths its own output names. */
+function landed(preview) {
+  const hits = String(preview || "")
+    .split("\n")
+    // A path, not any line that happens to end in a dot-something: grep prints the
+    // document path on its own line, and a folder is always in front of it.
+    .filter((line) => line && !line.startsWith(" ") && line.includes("/") && isFile(line.trim()))
+    .map((line) => line.trim());
+  for (const path of hits) light(path, "hit");
+  if (hits.length) where(`${hits.length}권 찾음`, "본문에서 일치");
+}
+
+function restMap() {
+  for (const s of vault.shelves.values()) s.classList.remove("now");
+  for (const b of vault.spines.values()) b.classList.remove("reading");
+  $("mapwhere").textContent = "";
+}
+
+function say(what) {
+  const line = Object.entries(what.arguments || {})
+    .filter(([, v]) => v !== "" && v !== null && v !== undefined)
+    .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+    .join("  ");
+  return `<b>${esc(TOOLS[what.tool] || what.tool)}</b>  <span class="mono">${esc(line)}</span>`;
+}
+
+// Enough Markdown for an answer, written out rather than pulled in: a CDN is not an
+// option here and the shapes a reply actually uses are few. Escaped first, always.
+function markdown(text) {
+  const rows = [];
+  let list = null, table = null, ruled = false;
+  // Half-typed emphasis is still emphasis. While a token stream is mid-word the
+  // closing ** has not arrived, and showing the asterisks until it does is the
+  // stutter this whole function exists to avoid.
+  const closed = (s) => {
+    let out = s;
+    if ((out.match(/\*\*/g) || []).length % 2) out += "**";
+    if ((out.match(/`/g) || []).length % 2) out += "`";
+    return out;
+  };
+  const inline = (s) =>
+    esc(closed(s))
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(?<![*\w])\*([^*\n]+)\*(?!\w)/g, "<em>$1</em>");
+  const shut = () => {
+    if (list) { rows.push(`<ul>${list.join("")}</ul>`); list = null; }
+    if (table) {
+      // A header row alone is not yet a table -- the |---|---| under it is what says
+      // so. Until that arrives it is still a line of text, and drawing a one-cell box
+      // in the meantime would flash a border on screen for a frame or two.
+      if (!ruled) {
+        for (const r of table) rows.push(`<p>${inline("| " + r.join(" | "))}</p>`);
+      } else {
+        const [head, ...body] = table;
+        rows.push(
+          `<table><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr>` +
+          body.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("") +
+          `</table>`
+        );
+      }
+      table = null;
+      ruled = false;
+    }
+  };
+  for (const raw of String(text).split("\n")) {
+    const line = raw.trimEnd();
+    const bar = line.trim();
+    const cells = bar.startsWith("|")
+      ? bar.replace(/\|$/, "").slice(1).split("|").map((c) => c.trim())
+      : null;
+    if (cells) {
+      if (cells.every((c) => /^:?-+:?$/.test(c))) { ruled = true; continue; }  // |---|---|
+      (table ||= []).push(cells);
+      continue;
+    }
+    if (table) shut();
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    if (heading) { shut(); rows.push(`<h3>${inline(heading[2])}</h3>`); }
+    else if (bullet) { (list ||= []).push(`<li>${inline(bullet[1])}</li>`); }
+    else if (/^\s*---+\s*$/.test(line)) { shut(); rows.push("<hr>"); }
+    else if (!line.trim()) { shut(); }
+    else { shut(); rows.push(`<p>${inline(line)}</p>`); }
+  }
+  shut();
+  return rows.join("") || "<p></p>";
+}
+
+function fresh(cls, html) {
+  const box = document.createElement("div");
+  box.className = cls;
+  box.innerHTML = html;
+  return box;
+}
+
+function money(usd) {
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  if (usd < 1) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
+function tokens(n) {
+  return n >= 10000 ? `${(n / 1000).toFixed(1)}k` : Number(n || 0).toLocaleString();
+}
+
+function answerSpend(s) {
+  if (!s || !s.calls) return "";
+  const total = (s.input_tokens || 0) + (s.output_tokens || 0);
+  const tokenPart = `${tokens(total)} 토큰 (입력 ${tokens(s.input_tokens)} · 출력 ${tokens(s.output_tokens)})`;
+  if (s.cost_usd == null) return `${tokenPart} · 비용 계산 불가`;
+  const floor = s.priced_calls < s.calls ? "+" : "";
+  return `${tokenPart} · ${money(s.cost_usd)}${floor}`;
+}
+
+async function ask(question) {
+  if (busy || !question.trim()) return;
+  busy = true;
+  $("send").disabled = true;
+  $("blank")?.remove();
+
+  const turn = fresh("turn", "");
+  turn.append(fresh("mine", esc(question)));
+  const work = document.createElement("details");
+  work.className = "work";
+  work.open = true;
+  work.innerHTML = `<summary class="spin">생각하는 중…</summary><div class="steps"></div>`;
+  const log = work.querySelector(".steps");
+  // Follow the newest line, the way a terminal does.
+  const note = (line) => { log.append(line); log.scrollTop = log.scrollHeight; };
+  turn.append(work);
+  const answer = fresh("theirs", "");
+  turn.append(answer);
+  const spend = fresh("answer-spend hidden", "");
+  turn.append(spend);
+  $("thread").append(turn);
+  turn.scrollIntoView({ block: "end", behavior: "smooth" });
+
+  let steps = 0, written = "";
+  /*
+    Rendered as it lands, all of it, once per frame.
+
+    Waiting for a block to be closed by a blank line worked for prose and failed for a
+    table, which is one block from its header to its last row: the whole thing stayed
+    as pipes and dashes until the final row landed, then snapped into a table. So parse
+    everything every time and let the parser finish what the model has not -- a row
+    without its closing pipe is a row, an unclosed ** is bold. This is what the parser
+    already did at the end of an answer; it just was not being asked mid-answer.
+
+    Whole-buffer parsing costs a pass over a few kilobytes, capped at one per frame,
+    and the deltas arrive far slower than a screen refreshes.
+  */
+  let painting = false;
+  const draw = () => {
+    painting = false;
+    answer.innerHTML = markdown(written);
+    turn.scrollIntoView({ block: "end" });
+  };
+  const paint = () => {
+    if (painting) return;
+    painting = true;
+    requestAnimationFrame(draw);
+  };
+  const clearAnswer = () => {
+    written = "";
+    answer.textContent = "";
+  };
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: question, conversation_id: conversation }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+
+    // Server-sent events, read by hand: one "data: {json}" per blank-line-terminated block.
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let cut;
+      while ((cut = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, cut).trim();
+        buffer = buffer.slice(cut + 2);
+        if (!block.startsWith("data:")) continue;
+        const event = JSON.parse(block.slice(5).trim());
+        if (event.type === "delta") {
+          written += event.text;
+          paint();
+        } else if (event.type === "tool_call") {
+          steps++;
+          follow(event);
+          // Prose before a tool call is the model saying what it is about to do. It
+          // belongs with the step it explains, not above the answer it is not.
+          if (written.trim()) {
+            note(fresh("step said", esc(written.trim())));
+            clearAnswer();
+          }
+          note(fresh("step", say(event)));
+          work.querySelector("summary").textContent = `서고를 찾는 중… (${steps})`;
+          work.querySelector("summary").className = "spin";
+        } else if (event.type === "tool_result") {
+          landed(event.preview);
+        } else if (event.type === "tool_error") {
+          note(fresh("step err", `${esc(event.tool)} 실패`));
+        } else if (event.type === "compact") {
+          // Say it plainly: the agent dropped older results to keep looking.
+          note(fresh("step said", "앞서 본 내용을 정리하고 계속 찾는 중"));
+        } else if (event.type === "stop" && event.reason === "budget") {
+          note(fresh("step said", "찾을 수 있는 만큼 찾았습니다. 지금까지 찾은 것으로 답합니다"));
+        } else if (event.type === "answer") {
+          conversation = event.conversation_id;
+          answer.innerHTML = markdown(event.text || written || "(빈 답변)");
+          spend.textContent = answerSpend(event.spend);
+          spend.classList.toggle("hidden", !spend.textContent);
+        } else if (event.type === "error") {
+          answer.innerHTML = `<span class="err">${esc(event.detail)}</span>`;
+        }
+      }
+    }
+  } catch (err) {
+    answer.innerHTML = `<span class="err">${esc(err.message)}</span>`;
+  } finally {
+    restMap();
+    const summary = work.querySelector("summary");
+    summary.className = "";
+    summary.textContent = steps ? `서고에서 ${steps}번 찾아봤습니다` : "찾아본 것 없음";
+    work.open = false;
+    if (!steps) work.remove();
+    busy = false;
+    $("send").disabled = false;
+    $("q").focus();
+    turn.scrollIntoView({ block: "end", behavior: "smooth" });
+  }
+}
+
+function send() {
+  const question = $("q").value;
+  $("q").value = "";
+  $("q").style.height = "auto";
+  ask(question);
+}
+
+$("send").addEventListener("click", send);
+$("q").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+$("q").addEventListener("input", () => {
+  $("q").style.height = "auto";
+  $("q").style.height = Math.min($("q").scrollHeight, window.innerHeight * 0.4) + "px";
+});
+document.addEventListener("click", (e) => {
+  if (e.target.classList.contains("seed")) ask(e.target.textContent);
+});
+$("reset").addEventListener("click", async () => {
+  if (conversation) await fetch(`/api/chat/${conversation}`, { method: "DELETE" }).catch(() => {});
+  conversation = null;
+  location.reload();
+});
+
+/* ---------------- which model answers ----------------
+
+   The vault settles what files documents. This settles what answers questions, and it
+   is a whole configuration rather than a name: another provider, another server,
+   another key. They are different jobs and nothing about one is evidence about the
+   other -- a local model can file a vault a hosted one answers about.
+*/
+
+let config = null;
+const SAME = "__same__";   // "wherever the filing model is", and the default
+
+const shutModal = () => $("modal").classList.add("hidden");
+$("m-close").addEventListener("click", shutModal);
+$("modal").addEventListener("click", (e) => { if (e.target.id === "modal") shutModal(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("modal").classList.contains("hidden")) shutModal();
+});
+
+const chosenProvider = () => {
+  const picked = document.querySelector("input[name=m-provider]:checked");
+  return picked ? picked.value : SAME;
+};
+const providerBy = (id) => (config.providers || []).find((p) => p.id === id) || null;
+
+/** The same two-step flow as the filing-model settings: connection, then model. */
+function chatStep(picking) {
+  $("m-pick").classList.toggle("hidden", !picking);
+  $("m-check").classList.toggle("hidden", picking);
+  $("m-save").classList.toggle("hidden", !picking);
+  $("m-cancel").classList.toggle("hidden", !picking);
+}
+
+function headerRow(name = "", value = "") {
+  const row = document.createElement("div");
+  row.className = "hrow";
+  row.innerHTML = '<input class="h-name" spellcheck="false" autocomplete="off" placeholder="Cookie">'
+    + '<input class="h-value" spellcheck="false" autocomplete="off" placeholder="session=…">'
+    + '<button type="button" class="h-del small" title="이 헤더 지우기">✕</button>';
+  row.querySelector(".h-name").value = name;
+  row.querySelector(".h-value").value = value;
+  row.querySelector(".h-del").addEventListener("click", () => {
+    row.remove();
+    if (!$("m-headers-rows").children.length) $("m-headers-rows").append(headerRow());
+  });
+  // A whole header line pasted into the name box splits itself: that is what is on the
+  // clipboard when someone comes from a browser's network tab.
+  row.querySelector(".h-name").addEventListener("paste", (e) => {
+    const text = (e.clipboardData || window.clipboardData).getData("text");
+    const at = text.indexOf(":");
+    if (at < 1) return;
+    e.preventDefault();
+    row.querySelector(".h-name").value = text.slice(0, at).trim();
+    row.querySelector(".h-value").value = text.slice(at + 1).trim();
+  });
+  return row;
+}
+
+function drawHeaders(headers) {
+  const box = $("m-headers-rows");
+  box.innerHTML = "";
+  for (const [name, value] of Object.entries(headers || {})) box.append(headerRow(name, value));
+  if (!box.children.length) box.append(headerRow());
+}
+
+const collectHeaders = () => {
+  const out = {};
+  for (const row of $("m-headers-rows").querySelectorAll(".hrow")) {
+    const name = row.querySelector(".h-name").value.trim();
+    const value = row.querySelector(".h-value").value.trim();
+    if (name && value) out[name] = value;
+  }
+  return out;
+};
+
+function collectBody() {
+  const text = $("m-body").value.trim();
+  if (!text) return {};
+  const parsed = JSON.parse(text);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("JSON 객체여야 합니다.");
+  }
+  return parsed;
+}
+
+function bodyIsValid() {
+  const box = $("m-body-error");
+  try {
+    collectBody();
+    box.classList.add("hidden");
+    return true;
+  } catch (err) {
+    box.textContent = "요청 본문 추가값을 읽을 수 없습니다 — " + err.message;
+    box.classList.remove("hidden");
+    return false;
+  }
+}
+
+function modalErr(message) {
+  $("m-error").textContent = message;
+  $("m-error").classList.toggle("hidden", !message);
+}
+
+/** Which half of the panel is showing, and whose models the list may name. */
+function onChatProvider() {
+  const id = chosenProvider();
+  document.querySelectorAll("#m-providers .choice")
+    .forEach((c) => c.classList.toggle("on", c.querySelector("input").checked));
+  const own = id === SAME ? null : providerBy(id);
+  $("m-own").classList.toggle("hidden", !own);
+  $("m-hint").textContent = own
+    ? (own.hint || "")
+    : "정리 모델의 서버·키·고급 설정을 그대로 씁니다. 모델 이름만 다르게 고를 수도 있습니다.";
+  modalErr("");
+  chatStep(false);
+  const saved = own ? own.id === config.chat_provider_id : !config.chat_provider_id;
+  $("m-api-mode").value = saved ? (config.chat_api_mode || "auto") : "auto";
+  $("m-reasoning-effort").value = saved
+    ? (config.chat_reasoning_effort || "auto") : "auto";
+  explainRuntime();
+  if (!own) return;
+
+  $("m-key-label").textContent = own.needs_key
+    ? (own.key_label || "API 키")
+    : (own.key_label || "API 키") + " — 선택";
+  $("m-key").value = "";
+  $("m-key").placeholder = saved && config.chat_api_key_tail
+    ? "저장된 키 " + config.chat_api_key_tail + " — 그대로 쓰려면 비워 두세요"
+    : (own.needs_key ? "여기에 붙여넣으세요" : "키를 요구하는 서버라면 여기에");
+  $("m-base-field").classList.toggle("hidden", !own.needs_api_base);
+  $("m-base").value = (saved && config.chat_api_base) || own.default_api_base || "";
+  $("m-advanced").classList.toggle("hidden", own.id !== "custom");
+  drawHeaders(saved ? config.chat_api_headers : {});
+  $("m-body").value = saved && Object.keys(config.chat_api_body || {}).length
+    ? JSON.stringify(config.chat_api_body, null, 2) : "";
+  $("m-body-error").classList.add("hidden");
+}
+
+function explainRuntime() {
+  const id = chosenProvider();
+  const providerId = id === SAME ? config.provider_id : id;
+  const model = $("m-model").value.trim() || (id === SAME ? config.model : "");
+  const mode = $("m-api-mode").value;
+  const chatCompletionsForcesNone = providerId === "openai"
+    && model.startsWith("gpt-5.6") && mode === "chat_completions";
+  $("m-reasoning-effort").disabled = chatCompletionsForcesNone;
+  if (chatCompletionsForcesNone) $("m-reasoning-effort").value = "none";
+  let text = "자동은 프로바이더와 모델에 맞는 방식을 고릅니다.";
+  if (mode === "responses") text = "Responses API로 호출합니다.";
+  if (mode === "chat_completions") text = "Chat Completions로 호출합니다.";
+  if (providerId === "openai" && model.startsWith("gpt-5.6") && mode === "auto") {
+    text = "도구를 사용하는 GPT-5.6 답변은 Responses API와 low 추론으로 자동 호출합니다.";
+  }
+  if (chatCompletionsForcesNone) {
+    text += " 함수 도구 호환을 위해 추론 강도는 없음으로 적용됩니다.";
+  }
+  $("m-runtime-hint").textContent = text;
+}
+
+$("m-model").addEventListener("input", explainRuntime);
+$("m-api-mode").addEventListener("change", explainRuntime);
+$("m-reasoning-effort").addEventListener("change", explainRuntime);
+
+/** Ask the endpoint what it serves. A server that will not say still answers. */
+async function fillModels() {
+  const id = chosenProvider();
+  const own = id === SAME ? null : providerBy(id);
+  const saved = own ? own.id === config.chat_provider_id : !config.chat_provider_id;
+  const ask = own
+    ? { provider_id: own.id, api_base: $("m-base").value.trim() || own.default_api_base,
+        api_key: $("m-key").value.trim(), api_headers: collectHeaders(),
+        reuse_saved_key: saved, for_chat: true }
+    : { provider_id: config.provider_id, api_base: config.api_base,
+        api_headers: config.api_headers, reuse_saved_key: true };
+  $("m-note").textContent = "모델 목록을 받는 중…";
+  try {
+    const r = await fetch("/api/setup/check", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ask),
+    }).then((x) => x.json());
+    $("m-list").innerHTML = (r.models || []).map((m) => '<option value="' + esc(m) + '">').join("");
+    if (!r.ok) { modalErr(r.error || "모델 제공자에 연결할 수 없습니다."); return false; }
+    $("m-model").value = (saved && (config.chat_model || config.model)) || r.suggested_model || "";
+    explainRuntime();
+    $("m-note").textContent = r.models && r.models.length
+      ? "쓸 수 있는 모델 " + r.models.length + "개. 무난한 모델을 골라 뒀으니 원하면 바꾸세요."
+      : "모델 목록을 받지 못했습니다" + (r.error ? " (" + r.error + ")" : "") + " — 이름을 직접 적어 주세요.";
+    return true;
+  } catch (err) { modalErr(err.message); return false; }
+}
+
+$("m-headers-add").addEventListener("click", () => $("m-headers-rows").append(headerRow()));
+
+$("m-check").addEventListener("click", async () => {
+  if (chosenProvider() !== SAME && !bodyIsValid()) return;
+  const btn = $("m-check"); btn.disabled = true;
+  btn.textContent = "프로바이더에 물어보는 중…";
+  modalErr("");
+  try {
+    if (await fillModels()) chatStep(true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "다음";
+  }
+});
+
+$("m-cancel").addEventListener("click", () => chatStep(false));
+
+$("btn-model").addEventListener("click", async () => {
+  $("modal").classList.remove("hidden");
+  modalErr("");
+  try {
+    config = await fetch("/api/setup").then((r) => r.json());
+  } catch (err) { modalErr(err.message); return; }
+
+  $("m-filing").textContent =
+    "문서를 읽고 폴더를 나누는 모델은 " + config.model + " 입니다. 답은 다른 모델이 해도 됩니다.";
+  const here = config.chat_provider_id || SAME;
+  const options = [{ id: SAME, label: "정리 모델 설정 그대로" }].concat(config.providers || []);
+  $("m-providers").innerHTML = options.map((p) =>
+    '<label class="choice' + (p.id === here ? " on" : "") + '">'
+    + '<input type="radio" name="m-provider" value="' + esc(p.id) + '"'
+    + (p.id === here ? " checked" : "") + '>'
+    + "<span>" + esc(p.label) + "</span></label>").join("");
+  document.querySelectorAll("input[name=m-provider]")
+    .forEach((r) => r.addEventListener("change", onChatProvider));
+
+  $("m-model").value = "";
+  $("m-model").placeholder = "비워 두면 " + config.model;
+  onChatProvider();
+});
+
+$("m-save").addEventListener("click", async () => {
+  const btn = $("m-save");
+  const id = chosenProvider();
+  let body;
+  if (id !== SAME && !bodyIsValid()) return;
+  body = id === SAME ? {} : collectBody();
+  const model = $("m-model").value.trim();
+  if (id !== SAME && !model) { modalErr("모델 이름을 적어 주세요."); return; }
+  btn.disabled = true;
+  modalErr("");
+  try {
+    const payload = id === SAME
+      ? { model, api_mode: $("m-api-mode").value,
+          reasoning_effort: $("m-reasoning-effort").value }
+      : { provider_id: id, model,
+          api_key: $("m-key").value.trim(), reuse_saved_key: id === config.chat_provider_id,
+          api_base: $("m-base").value.trim() || null,
+          api_headers: collectHeaders(), api_body: body,
+          api_mode: $("m-api-mode").value,
+          reasoning_effort: $("m-reasoning-effort").value };
+    const r = await fetch("/api/setup/chat", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    config = await r.json();
+    shutModal();
+    const answeringName = config.chat_model || config.model;
+    said(config.chat_is_separate
+      ? "이제 " + answeringName + " 가 답합니다. 정리는 " + config.model + " 가 계속합니다."
+      : "이제 " + config.model + " 가 답합니다.");
+  } catch (err) { modalErr(err.message); } finally { btn.disabled = false; }
+});
+
+/** A line in the thread, from the app rather than from the librarian. */
+function said(text) {
+  const turn = fresh("turn", "");
+  turn.append(fresh("step said", esc(text)));
+  $("thread").append(turn);
+  turn.scrollIntoView({ block: "end", behavior: "smooth" });
+}
+
+buildMap();
+fetch("/api/status").then((r) => r.json()).then((s) => {
+  $("stat").textContent = `문서 ${s.documents}건 · 폴더 ${s.folders}개`;
+}).catch(() => {});
+$("q").focus();
+</script>
+</body>
+</html>

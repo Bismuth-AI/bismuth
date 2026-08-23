@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from agentkit import AssistantMessage
 from fastapi.testclient import TestClient
 
+from bismuth.adapters.llm.fake import FakeLLM
+from bismuth.api.app import create_app
 from bismuth.config import Settings
+from bismuth.container import build
+from bismuth.ports.llm import CURRENT_USAGE, Usage
+
+from .conftest import seed_folder
 
 
 class TestIndex:
@@ -102,6 +110,201 @@ class TestUpload:
         )
         root = client.app.state.engine.vault.root  # type: ignore[attr-defined]
         assert not (root.parent.parent / "evil.txt").exists()
+
+
+class TestAcceptedUploads:
+    """Only PDF for now: the other parsers are registered but not yet trusted end to end."""
+
+    @pytest.fixture
+    def strict(self, settings: Settings, llm: FakeLLM) -> Iterator[TestClient]:
+        app = create_app(settings)  # the product's own list, not the fixture's wider one
+        engine = build(settings, llm=llm)
+        seed_folder(Path(engine.vault.root))
+        app.state.engine = engine
+        with TestClient(app) as test_client:
+            yield test_client
+
+    def test_a_text_file_is_refused(self, strict: TestClient) -> None:
+        r = strict.post(
+            "/api/documents",
+            files={"files": ("contract.txt", "아폴로 계약서".encode(), "text/plain")},
+        )
+
+        assert r.status_code == 400
+        assert ".txt" in r.json()["detail"]
+
+    def test_the_refusal_names_every_kind_it_turned_away(self, strict: TestClient) -> None:
+        r = strict.post(
+            "/api/batches",
+            files=[
+                ("files", ("a.docx", b"x", "application/octet-stream")),
+                ("files", ("b.hwpx", b"x", "application/octet-stream")),
+            ],
+        )
+
+        assert r.status_code == 400
+        assert ".docx" in r.json()["detail"] and ".hwpx" in r.json()["detail"]
+
+    def test_nothing_is_staged_when_a_batch_is_refused(self, strict: TestClient) -> None:
+        engine = strict.app.state.engine  # type: ignore[attr-defined]
+
+        strict.post("/api/batches", files={"files": ("a.txt", b"x", "text/plain")})
+
+        assert not list((Path(engine.vault.root) / "_inbox").glob("*"))
+
+    def test_a_pdf_gets_past_the_gate(self, strict: TestClient) -> None:
+        r = strict.post(
+            "/api/documents", files={"files": ("paper.pdf", b"not really a pdf", "application/pdf")}
+        )
+
+        # The gate is about the name; what the bytes turn out to be is the parser's business.
+        assert r.status_code == 200
+        assert r.json()[0]["ok"] is False
+
+
+class TestAnsweringSide:
+    """서고에 묻기 owns which model answers -- provider, server and key included."""
+
+    def _configured(self, client: TestClient) -> None:
+        client.post(
+            "/api/setup",
+            json={
+                "provider_id": "custom",
+                "api_base": "http://filing/v1",
+                "api_key": "key-filing",
+                "model": "filing-model",
+                "vault_path": str(client.app.state.engine.vault.root),  # type: ignore[attr-defined]
+            },
+        )
+
+    def test_a_second_model_on_the_same_server(self, client: TestClient) -> None:
+        self._configured(client)
+
+        r = client.post("/api/setup/chat", json={"model": "answering-model"})
+
+        assert r.status_code == 200
+        assert r.json()["chat_model"] == "answering-model"
+        assert r.json()["chat_provider_id"] == ""
+        assert r.json()["chat_is_separate"] is True
+
+    def test_the_same_name_is_not_a_second_model(self, client: TestClient) -> None:
+        """Otherwise the two drift apart the next time the filing model is changed."""
+        self._configured(client)
+
+        r = client.post("/api/setup/chat", json={"model": "filing-model"})
+
+        assert r.json()["chat_model"] == ""
+        assert r.json()["chat_is_separate"] is False
+
+    def test_another_provider_entirely(self, client: TestClient) -> None:
+        self._configured(client)
+
+        r = client.post(
+            "/api/setup/chat",
+            json={"provider_id": "anthropic", "model": "claude-x", "api_key": "key-answering"},
+        )
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["chat_provider_id"] == "anthropic"
+        assert body["chat_api_key_tail"].endswith("ring")
+        # and the filing side is exactly as it was
+        assert body["provider_id"] == "custom"
+        assert body["model"] == "filing-model"
+        assert body["api_key_tail"].endswith("ling")
+
+    def test_a_provider_that_needs_a_key_is_refused_without_one(self, client: TestClient) -> None:
+        self._configured(client)
+
+        r = client.post("/api/setup/chat", json={"provider_id": "anthropic", "model": "claude-x"})
+
+        assert r.status_code == 400
+        assert "키" in r.json()["detail"]
+
+    def test_an_unknown_provider_is_refused(self, client: TestClient) -> None:
+        self._configured(client)
+
+        r = client.post("/api/setup/chat", json={"provider_id": "nowhere", "model": "x"})
+
+        assert r.status_code == 400
+
+    def test_the_engine_answers_from_the_new_model_afterwards(self, client: TestClient) -> None:
+        """The point of the endpoint: the running engine is rebuilt, not just the file."""
+        self._configured(client)
+
+        client.post("/api/setup/chat", json={"model": "answering-model"})
+
+        settings = client.app.state.settings  # type: ignore[attr-defined]
+        assert settings.chat().model.endswith("answering-model")
+        assert settings.librarian().model.endswith("filing-model")
+
+    def test_model_runtime_settings_are_saved_and_applied(self, client: TestClient) -> None:
+        self._configured(client)
+
+        r = client.post(
+            "/api/setup/chat",
+            json={
+                "provider_id": "openai",
+                "model": "gpt-5.6-luna",
+                "api_key": "sk-answering",
+                "api_mode": "responses",
+                "reasoning_effort": "high",
+            },
+        )
+
+        assert r.status_code == 200
+        assert r.json()["chat_api_mode"] == "responses"
+        assert r.json()["chat_reasoning_effort"] == "high"
+        settings = client.app.state.settings  # type: ignore[attr-defined]
+        endpoint = settings.chat().for_workload(uses_tools=True)
+        assert endpoint.model == "openai/responses/gpt-5.6-luna"
+        assert endpoint.body["reasoning_effort"] == "high"
+
+
+class TestChatSpend:
+    def test_the_final_stream_event_reports_this_answers_tokens_and_cost(
+        self, settings: Settings, llm: FakeLLM
+    ) -> None:
+        class MeteredModel:
+            def __init__(self) -> None:
+                self._usage: list[Usage] = []
+
+            async def complete(self, **_: object) -> AssistantMessage:
+                usage = Usage(
+                    model="test/chat",
+                    input_tokens=1200,
+                    output_tokens=345,
+                    cost_usd=0.0123,
+                )
+                self._usage.append(usage)
+                captured = CURRENT_USAGE.get()
+                if captured is not None:
+                    captured.append(usage)
+                return AssistantMessage(text="근거 있는 답변")
+
+            def drain_usage(self) -> list[Usage]:
+                drained, self._usage = self._usage, []
+                return drained
+
+        app = create_app(settings)
+        app.state.engine = build(settings, llm=llm, chat_model=MeteredModel())
+        with TestClient(app) as test_client:
+            response = test_client.post("/api/chat", json={"message": "질문"})
+
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        answer = next(event for event in events if event["type"] == "answer")
+        assert answer["spend"] == {
+            "calls": 1,
+            "input_tokens": 1200,
+            "output_tokens": 345,
+            "retries": 0,
+            "cost_usd": 0.0123,
+            "priced_calls": 1,
+        }
 
 
 class TestFolder:

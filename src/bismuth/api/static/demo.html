@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bismuth · 300개 문서 정리</title>
+<link rel="icon" href="/favicon.png" type="image/png">
+<style>
+:root {
+  --bg: #f7f5f2; --panel: #fff; --line: #e5e0da; --ink: #1e1b18; --dim: #746d66;
+  --accent: #8b6f47; --accent-deep: #735a39; --accent-soft: #f0ebe3; --ok: #3f7d58;
+  --shadow: 0 18px 55px rgba(62, 46, 28, .08); --radius: 12px;
+}
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; }
+body {
+  margin: 0; overflow: hidden; background: var(--bg); color: var(--ink);
+  font: 15px/1.55 "Pretendard", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  word-break: keep-all;
+}
+button { font: inherit; }
+.app { height: 100%; display: flex; flex-direction: column; }
+header {
+  height: 66px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 24px;
+  background: rgba(255,255,255,.94); border-bottom: 1px solid var(--line); z-index: 10;
+}
+.brand { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 720; letter-spacing: -.02em; }
+.brand img { width: 26px; height: 26px; }
+.spacer { flex: 1; }
+.stats { display: flex; align-items: center; gap: 18px; color: var(--dim); font-size: 13px; font-variant-numeric: tabular-nums; }
+.stats strong { color: var(--ink); font-size: 14px; }
+.ask { border: 0; border-radius: 8px; padding: 8px 15px; background: var(--accent); color: #fff; font-size: 13px; font-weight: 650; }
+.replay { border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; background: var(--panel); color: var(--dim); cursor: pointer; }
+.workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: 320px 1fr; }
+aside { min-height: 0; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); }
+.drop {
+  position: relative; margin: 15px; min-height: 95px; display: grid; place-items: center; text-align: center;
+  border: 1.5px dashed #d5cec5; border-radius: 11px; color: var(--dim); background: #fcfbfa; overflow: hidden;
+  transition: .28s ease;
+}
+.drop.active { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); transform: scale(1.015); }
+.drop.done { min-height: 58px; border-style: solid; border-color: #dce9e0; background: #f4faf6; color: var(--ok); }
+.drop-copy { position: relative; z-index: 2; }
+.drop-copy strong { display: block; color: var(--ink); font-size: 14px; margin-bottom: 1px; }
+.drop.done .drop-copy strong { display: inline; color: var(--ok); margin-right: 5px; }
+.drop-glow { position: absolute; inset: -70%; background: radial-gradient(circle, rgba(139,111,71,.16), transparent 55%); opacity: 0; transition: .3s; }
+.drop.active .drop-glow { opacity: 1; animation: breathe 1s ease-in-out infinite alternate; }
+.tree-head { display: flex; align-items: center; padding: 2px 17px 8px; color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.tree-head span:last-child { margin-left: auto; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.tree { flex: 1; overflow: hidden; padding: 0 9px 12px; }
+.tree-empty { padding: 36px 18px; text-align: center; color: #a19a93; font-size: 13px; }
+.node {
+  height: 34px; display: flex; align-items: center; gap: 7px; padding: 0 9px; border-radius: 7px;
+  opacity: 0; transform: translateX(-8px); transition: opacity .3s ease, transform .3s ease, background .2s;
+}
+.node.show { opacity: 1; transform: translateX(0); }
+.node.on { background: var(--accent-soft); color: var(--accent-deep); }
+.node.child { height: 0; padding-left: 32px; color: var(--dim); font-size: 12px; overflow: hidden; }
+.node.child.show { height: 27px; }
+.node.child .folder { font-size: 13px; color: #c4a77c; }
+.node.open .twist { transform: rotate(90deg); }
+.twist { width: 10px; color: #aaa29a; font-size: 10px; }
+.folder { color: #b18a53; font-size: 17px; line-height: 1; }
+.node-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-count { margin-left: auto; color: #918981; font-size: 11px; font-variant-numeric: tabular-nums; }
+main { min-width: 0; overflow: hidden; padding: 30px 34px; position: relative; }
+.empty-state { height: 100%; display: grid; place-items: center; transition: opacity .35s ease, transform .35s ease; }
+.empty-state.hide { opacity: 0; transform: translateY(-8px); pointer-events: none; }
+.empty-card { width: 420px; text-align: center; color: var(--dim); }
+.empty-icon { width: 70px; height: 58px; margin: 0 auto 19px; position: relative; border: 2px solid #d8d1c9; border-radius: 7px; background: rgba(255,255,255,.6); }
+.empty-icon:before { content: ""; position: absolute; width: 27px; height: 9px; left: 7px; top: -10px; border: 2px solid #d8d1c9; border-bottom: 0; border-radius: 6px 6px 0 0; background: var(--bg); }
+.empty-card h2 { margin: 0 0 7px; color: var(--ink); font-size: 22px; letter-spacing: -.02em; }
+.empty-card p { margin: 0; }
+.content { position: absolute; inset: 30px 34px; opacity: 0; transform: translateY(9px); pointer-events: none; transition: .4s ease; }
+.content.show { opacity: 1; transform: translateY(0); }
+.crumb { color: var(--dim); font-size: 12px; margin-bottom: 5px; }
+.title-row { display: flex; align-items: end; gap: 12px; }
+.title-row h2 { margin: 0; font-size: 25px; letter-spacing: -.035em; }
+.building { display: flex; align-items: center; gap: 6px; color: var(--accent); font-size: 12px; margin-bottom: 3px; }
+.pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1s ease infinite; }
+.summary { margin: 18px 0 20px; padding: 14px 16px; display: flex; align-items: center; gap: 12px; border-radius: 10px; background: var(--accent-soft); color: var(--dim); font-size: 13px; }
+.summary strong { color: var(--ink); }
+.summary .check { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: var(--panel); color: var(--ok); font-weight: 800; }
+.section-label { color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 9px; }
+.folder-grid { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 11px; }
+.folder-card {
+  height: 104px; padding: 14px 15px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel);
+  opacity: 0; transform: translateY(10px) scale(.985); transition: .35s cubic-bezier(.2,.8,.2,1); box-shadow: 0 1px 0 rgba(0,0,0,.01);
+}
+.folder-card.show { opacity: 1; transform: translateY(0) scale(1); }
+.folder-card.focus { border-color: #c4ad8c; box-shadow: 0 8px 26px rgba(91,66,35,.09); }
+.card-top { display: flex; align-items: center; gap: 8px; }
+.folder-card .folder { font-size: 19px; }
+.folder-card h3 { flex: 1; margin: 0; font-size: 14px; letter-spacing: -.01em; }
+.folder-card b { font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.subfolders { margin-top: 10px; display: flex; gap: 5px; flex-wrap: wrap; }
+.subfolders span { padding: 2px 7px; border-radius: 99px; background: #f6f3ef; color: var(--dim); font-size: 10.5px; opacity: 0; transform: translateY(4px); transition: .32s ease; }
+.subfolders span.show { opacity: 1; transform: translateY(0); }
+.upload-panel {
+  position: fixed; z-index: 30; right: 22px; bottom: 22px; width: 360px; padding: 15px 16px;
+  background: rgba(255,255,255,.97); border: 1px solid var(--line); border-radius: 13px; box-shadow: var(--shadow);
+  opacity: 0; transform: translateY(18px); pointer-events: none; transition: .35s ease;
+}
+.upload-panel.show { opacity: 1; transform: translateY(0); }
+.upload-panel.finish { border-color: #cfe1d4; }
+.upload-top { display: flex; align-items: baseline; gap: 8px; }
+.upload-title { font-weight: 720; }
+.upload-count { margin-left: auto; color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+.progress { height: 5px; margin: 11px 0 9px; border-radius: 99px; background: #eeeae5; overflow: hidden; }
+.progress i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .08s linear; }
+.finish .progress i { background: var(--ok); }
+.current { overflow: hidden; color: var(--dim); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.files-stream { position: fixed; z-index: 25; left: 50%; top: 31%; width: 500px; transform: translateX(-50%); pointer-events: none; }
+.flying-file { position: absolute; left: 50%; top: 0; display: flex; align-items: center; gap: 7px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); box-shadow: 0 7px 24px rgba(61,45,29,.10); color: var(--dim); font-size: 11px; opacity: 0; animation: fly 1.1s ease forwards; }
+.flying-file:before { content: "PDF"; color: #a14a3e; font-size: 8px; font-weight: 800; }
+.toast { position: fixed; z-index: 40; left: 50%; bottom: 28px; transform: translate(-50%,20px); padding: 10px 17px; border-radius: 99px; background: #2c2926; color: white; font-size: 13px; box-shadow: 0 9px 30px rgba(0,0,0,.2); opacity: 0; transition: .35s ease; }
+.toast.show { opacity: 1; transform: translate(-50%,0); }
+@keyframes pulse { 50% { opacity: .35; transform: scale(.75); } }
+@keyframes breathe { to { transform: scale(.72); } }
+@keyframes fly { 0% { opacity: 0; transform: translate(-50%,34px) scale(.96); } 18% { opacity: 1; } 100% { opacity: 0; transform: translate(-68%, -145px) scale(.84); } }
+.capture-mode *, .capture-mode *::before, .capture-mode *::after { animation: none !important; transition: none !important; }
+@media (max-width: 980px) {
+  header { height: 58px; padding: 0 16px; gap: 10px; }
+  .brand { font-size: 17px; } .brand img { width: 23px; height: 23px; }
+  .workspace { grid-template-columns: 250px 1fr; }
+  .drop { margin: 11px; min-height: 76px; } .drop.done { min-height: 48px; }
+  main { padding: 18px 22px; } .content { inset: 18px 22px; }
+  .title-row h2 { font-size: 22px; }
+  .summary { margin: 10px 0 12px; padding: 10px 12px; }
+  .section-label { margin-bottom: 6px; }
+  .folder-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .folder-card { height: 82px; padding: 10px 12px; }
+  .subfolders { margin-top: 6px; gap: 3px; }
+  .subfolders span { padding: 1px 5px; font-size: 9.5px; }
+  .upload-panel { width: 315px; right: 16px; bottom: 16px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand"><img src="/favicon.png" alt="">Bismuth</div>
+    <div class="spacer"></div>
+    <div class="stats"><span><strong id="doc-count">0</strong> 문서</span><span><strong id="folder-count">0</strong> 폴더</span></div>
+    <button class="ask">서고에 묻기</button>
+    <button class="replay" id="replay">다시 보기</button>
+  </header>
+  <div class="workspace">
+    <aside>
+      <div class="drop" id="drop"><div class="drop-glow"></div><div class="drop-copy" id="drop-copy"><strong>파일 올리기</strong>끌어다 놓거나 눌러서 고르기</div></div>
+      <div class="tree-head"><span>폴더</span><span id="tree-status"></span></div>
+      <div class="tree" id="tree"><div class="tree-empty" id="tree-empty">아직 만들어진 폴더가 없습니다</div></div>
+    </aside>
+    <main>
+      <div class="empty-state" id="empty-state"><div class="empty-card"><div class="empty-icon"></div><h2>비어 있는 서고</h2><p>파일을 올리면 내용을 읽고<br>알맞은 폴더 구조를 만들어 정리합니다.</p></div></div>
+      <div class="content" id="content">
+        <div class="crumb">내 서고</div>
+        <div class="title-row"><h2>모든 문서</h2><div class="building" id="building"><span class="pulse"></span><span id="building-text">폴더 구조 만드는 중</span></div></div>
+        <div class="summary"><span class="check" id="summary-icon">↗</span><span id="summary-text"><strong>300개 문서</strong>의 주제와 관계를 살펴보고 있습니다.</span></div>
+        <div class="section-label">추천 폴더 구조</div>
+        <div class="folder-grid" id="folder-grid"></div>
+      </div>
+    </main>
+  </div>
+</div>
+<div class="files-stream" id="files-stream"></div>
+<div class="upload-panel" id="upload-panel">
+  <div class="upload-top"><span class="upload-title" id="upload-title">파일 가져오는 중</span><span class="upload-count" id="upload-count">0 / 300</span></div>
+  <div class="progress"><i id="progress-bar"></i></div>
+  <div class="current" id="current-file">300개 파일을 준비하고 있습니다…</div>
+</div>
+<div class="toast" id="toast">✓ 300개 문서 정리가 끝났습니다</div>
+<script>
+const folders = [
+  {name:"계약 및 법무", count:52, subs:[{name:"계약서",count:31},{name:"규정·정책",count:21}]},
+  {name:"재무 및 회계", count:61, subs:[{name:"세금계산서",count:24},{name:"예산·결산",count:20},{name:"지출 증빙",count:17}]},
+  {name:"사업 및 전략", count:48, subs:[{name:"사업계획",count:19},{name:"시장조사·제안서",count:29}]},
+  {name:"연구 및 기술", count:55, subs:[{name:"기술문서",count:23},{name:"연구자료",count:18},{name:"특허",count:14}]},
+  {name:"인사 및 운영", count:44, subs:[{name:"인사",count:18},{name:"운영·교육",count:26}]},
+  {name:"고객 및 프로젝트", count:40, subs:[{name:"고객 자료",count:17},{name:"진행 프로젝트",count:15},{name:"완료 프로젝트",count:8}]}
+];
+const TIMING={uploadStart:4000,uploadDuration:12000,structureStart:18000,folderBlock:5200,complete:50000,end:60000};
+const fileNames = ["2026_사업계획서.pdf","서비스_이용계약서.pdf","2분기_시장조사.pdf","연구개발_결과보고서.pdf","고객사_제안서.pdf","법인카드_지출내역.pdf","신규입사자_안내.pdf","특허출원_검토자료.pdf"];
+const $ = id => document.getElementById(id);
+let runId = 0, timers = [];
+function later(fn, ms) { const id = setTimeout(fn, ms); timers.push(id); return id; }
+function setText(id, text) { $(id).textContent = text; }
+function tween(from, to, duration, update, done) {
+  const token = runId, start = performance.now();
+  function frame(now) {
+    if (token !== runId) return;
+    const p = Math.min(1, (now-start)/duration), eased = 1-Math.pow(1-p,3);
+    update(Math.round(from+(to-from)*eased), p);
+    if (p < 1) requestAnimationFrame(frame); else if (done) done();
+  }
+  requestAnimationFrame(frame);
+}
+function buildMarkup() {
+  $("folder-grid").innerHTML = folders.map((f,i) => `<article class="folder-card" data-i="${i}"><div class="card-top"><span class="folder">▰</span><h3>${f.name}</h3><b>0</b></div><div class="subfolders">${f.subs.map((s,j)=>`<span data-sub="${j}">${s.name} ${s.count}</span>`).join("")}</div></article>`).join("");
+  $("tree").innerHTML = `<div class="tree-empty" id="tree-empty">아직 만들어진 폴더가 없습니다</div>` + folders.map((f,i) => `<div class="node parent" data-i="${i}"><span class="twist">›</span><span class="folder">▰</span><span class="node-name">${f.name}</span><span class="node-count">0</span></div>${f.subs.map((s,j)=>`<div class="node child" data-parent="${i}" data-sub="${j}"><span class="twist"></span><span class="folder">▰</span><span class="node-name">${s.name}</span><span class="node-count">${s.count}</span></div>`).join("")}`).join("");
+}
+function resetDemo() {
+  runId++; timers.forEach(clearTimeout); timers=[]; buildMarkup(); document.body.classList.remove("capture-mode");
+  document.body.dataset.phase="empty";
+  $("drop").className="drop"; $("drop-copy").innerHTML="<strong>파일 올리기</strong>끌어다 놓거나 눌러서 고르기";
+  $("empty-state").className="empty-state"; $("content").className="content";
+  $("upload-panel").className="upload-panel"; $("toast").className="toast";
+  setText("doc-count","0"); setText("folder-count","0"); setText("tree-status","");
+  setText("upload-count","0 / 300"); setText("upload-title","파일 가져오는 중"); setText("current-file","300개 파일을 준비하고 있습니다…");
+  $("progress-bar").style.width="0%"; setText("building-text","폴더 구조 만드는 중");
+  $("building").style.color=""; $("building").querySelector(".pulse").style.display="";
+  $("summary-icon").textContent="↗"; $("summary-text").innerHTML="<strong>300개 문서</strong>의 주제와 관계를 살펴보고 있습니다.";
+  $("files-stream").innerHTML="";
+}
+function flyingFile(i) {
+  const el=document.createElement("div"); el.className="flying-file"; el.textContent=fileNames[i%fileNames.length];
+  el.style.marginLeft=((i%5)-2)*36+"px"; $("files-stream").appendChild(el); later(()=>el.remove(),1200);
+}
+function uploadPhase() {
+  document.body.dataset.phase="uploading"; $("drop").classList.add("active"); $("upload-panel").classList.add("show");
+  for(let i=0;i<24;i++) later(()=>flyingFile(i), i*470);
+  tween(0,300,TIMING.uploadDuration,(n,p)=>{ setText("upload-count",`${n} / 300`); $("progress-bar").style.width=(n/3)+"%"; setText("current-file",fileNames[Math.min(fileNames.length-1,Math.floor(p*fileNames.length))]); },()=>{
+    $("drop").classList.remove("active"); $("drop").classList.add("done"); $("drop-copy").innerHTML="<strong>✓ 300개</strong> 파일 업로드 완료";
+    $("upload-panel").classList.add("finish"); setText("upload-title","업로드 완료"); setText("current-file","문서 내용을 분석할 준비가 됐습니다");
+    later(structurePhase,TIMING.structureStart-TIMING.uploadStart-TIMING.uploadDuration);
+  });
+}
+function structurePhase() {
+  document.body.dataset.phase="organizing"; $("empty-state").classList.add("hide"); $("content").classList.add("show"); setText("tree-status","구성 중…");
+  later(()=>$("tree-empty")?.remove(),250);
+  let docsBefore=0, foldersMade=0;
+  folders.forEach((f,i)=>{
+    const block=i*TIMING.folderBlock;
+    later(()=>{
+      document.querySelectorAll(".node.child.show").forEach(x=>x.classList.remove("show"));
+      document.querySelectorAll(".node.parent.open").forEach(x=>x.classList.remove("open"));
+      const node=document.querySelector(`.node.parent[data-i="${i}"]`), card=document.querySelector(`.folder-card[data-i="${i}"]`);
+      node.classList.add("show","open"); card.classList.add("show","focus"); if(i>0) document.querySelector(`.folder-card[data-i="${i-1}"]`)?.classList.remove("focus");
+      foldersMade++; setText("folder-count",String(foldersMade)); $("summary-text").innerHTML=`<strong>${f.name}</strong>에 들어갈 하위 폴더를 만들고 있습니다.`;
+      const start=docsBefore; tween(start,start+f.count,4100,n=>{ setText("doc-count",String(n)); node.querySelector(".node-count").textContent=Math.min(f.count,n-start); card.querySelector("b").textContent=Math.min(f.count,n-start); }); docsBefore+=f.count;
+    },block);
+    f.subs.forEach((s,j)=>later(()=>{
+      document.querySelector(`.node.child[data-parent="${i}"][data-sub="${j}"]`).classList.add("show");
+      document.querySelector(`.folder-card[data-i="${i}"] .subfolders span[data-sub="${j}"]`).classList.add("show");
+      foldersMade++; setText("folder-count",String(foldersMade));
+    },block+1100+j*1000));
+  });
+  later(finishPhase,TIMING.complete-TIMING.structureStart);
+}
+function finishPhase() {
+  document.body.dataset.phase="complete"; document.querySelectorAll(".folder-card").forEach(x=>x.classList.remove("focus")); document.querySelectorAll(".node.parent").forEach(x=>x.classList.add("open")); document.querySelectorAll(".node.child").forEach(x=>x.classList.add("show"));
+  setText("doc-count","300"); setText("folder-count","21"); setText("tree-status","21개 폴더");
+  setText("building-text","정리 완료"); $("building").style.color="var(--ok)"; $("building").querySelector(".pulse").style.display="none";
+  $("summary-icon").textContent="✓"; $("summary-text").innerHTML="<strong>300개 문서</strong>를 6개 상위 폴더와 15개 하위 폴더로 정리했습니다.";
+  $("upload-panel").classList.remove("show"); $("toast").classList.add("show");
+  later(()=>$("toast").classList.remove("show"),4000);
+}
+function renderDemoAt(ms) {
+  resetDemo(); document.body.classList.add("capture-mode");
+  if(ms < TIMING.uploadStart) return;
+  const uploadP=Math.min(1,(ms-TIMING.uploadStart)/TIMING.uploadDuration), uploadN=Math.round(300*(1-Math.pow(1-uploadP,2)));
+  document.body.dataset.phase="uploading"; $("drop").classList.add("active"); $("upload-panel").classList.add("show");
+  setText("upload-count",`${uploadN} / 300`); $("progress-bar").style.width=(uploadN/3)+"%"; setText("current-file",fileNames[Math.min(fileNames.length-1,Math.floor(uploadP*fileNames.length))]);
+  if(uploadP<1) {
+    const el=document.createElement("div"), fp=(uploadP*8)%1; el.className="flying-file"; el.textContent=fileNames[Math.floor(uploadP*8)%fileNames.length];
+    el.style.opacity=String(Math.sin(fp*Math.PI)); el.style.transform=`translate(${-50-fp*18}%, ${34-fp*179}px) scale(${.96-fp*.12})`; $("files-stream").appendChild(el); return;
+  }
+  $("drop").classList.remove("active"); $("drop").classList.add("done"); $("drop-copy").innerHTML="<strong>✓ 300개</strong> 파일 업로드 완료";
+  $("upload-panel").classList.add("finish"); setText("upload-title","업로드 완료"); setText("current-file","문서 내용을 분석할 준비가 됐습니다");
+  if(ms<TIMING.structureStart) return;
+  document.body.dataset.phase="organizing"; $("empty-state").classList.add("hide"); $("content").classList.add("show"); $("tree-empty")?.remove(); setText("tree-status","구성 중…");
+  let total=0, folderTotal=0, active=-1;
+  folders.forEach((f,i)=>{
+    const elapsed=ms-(TIMING.structureStart+i*TIMING.folderBlock); if(elapsed<0) return;
+    const node=document.querySelector(`.node.parent[data-i="${i}"]`), card=document.querySelector(`.folder-card[data-i="${i}"]`); node.classList.add("show"); card.classList.add("show"); folderTotal++;
+    const local=Math.min(1,elapsed/4100), count=Math.round(f.count*local); total+=count;
+    node.querySelector(".node-count").textContent=count; card.querySelector("b").textContent=count;
+    f.subs.forEach((s,j)=>{ if(elapsed>=1100+j*1000) { card.querySelector(`.subfolders span[data-sub="${j}"]`).classList.add("show"); folderTotal++; } });
+    if(elapsed<TIMING.folderBlock && ms<TIMING.complete) active=i;
+  });
+  if(active>=0) { const f=folders[active], elapsed=ms-(TIMING.structureStart+active*TIMING.folderBlock), node=document.querySelector(`.node.parent[data-i="${active}"]`), card=document.querySelector(`.folder-card[data-i="${active}"]`); node.classList.add("open"); card.classList.add("focus"); f.subs.forEach((s,j)=>{ if(elapsed>=1100+j*1000) document.querySelector(`.node.child[data-parent="${active}"][data-sub="${j}"]`).classList.add("show"); }); $("summary-text").innerHTML=`<strong>${f.name}</strong>에 들어갈 하위 폴더를 만들고 있습니다.`; }
+  setText("doc-count",String(Math.min(300,total))); setText("folder-count",String(Math.min(21,folderTotal)));
+  if(ms<TIMING.complete) return;
+  document.body.dataset.phase="complete"; document.querySelectorAll(".folder-card").forEach(x=>x.classList.remove("focus")); document.querySelectorAll(".node.parent").forEach(x=>x.classList.add("open")); document.querySelectorAll(".node.child").forEach(x=>x.classList.add("show")); setText("doc-count","300"); setText("folder-count","21"); setText("tree-status","21개 폴더");
+  setText("building-text","정리 완료"); $("building").style.color="var(--ok)"; $("building").querySelector(".pulse").style.display="none";
+  $("summary-icon").textContent="✓"; $("summary-text").innerHTML="<strong>300개 문서</strong>를 6개 상위 폴더와 15개 하위 폴더로 정리했습니다.";
+  $("upload-panel").classList.remove("show"); if(ms<55000) $("toast").classList.add("show");
+}
+function startDemo() { resetDemo(); later(uploadPhase,TIMING.uploadStart); }
+window.startDemo=startDemo; window.resetDemo=resetDemo; window.renderDemoAt=renderDemoAt;
+$("replay").addEventListener("click",startDemo);
+buildMarkup();
+const params=new URLSearchParams(location.search);
+if(params.has("at")) renderDemoAt(Number(params.get("at"))||0);
+else if(params.get("static")==="complete") { resetDemo(); structurePhase(); setTimeout(finishPhase,20); }
+else startDemo();
+</script>
+</body>
+</html>

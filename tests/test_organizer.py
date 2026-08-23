@@ -66,7 +66,7 @@ def test_organize_api_propose_then_apply(settings: Settings, llm: object) -> Non
             says("계약 폴더로 나누자고 제안합니다."),
         ]
     )
-    app = create_app(settings)
+    app = create_app(settings, accepted_uploads=frozenset({".txt"}))
     organized = build(settings, llm=llm, chat_model=chat)  # type: ignore[arg-type]
     seed_folder(Path(organized.vault.root))  # placement chooses; it never creates
     app.state.engine = organized
@@ -93,7 +93,7 @@ def test_organize_api_applies_a_rename(settings: Settings, llm: object) -> None:
             says("폴더 이름이 내용과 안 맞아 바꾸자고 제안합니다."),
         ]
     )
-    app = create_app(settings)
+    app = create_app(settings, accepted_uploads=frozenset({".txt"}))
     organized = build(settings, llm=llm, chat_model=chat)  # type: ignore[arg-type]
     seed_folder(Path(organized.vault.root))  # placement chooses; it never creates
     app.state.engine = organized

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import warnings
 from typing import Any
 
 import pytest
@@ -12,6 +13,7 @@ from pydantic import BaseModel
 from bismuth.adapters.llm import body as llm_body
 from bismuth.adapters.llm import litellm_adapter
 from bismuth.adapters.llm import wire as llm_wire
+from bismuth.adapters.llm.chat import LiteLLMChatModel
 from bismuth.adapters.llm.litellm_adapter import (
     _CHOICE_MAX_TOKENS,
     _MAX_CHOICE_MAX_TOKENS,
@@ -19,7 +21,7 @@ from bismuth.adapters.llm.litellm_adapter import (
     _parse_json,
 )
 from bismuth.domain.errors import ModelRequestError, StructuredOutputError
-from bismuth.ports.llm import Prompt
+from bismuth.ports.llm import CURRENT_USAGE, Prompt
 
 
 class Answer(BaseModel):
@@ -57,7 +59,7 @@ class FakeChunk:
         self.choices = [type("Choice", (), {"delta": delta, "finish_reason": finish_reason})()]
         self.usage = FakeUsage() if finish_reason else None
 
-    def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+    def model_dump(self, *, mode: str = "python", warnings: bool = True) -> dict[str, Any]:
         choice = self.choices[0]
         return {
             "choices": [
@@ -187,6 +189,25 @@ def adapter(**kwargs: Any) -> LiteLLMAdapter:
     return LiteLLMAdapter(**{**defaults, **kwargs})  # type: ignore[arg-type]
 
 
+class TestChatUsage:
+    async def test_one_answer_can_capture_its_calls_without_draining_the_ledger(
+        self, stub: Any
+    ) -> None:
+        stub(["답변"])
+        model = LiteLLMChatModel(model="openai/model")
+        captured = []
+        token = CURRENT_USAGE.set(captured)
+        try:
+            await model.complete(system="s", messages=[], tools=[])
+        finally:
+            CURRENT_USAGE.reset(token)
+
+        retained = model.drain_usage()
+        assert captured == retained
+        assert captured[0].input_tokens == 11
+        assert captured[0].output_tokens == 22
+
+
 class TestStructured:
     async def test_returns_a_validated_instance(self, stub: Any) -> None:
         stub(['{"name": "Apollo", "year": 2023}'])
@@ -243,6 +264,24 @@ class TestStructured:
         assert stream["finish_reason"] == "stop"
         assert stream["completed"] is True
         assert all("raw" in chunk and "gap_ms" in chunk for chunk in stream["chunks"])
+
+    def test_a_responses_usage_dict_is_logged_without_a_pydantic_warning(self) -> None:
+        class ResponseAPIUsageShape(BaseModel):
+            input_tokens: int
+            output_tokens: int
+
+        class ResponsesChunk(BaseModel):
+            usage: ResponseAPIUsageShape
+
+        chunk = ResponsesChunk(usage=ResponseAPIUsageShape(input_tokens=1, output_tokens=2))
+        # LiteLLM's Responses bridge performs this assignment after validation.
+        chunk.usage = {"prompt_tokens": 1, "completion_tokens": 2}  # type: ignore[assignment]
+
+        with warnings.catch_warnings(record=True) as caught:
+            dumped = llm_wire._dump_chunk(chunk)
+
+        assert caught == []
+        assert dumped["usage"] == {"prompt_tokens": 1, "completion_tokens": 2}
 
     async def test_timeout_keeps_every_chunk_received_before_it(
         self, stub: Any, monkeypatch: pytest.MonkeyPatch

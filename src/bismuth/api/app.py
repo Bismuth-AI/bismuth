@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import mimetypes
 import time
@@ -29,6 +30,8 @@ from bismuth.api import diagnostics
 from bismuth.api.progress import ProgressBus, stream
 from bismuth.config import (
     PROVIDERS,
+    ApiMode,
+    ReasoningEffort,
     Settings,
     UserConfig,
     load_env_file,
@@ -41,7 +44,7 @@ from bismuth.domain.errors import BismuthError
 from bismuth.domain.journal import Actor, JournalEntry
 from bismuth.domain.progress import Progress, Stage
 from bismuth.logging_setup import configure_logging, finish_run_manifest, update_run_manifest
-from bismuth.ports.llm import Spend
+from bismuth.ports.llm import CURRENT_USAGE, Spend, Usage
 from bismuth.ports.vault import INBOX
 from bismuth.services import replay as replay_service
 from bismuth.services import simple as simple_service
@@ -54,14 +57,19 @@ logger = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"
 
 
+def _host_of(url: str | None) -> str:
+    """Scheme, host and port. Userinfo and query are credentials often enough."""
+    parsed = urlsplit(url or "")
+    if not parsed.hostname:
+        return ""
+    host = f"{parsed.scheme}://{parsed.hostname}"
+    return f"{host}:{parsed.port}" if parsed.port else host
+
+
 def _diagnostic_settings(settings: Settings) -> dict[str, Any]:
     """Manifest-safe runtime settings; credentials and URL userinfo/query never enter logs."""
-    parsed = urlsplit(settings.api_base or "")
-    endpoint = ""
-    if parsed.hostname:
-        endpoint = f"{parsed.scheme}://{parsed.hostname}"
-        if parsed.port:
-            endpoint += f":{parsed.port}"
+    endpoint = _host_of(settings.api_base)
+    answering = settings.chat()
     generation = {
         key: value
         for key, value in settings.api_body.items()
@@ -83,6 +91,15 @@ def _diagnostic_settings(settings: Settings) -> dict[str, Any]:
         "provider_id": settings.provider_id,
         "api_endpoint": endpoint,
         "model": settings.model,
+        "api_mode": settings.api_mode,
+        "reasoning_effort": settings.reasoning_effort,
+        # Both sides always, resolved: a manifest naming one endpoint while two were in
+        # use makes every later conclusion about either of them unverifiable.
+        "chat_model": answering.model,
+        "chat_endpoint": _host_of(answering.api_base),
+        "chat_api_mode": settings.chat_api_mode,
+        "chat_reasoning_effort": settings.chat_reasoning_effort,
+        "chat_is_separate": settings.chat_is_separate,
         "native_schema": settings.native_schema,
         "llm_timeout_seconds": settings.llm_timeout_seconds,
         "llm_absolute_timeout_seconds": settings.llm_absolute_timeout_seconds,
@@ -123,7 +140,36 @@ def get_engine(request: Request) -> Bismuth:
 Engine = Annotated[Bismuth, Depends(get_engine)]
 
 
-def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
+ACCEPTED_UPLOADS = frozenset({".pdf"})
+"""What an upload may be.
+
+Deliberately narrower than what the parsers can read. Every format here has been
+followed end to end -- parsed, catalogued, placed, and read back by the librarian -- and
+only PDF has been so far. A file that merely parses is not yet a file whose card and
+placement anyone has checked. Widen this one set as each format is verified; the parsers
+behind the others are already registered and waiting.
+"""
+
+
+def _accept(files: list[UploadFile], accepted: frozenset[str]) -> None:
+    """Refuse anything not on the list, before a byte of it is written anywhere."""
+    refused = sorted(
+        {
+            Path(f.filename or "").suffix.lower() or "(확장자 없음)"
+            for f in files
+            if Path(f.filename or "").suffix.lower() not in accepted
+        }
+    )
+    if refused:
+        raise HTTPException(400, f"지금은 PDF만 받습니다. 받지 못한 형식: {', '.join(refused)}")
+
+
+def create_app(
+    settings: Settings,
+    *,
+    verbose: bool = False,
+    accepted_uploads: frozenset[str] = ACCEPTED_UPLOADS,
+) -> FastAPI:
     load_env_file()
     engine = build(settings)
 
@@ -178,8 +224,19 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             vault_path=str(current.vault_path),
             api_headers=current.api_headers,
             api_body=current.api_body,
+            api_mode=current.api_mode,
+            reasoning_effort=current.reasoning_effort,
             native_schema=current.native_schema,
             api_key_tail=f"…{current.api_key[-4:]}" if current.api_key else "",
+            chat_provider_id=current.chat_provider_id,
+            chat_model=current.chat_model,
+            chat_api_base=current.chat_api_base,
+            chat_api_headers=current.chat_api_headers,
+            chat_api_body=current.chat_api_body,
+            chat_api_mode=current.chat_api_mode,
+            chat_reasoning_effort=current.chat_reasoning_effort,
+            chat_api_key_tail=f"…{current.chat_api_key[-4:]}" if current.chat_api_key else "",
+            chat_is_separate=current.chat_is_separate,
         )
 
     @app.post("/api/setup/check", response_model=ProviderCheckOut)
@@ -188,7 +245,9 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         chosen = provider(body.provider_id)
         if chosen is None:
             raise HTTPException(400, f"알 수 없는 프로바이더: {body.provider_id}")
-        key = body.api_key or (app.state.settings.api_key if body.reuse_saved_key else "")
+        saved = app.state.settings
+        remembered = saved.chat_api_key if body.for_chat else saved.api_key
+        key = body.api_key or (remembered if body.reuse_saved_key else "")
         check = await anyio.to_thread.run_sync(
             lambda: list_models(
                 chosen.id,
@@ -237,8 +296,11 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             api_base=body.api_base or chosen.default_api_base,
             api_headers=body.api_headers,
             api_body=body.api_body,
+            api_mode=body.api_mode,
+            reasoning_effort=body.reasoning_effort,
             native_schema=native,
             model=body.model,
+            chat_model=body.chat_model.strip(),
         )
         if not answers.is_configured:
             raise HTTPException(400, "모델을 골라 주세요.")
@@ -257,6 +319,81 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         # warm as the one created at startup, or the first upload after setup pays for it.
         _preload(app.state.engine)
         logger.info("configuration updated: %s", updated.redacted())
+        return setup_state()
+
+    @app.post("/api/setup/chat", response_model=SetupStateOut)
+    def setup_chat(body: ChatSetupIn) -> SetupStateOut:
+        """Configure the answering side, without walking the vault's wizard.
+
+        Asked from 서고에 묻기, which owns this decision and nothing else about the
+        configuration. It sends only its own half; everything the vault settled --
+        the folder, the filing model, that model's server and key -- is read from
+        what is already saved rather than posted back by a page that does not own it.
+        """
+        current = app.state.settings
+        if not current.is_configured:
+            raise HTTPException(400, "먼저 볼트 설정을 마쳐 주세요.")
+
+        chosen = provider(body.provider_id) if body.provider_id else None
+        if body.provider_id and chosen is None:
+            raise HTTPException(400, f"알 수 없는 프로바이더: {body.provider_id}")
+
+        model = body.model.strip()
+        if chosen is None:
+            # Same provider as filing. The same model name is not a second model;
+            # storing it would only mean the two drift apart when one is changed.
+            answering = UserConfig(
+                vault_path=current.vault_path,
+                provider_id=current.provider_id,
+                api_key=current.api_key,
+                api_base=current.api_base,
+                api_headers=current.api_headers,
+                api_body=current.api_body,
+                api_mode=current.api_mode,
+                reasoning_effort=current.reasoning_effort,
+                native_schema=current.native_schema,
+                model=current.model,
+                chat_model="" if model == current.model else model,
+                chat_api_mode=body.api_mode,
+                chat_reasoning_effort=body.reasoning_effort,
+            )
+        else:
+            key = body.api_key or (current.chat_api_key if body.reuse_saved_key else "")
+            if chosen.needs_key and not key:
+                raise HTTPException(400, f"{chosen.label} 에는 키가 필요합니다.")
+            base = body.api_base or chosen.default_api_base
+            if chosen.needs_api_base and not base:
+                raise HTTPException(400, f"{chosen.label} 에는 엔드포인트 주소가 필요합니다.")
+            if not model:
+                raise HTTPException(400, "모델을 골라 주세요.")
+            answering = UserConfig(
+                vault_path=current.vault_path,
+                provider_id=current.provider_id,
+                api_key=current.api_key,
+                api_base=current.api_base,
+                api_headers=current.api_headers,
+                api_body=current.api_body,
+                api_mode=current.api_mode,
+                reasoning_effort=current.reasoning_effort,
+                native_schema=current.native_schema,
+                model=current.model,
+                chat_provider_id=chosen.id,
+                chat_model=model,
+                chat_api_key=key,
+                chat_api_base=base,
+                chat_api_headers=body.api_headers,
+                chat_api_body=body.api_body,
+                chat_api_mode=body.api_mode,
+                chat_reasoning_effort=body.reasoning_effort,
+            )
+
+        save_user_config(answering)
+        updated = Settings()
+        app.state.settings = updated
+        update_run_manifest(**_diagnostic_settings(updated))
+        app.state.engine = build(updated)
+        _preload(app.state.engine)
+        logger.info("answering model is now %s", updated.chat().model)
         return setup_state()
 
     @app.get("/api/status", response_model=StatusOut)
@@ -341,6 +478,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
     @app.post("/api/documents", response_model=list[IngestOut])
     async def upload(files: list[UploadFile], engine: Engine) -> list[IngestOut]:
         """Accept files and file them. Each is journalled into the inbox before anything clever."""
+        _accept(files, accepted_uploads)
         results: list[IngestOut] = []
         async with app.state.ingest_lock:
             for upload_file in files:
@@ -488,6 +626,7 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         """Stage a whole selection, then let the server finish it after a page refresh."""
         if not files:
             raise HTTPException(400, "올릴 파일이 없습니다.")
+        _accept(files, accepted_uploads)
         staged: list[PurePosixPath] = []
         async with app.state.ingest_lock:
             for upload_file in files:
@@ -785,6 +924,102 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
                 active_batch=None,
             )
 
+    @app.post("/api/chat")
+    async def chat(body: ChatIn, engine: Engine) -> StreamingResponse:
+        """Answer one question, streaming what the agent does on the way to the answer.
+
+        Streamed rather than returned because the interesting part is the search: which
+        folders it opened and what it grepped for is how a person judges whether to trust
+        the answer, and it arrives seconds before the answer does.
+        """
+        question = body.message.strip()
+        if not question:
+            raise HTTPException(400, "질문이 비어 있습니다.")
+        steps: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def watch(event: Any) -> None:
+            if event.kind in ("tool_call", "tool_result", "tool_error", "compact", "stop"):
+                loop.call_soon_threadsafe(
+                    steps.put_nowait,
+                    {
+                        "type": event.kind,
+                        "tool": event.data.get("name", ""),
+                        "arguments": event.data.get("arguments", {}),
+                        "reason": event.data.get("reason", ""),
+                        "freed": event.data.get("freed", 0),
+                        # The screen draws the search on a map of the vault, and a result
+                        # is what says which folders it actually landed on.
+                        "preview": event.data.get("preview", ""),
+                    },
+                )
+
+        def wrote(piece: str) -> None:
+            loop.call_soon_threadsafe(steps.put_nowait, {"type": "delta", "text": piece})
+
+        async def answering() -> AsyncIterator[str]:
+            turn_usage: list[Usage] = []
+            capture = CURRENT_USAGE.set(turn_usage)
+            try:
+                # Context is copied into the task at creation. Resetting it here keeps
+                # unrelated work in this request from joining the answer's bill.
+                task = asyncio.create_task(
+                    engine.conversation.ask(
+                        question,
+                        conversation_id=body.conversation_id,
+                        on_event=watch,
+                        on_text=wrote,
+                    )
+                )
+            finally:
+                CURRENT_USAGE.reset(capture)
+            task.add_done_callback(lambda _: steps.put_nowait(None))
+            while (step := await steps.get()) is not None:
+                yield f"data: {json.dumps(step, ensure_ascii=False)}\n\n"
+            try:
+                conversation, answer = await task
+            except Exception as exc:  # a failed answer is a message, not a broken stream
+                _drain(engine)
+                logger.exception("chat failed")
+                payload = {"type": "error", "detail": f"{type(exc).__name__}: {exc}"}
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                return
+            spend = Spend.of(turn_usage)
+            _drain(engine)
+            done = {
+                "type": "answer",
+                "text": answer,
+                "conversation_id": conversation.id,
+                "spend": spend.model_dump(mode="json"),
+            }
+            yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            answering(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
+    @app.delete("/api/chat/{conversation_id}")
+    def forget_chat(conversation_id: str, engine: Engine) -> dict[str, str]:
+        """Start over. The tree may have changed under an old transcript anyway."""
+        engine.conversation.forget(conversation_id)
+        return {"forgotten": conversation_id}
+
+    @app.get("/chat", include_in_schema=False)
+    def chat_page() -> FileResponse:
+        return FileResponse(STATIC / "chat.html", headers={"Cache-Control": "no-store"})
+
+    @app.get("/demo", include_in_schema=False)
+    def demo_page() -> FileResponse:
+        """Deterministic, backend-free product demo for screen recording."""
+        return FileResponse(STATIC / "demo.html", headers={"Cache-Control": "no-store"})
+
+    @app.get("/demo/chat", include_in_schema=False)
+    def chat_demo_page() -> FileResponse:
+        """Deterministic Ask-the-Library demo for screen recording."""
+        return FileResponse(STATIC / "chat-demo.html", headers={"Cache-Control": "no-store"})
+
     @app.get("/api/journal", response_model=list[dict[str, Any]])
     def journal(engine: Engine, limit: int = 30) -> list[dict[str, Any]]:
         return [e.model_dump(mode="json") for e in engine.journal.iter_entries(limit=limit)]
@@ -796,6 +1031,15 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
             return engine.transactor.undo(entry_id).model_dump(mode="json")
         except BismuthError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> FileResponse:
+        """Asked for by name by browsers that ignore the link tag."""
+        return FileResponse(STATIC / "favicon.ico", media_type="image/x-icon")
+
+    @app.get("/favicon.png", include_in_schema=False)
+    def favicon_png() -> FileResponse:
+        return FileResponse(STATIC / "favicon.png", media_type="image/png")
 
     @app.get("/trace", include_in_schema=False)
     def trace() -> FileResponse:
@@ -817,6 +1061,13 @@ def create_app(settings: Settings, *, verbose: bool = False) -> FastAPI:
         )
 
     return app
+
+
+class ChatIn(BaseModel):
+    message: str
+    conversation_id: str | None = Field(
+        default=None, description="Omit to start a new conversation; echo it back to continue one."
+    )
 
 
 class StatusOut(BaseModel):
@@ -915,12 +1166,26 @@ class SetupStateOut(BaseModel):
     api_base: str | None = None
     api_headers: dict[str, str] = Field(default_factory=dict)
     api_body: dict[str, Any] = Field(default_factory=dict)
+    api_mode: ApiMode = "auto"
+    reasoning_effort: ReasoningEffort = "auto"
     native_schema: bool | None = None
     model: str = ""
     vault_path: str = ""
+    chat_provider_id: str = ""
+    chat_model: str = ""
+    chat_api_base: str | None = None
+    chat_api_headers: dict[str, str] = Field(default_factory=dict)
+    chat_api_body: dict[str, Any] = Field(default_factory=dict)
+    chat_api_mode: ApiMode = "auto"
+    chat_reasoning_effort: ReasoningEffort = "auto"
+    chat_api_key_tail: str = ""
+    chat_is_separate: bool = False
 
 
 class ProviderCheckIn(BaseModel):
+    for_chat: bool = False
+    """Whose saved key ``reuse_saved_key`` means: the answering side's, or filing's."""
+
     provider_id: str
     api_key: str = ""
     api_base: str | None = None
@@ -968,6 +1233,20 @@ class ApplyIn(BaseModel):
     renames: list[RenameItem] = []
 
 
+class ChatSetupIn(BaseModel):
+    """The answering side, whole. Empty ``provider_id`` means "the same as filing"."""
+
+    provider_id: str = ""
+    model: str = ""
+    api_key: str = ""
+    reuse_saved_key: bool = False
+    api_base: str | None = None
+    api_headers: dict[str, str] = Field(default_factory=dict)
+    api_body: dict[str, Any] = Field(default_factory=dict)
+    api_mode: ApiMode = "auto"
+    reasoning_effort: ReasoningEffort = "auto"
+
+
 class SetupIn(BaseModel):
     provider_id: str
     api_key: str = ""
@@ -975,7 +1254,11 @@ class SetupIn(BaseModel):
     api_base: str | None = None
     api_headers: dict[str, str] = Field(default_factory=dict)
     api_body: dict[str, Any] = Field(default_factory=dict)
+    api_mode: ApiMode = "auto"
+    reasoning_effort: ReasoningEffort = "auto"
     model: str
+    chat_model: str = ""
+    """Empty means the same model files documents and answers questions."""
     vault_path: str
 
 

@@ -8,8 +8,9 @@ import sys
 import threading
 import time
 import webbrowser
+from asyncio import AbstractEventLoop, SelectorEventLoop
 from pathlib import Path, PurePosixPath
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import urlparse
 
 import anyio
@@ -443,7 +444,33 @@ def serve(
         host=bound_host,
         port=bound_port,
         log_level="warning",
+        **_loop_choice(),
     )
+
+
+def _selector_loop() -> AbstractEventLoop:
+    """The loop uvicorn should run on. Named by import string in ``_loop_choice``."""
+    return SelectorEventLoop()
+
+
+def _loop_choice() -> dict[str, Any]:
+    """Windows only: read the network in small pieces so the answer types itself.
+
+    The answer was arriving in two or three lumps of several hundred tokens each, and
+    the provider was not the cause -- measured over the same request at the same
+    minute, the proactor loop saw the stream arrive 1 time where the selector loop saw
+    it arrive 114 times. The proactor issues large overlapped reads, so a stream the
+    provider flushes token by token reaches us already piled up, and nothing
+    downstream can unpile it. Uvicorn picks the proactor on Windows and ignores the
+    event loop policy, so the choice has to be handed to it here.
+
+    The cost is the selector's 512-socket ceiling and no asyncio subprocesses; neither
+    is anywhere near this program, which serves one person and starts none. Elsewhere
+    the default loop is already fine and this passes nothing.
+    """
+    if sys.platform != "win32":
+        return {}
+    return {"loop": "bismuth.cli.main:_selector_loop"}
 
 
 def _open_when_ready(url: str, *, timeout: float = 10.0) -> None:

@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bismuth</title>
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" href="/favicon.png" type="image/png" sizes="180x180">
+<link rel="apple-touch-icon" href="/favicon.png">
 <style>
 /*
   One file, no build step, no CDN. `pip install` then `bismuth` has to be the whole
@@ -65,11 +68,11 @@ header {
   border-bottom: 1px solid var(--line); padding: 12px 20px; background: var(--panel);
   display: flex; align-items: center; gap: 14px; flex-shrink: 0;
 }
-h1 { font-size: 17px; margin: 0; letter-spacing: -.01em; font-weight: 650; }
-h1 span { color: var(--accent); }
-.badge { font-size: 12px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--dim); }
-.badge.local { color: var(--ok); border-color: currentColor; }
-.badge.cloud { color: var(--warn); border-color: currentColor; }
+h1 {
+  font-size: 17px; margin: 0; letter-spacing: -.01em; font-weight: 650;
+  display: flex; align-items: center; gap: 8px;
+}
+h1 img { width: 22px; height: 22px; }
 .spacer { margin-left: auto; }
 .hstat { font-size: 13px; color: var(--dim); }
 .hstat b { color: var(--ink); font-weight: 650; }
@@ -85,6 +88,18 @@ h1 span { color: var(--accent); }
   border: 1.5px dashed var(--line); border-radius: var(--radius); cursor: pointer; transition: .12s;
 }
 #drop.over, #drop:hover { border-color: var(--accent); color: var(--ink); background: var(--accent-soft); }
+#drop .only { margin-top: 6px; font-size: 11.5px; opacity: .75; }
+#treebar {
+  display: flex; align-items: center; gap: 6px; padding: 2px 14px 6px;
+  color: var(--dim); font-size: 11px;
+}
+#treebar .lbl { letter-spacing: .05em; text-transform: uppercase; font-weight: 650; }
+#treebar .mini {
+  padding: 2px 7px; font-size: 11px; color: var(--dim); background: transparent;
+  border: 1px solid transparent; border-radius: 5px;
+}
+#treebar .mini:first-of-type { margin-left: auto; }
+#treebar .mini:hover { color: var(--accent); border-color: var(--line); background: var(--panel); }
 #tree { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
 .node {
   display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 6px;
@@ -92,7 +107,8 @@ h1 span { color: var(--accent); }
 }
 .node:hover { background: var(--accent-soft); }
 .node.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.node .twist { width: 12px; color: var(--dim); font-size: 10px; flex-shrink: 0; text-align: center; }
+.node .twist { width: 14px; color: var(--dim); font-size: 10px; flex-shrink: 0; text-align: center; }
+.node:hover .twist { color: var(--accent); }
 .node .ic { flex-shrink: 0; }
 .node .nm { overflow: hidden; text-overflow: ellipsis; }
 .node .ct { margin-left: auto; font-size: 11px; color: var(--dim); }
@@ -205,10 +221,29 @@ h2 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.01em; }
   width: 100%; max-width: 560px;
 }
 .card h2 { margin-bottom: 4px; }
+.cardhead { display: flex; align-items: center; margin-bottom: 14px; }
+.cardhead h2 { flex: 1; margin: 0; }
+.cardfoot {
+  display: flex; align-items: center; gap: 8px; margin-top: 20px;
+  padding-top: 16px; border-top: 1px solid var(--line);
+}
+.cardfoot .hint { flex: 1; margin: 0; }
+/* One line under a field, not a paragraph beside it. */
+.hint { font-size: 12px; margin-top: 5px; line-height: 1.45; }
+.field > label .muted { font-weight: 400; font-size: 12.5px; margin-left: 4px; }
+.more > summary {
+  cursor: pointer; font-size: 13px; color: var(--dim); padding: 6px 0; user-select: none;
+  list-style: none;
+}
+.more > summary::-webkit-details-marker { display: none; }
+.more > summary::before { content: "▸ "; }
+.more[open] > summary::before { content: "▾ "; }
 .field { margin: 16px 0; }
 .field > label { display: block; font-weight: 550; margin-bottom: 6px; font-size: 14px; }
-.choices { display: grid; gap: 8px; }
-.choice { display: flex; align-items: center; gap: 10px; padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
+/* Three providers stacked as full-width cards were 252px of a 741px dialog for a
+   choice made once. Side by side they are one row. */
+.choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.choice { flex: 1 1 150px; display: flex; align-items: center; gap: 8px; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; font-size: 13.5px; }
 .choice:hover { border-color: var(--accent); }
 .choice.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .choice input { width: auto; }
@@ -223,16 +258,10 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
 <body>
 
 <header>
-  <h1><span>◆</span> Bismuth</h1>
-  <span class="badge" id="privacy">…</span>
+  <h1><img src="/favicon.png" alt="" width="22" height="22"> Bismuth</h1>
   <div class="spacer"></div>
   <span class="hstat"><b id="hs-docs">0</b> 문서 · <b id="hs-folders">0</b> 폴더<span id="hs-inbox"></span></span>
-  <span class="hstat spend hidden" id="hs-spend" title="이 볼트에 지금까지 쓴 양 (.bismuth/spend.jsonl)"></span>
-  <button class="ghost" id="btn-organize">구조 정리</button>
-  <button class="ghost" id="btn-redesign" title="장서 전체를 보고 최상위를 다시 그립니다. 한 번에 적용되고, 기록에서 한 번에 되돌립니다.">전체 재설계</button>
-  <button class="ghost" id="btn-empty" title="폴더만 해체하고 문서와 카드는 그대로 둡니다. 기록에서 되돌릴 수 있습니다.">폴더 비우기</button>
-  <button class="ghost" id="btn-refile" title="문서를 다시 읽지 않고, 이미 만들어둔 카드로 전체를 다시 배치합니다.">카드로 다시 배치</button>
-  <button class="ghost" id="btn-history">기록</button>
+  <button class="primary" onclick="location.href='/chat'" title="폴더를 뒤지고 본문을 찾아 근거와 함께 답합니다.">서고에 묻기</button>
   <button class="ghost" onclick="location.href='/trace'" title="모델에 무엇이 들어가고 무엇이 나왔는지, 호출 하나씩">추적</button>
   <button class="ghost" id="btn-settings">설정</button>
 </header>
@@ -240,9 +269,14 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
 <div id="explorer">
   <aside id="sidebar">
     <div id="drop">
-      <strong>파일을 여기로</strong><br>끌어다 놓거나 눌러서 고르기
+      <strong>파일 올리기</strong><br>끌어다 놓거나 눌러서 고르기
     </div>
-    <input type="file" id="picker" multiple class="hidden">
+    <input type="file" id="picker" multiple accept=".pdf,application/pdf" class="hidden">
+    <div id="treebar">
+      <span class="lbl">폴더</span>
+      <button class="mini" id="tree-expand" title="모든 폴더를 폅니다">전체 펴기</button>
+      <button class="mini" id="tree-collapse" title="모든 폴더를 접습니다">전체 접기</button>
+    </div>
     <div id="tree"></div>
   </aside>
   <main id="main"><div class="empty">불러오는 중…</div></main>
@@ -267,17 +301,19 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
 
 <!-- setup wizard -->
 <div id="setup" class="overlay hidden"><div class="card">
-  <h2>설정</h2>
-  <p class="muted" style="margin-top:2px">처음 한 번, 1분이면 됩니다. 모든 설정은 이 컴퓨터에만 저장됩니다.</p>
+  <div class="cardhead">
+    <h2>설정</h2>
+    <button class="ghost" id="s-close">닫기</button>
+  </div>
+
   <div class="field">
-    <label>정리된 문서를 어디에 둘까요?</label>
+    <label>서고 폴더</label>
     <input type="text" id="s-vault" spellcheck="false">
-    <div class="muted" style="font-size:13px;margin-top:5px">평범한 폴더입니다. 원본이 이 안으로 옮겨지며 내용은 절대 수정되지 않습니다.</div>
   </div>
   <div class="field">
-    <label>어떤 모델을 쓸까요?</label>
+    <label>모델 제공자</label>
     <div id="s-providers" class="choices"></div>
-    <div class="muted" id="s-hint" style="font-size:13px;margin-top:6px"></div>
+    <div class="muted hint" id="s-hint"></div>
   </div>
   <div class="field hidden" id="s-key-field">
     <label id="s-key-label">API 키</label>
@@ -287,55 +323,64 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
     <label>엔드포인트 주소</label>
     <input type="text" id="s-base" spellcheck="false">
   </div>
-  <div class="field hidden" id="s-headers-field">
-    <label>추가 헤더 <span class="muted" style="font-weight:400">— 선택. 게이트웨이가 쿠키나 자체 헤더로 인증할 때만</span></label>
-    <div id="s-headers-rows"></div>
-    <button type="button" class="ghost small" id="s-headers-add">+ 헤더 추가</button>
-    <div class="muted" style="font-size:13px;margin-top:6px">
-      잘 되던 요청의 Request Headers를 그대로 옮기면 됩니다. <code>Cookie: session=…</code> 통째로 붙여넣어도 나눠집니다.
+
+  <details id="s-advanced" class="more hidden">
+    <summary>고급 — 헤더, 요청 본문</summary>
+    <div class="field" id="s-headers-field">
+      <label>추가 헤더</label>
+      <div id="s-headers-rows"></div>
+      <button type="button" class="ghost small" id="s-headers-add">+ 헤더 추가</button>
+      <div class="muted hint">게이트웨이가 쿠키나 자체 헤더로 인증할 때만. <code>Cookie: session=…</code> 통째로 붙여넣어도 나뉩니다.</div>
     </div>
-  </div>
-  <div class="field hidden" id="s-body-field">
-    <label>요청 본문 추가값 <span class="muted" style="font-weight:400">— 선택. 이 서버가 필요로 하는 값들</span></label>
-    <textarea id="s-body" spellcheck="false" rows="6" placeholder='{"temperature": 0.7, "top_p": 0.8, "top_k": 20}'></textarea>
-    <div class="muted" style="font-size:13px;margin-top:5px">
-      JSON. <code>messages</code>·<code>model</code>은 빼고 나머지만. 생각 모드가 있는 모델이면
-      <code>{"chat_template_kwargs": {"enable_thinking": false}}</code> 로 끄는 쪽이 훨씬 빠릅니다.
+    <div class="field" id="s-body-field">
+      <label>요청 본문 추가값</label>
+      <textarea id="s-body" spellcheck="false" rows="5" placeholder='{"temperature": 0.7, "chat_template_kwargs": {"enable_thinking": false}}'></textarea>
+      <div class="muted hint">JSON. 생각 모드가 있는 모델이면 꺼 두는 쪽이 훨씬 빠릅니다.</div>
+      <div id="s-body-error" class="err hidden"></div>
     </div>
-    <div id="s-body-error" class="err hidden" style="margin-top:6px"></div>
-  </div>
-  <button id="s-check" class="primary">다음</button>
+  </details>
+
   <div id="s-error" class="err hidden"></div>
+
   <div id="s-models" class="hidden">
     <hr>
-    <p id="s-models-count" class="muted"></p>
-    <div class="field"><label>모델 <span class="muted" style="font-weight:400">— 모든 문서 읽기와 정리에 사용됩니다</span></label><input type="text" id="s-model" list="s-model-list" spellcheck="false" autocomplete="off"></div>
-    <datalist id="s-model-list"></datalist>
-    <div class="rowend">
-      <button class="ghost" id="s-cancel">취소</button>
-      <button id="s-save" class="primary">저장하고 시작</button>
+    <div class="field">
+      <label>정리 모델 <span class="muted">문서를 읽고 폴더를 나눕니다</span></label>
+      <input type="text" id="s-model" list="s-model-list" spellcheck="false" autocomplete="off">
     </div>
+    <div class="field">
+      <label>API 방식</label>
+      <select id="s-api-mode">
+        <option value="auto">자동 — 모델에 맞게 선택</option>
+        <option value="responses">Responses API</option>
+        <option value="chat_completions">Chat Completions</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>추론 강도</label>
+      <select id="s-reasoning-effort">
+        <option value="auto">자동 — 모델 기본값</option>
+        <option value="none">없음</option>
+        <option value="minimal">minimal</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+        <option value="xhigh">xhigh</option>
+        <option value="max">max</option>
+      </select>
+      <p class="muted hint" id="s-runtime-hint"></p>
+    </div>
+    <p class="muted hint">서고에 묻기에서 답하는 모델은 그 페이지에서 고릅니다 — 다른 회사의 모델이어도 됩니다.</p>
+    <datalist id="s-model-list"></datalist>
+    <p id="s-models-count" class="muted hint"></p>
   </div>
-</div></div>
 
-<!-- redesign -->
-<div id="redesign" class="overlay hidden"><div class="card">
-  <div style="display:flex;align-items:center"><h2 style="flex:1">전체 재설계</h2><button class="ghost" id="r-close">닫기</button></div>
-  <div id="r-body"></div>
-</div></div>
-
-<!-- organize -->
-<div id="organize" class="overlay hidden"><div class="card">
-  <div style="display:flex;align-items:center"><h2 style="flex:1">구조 정리 제안</h2><button class="ghost" id="o-close">닫기</button></div>
-  <p class="muted" style="margin-top:2px">에이전트가 볼트를 직접 살펴보고 제안합니다. 승인해야만 실제로 옮겨지고, 기록에서 되돌릴 수 있습니다.</p>
-  <div id="o-body"></div>
-</div></div>
-
-<!-- history -->
-<div id="history" class="overlay hidden"><div class="card">
-  <div style="display:flex;align-items:center"><h2 style="flex:1">기록</h2><button class="ghost" id="h-close">닫기</button></div>
-  <p class="muted" style="margin-top:2px">모든 변경은 되돌릴 수 있습니다. 되돌린 것도 다시 되돌릴 수 있습니다.</p>
-  <table class="log"><tbody id="h-body"></tbody></table>
+  <div class="cardfoot">
+    <span class="muted hint" id="s-note">설정은 이 컴퓨터에만 저장됩니다</span>
+    <button class="ghost hidden" id="s-cancel">취소</button>
+    <button id="s-check" class="primary">다음</button>
+    <button id="s-save" class="primary hidden">저장</button>
+  </div>
 </div></div>
 
 <script>
@@ -365,14 +410,6 @@ let fsel = new Set(), fselAnchor = null;
 
 async function refresh() {
   state = await api("/status");
-  // Authoritative, and it already includes anything addSpend() just counted locally.
-  setSpend(state.spend);
-
-  const pv = $("privacy");
-  pv.className = "badge " + (!state.configured ? "" : state.runs_locally ? "local" : "cloud");
-  pv.textContent = !state.configured ? "설정 전"
-    : state.runs_locally ? "완전 로컬" : "외부 모델";
-
   $("hs-docs").textContent = state.documents;
   $("hs-folders").textContent = state.folders;
   $("hs-inbox").innerHTML = state.inbox
@@ -470,8 +507,14 @@ function bindTreeClicks(el) {
       // A plain click is the anchor a later shift+click extends from -- the usual way in
       // is click-then-shift-click, and leaving the anchor null made that do nothing.
       fselAnchor = path === "_inbox" || path === ROOT ? null : path;
+      // Clicking the folder you are already in folds it, the way an editor's tree does:
+      // the way out is the same click as the way in. Folding only where you already are
+      // keeps a click on some other open folder a move into it, not a fold of it.
+      if (childrenOf(path).length) {
+        if (selected === path && expanded.has(path)) expanded.delete(path);
+        else expanded.add(path);
+      }
       selected = path;
-      if (childrenOf(path).length) expanded.add(path);
       renderTree(); renderMain(); syncSel();
     });
     if (path !== "_inbox" && path !== ROOT) n.addEventListener("contextmenu", (e) => { e.preventDefault(); openFolderMenu(e, path); });
@@ -487,6 +530,14 @@ function folderImpact(paths) {
 }
 
 function toggle(path) { expanded.has(path) ? expanded.delete(path) : expanded.add(path); renderTree(); }
+
+$("tree-expand").addEventListener("click", () => {
+  for (const f of tree) if (childrenOf(f.path).length) expanded.add(f.path);
+  renderTree();
+});
+// Where you are stays where you are: folding the tree is not moving out of the folder,
+// and the pane on the right goes on showing it.
+$("tree-collapse").addEventListener("click", () => { expanded.clear(); renderTree(); });
 
 async function renderMain() {
   const el = $("main");
@@ -574,7 +625,7 @@ async function renderInbox(el) {
     ${docs.length ? docs.map(docRow).join("") : `<div class="empty">인박스가 비었습니다.</div>`}`;
   $("rescan")?.addEventListener("click", async (e) => {
     e.target.disabled = true; e.target.textContent = "분류하는 중…";
-    try { (await api("/scan", { method: "POST" })).forEach((r) => addSpend(r.spend)); await refresh(); }
+    try { await api("/scan", { method: "POST" }); await refresh(); }
     catch (err) { alert(err.message); e.target.disabled = false; e.target.textContent = "전체 다시 분류"; }
   });
   bindDocs(el); syncSel();
@@ -1065,14 +1116,10 @@ function watchProgress() {
 watchProgress();
 
 /* ---------------- spend ----------------
-   Tokens and price for the work just done, and a running total for the vault. The total
-   used to live only here, on the argument that it answered "what did that just cost
-   me?" and that a number surviving a restart would imply an accounting this does not
-   do. It did not survive a refresh, which is when people ask. It is now kept in the
-   vault (.bismuth/spend.jsonl) and seeded from /status on load; uploads add to it here
-   so the header moves without a round trip. */
-
-let vaultSpend = { calls: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0, priced_calls: 0 };
+   What the work just done cost, printed beside the document it was spent on. The vault
+   keeps its own running total in .bismuth/spend.jsonl and /status still reports it; the
+   header no longer shows it, because a number that only ever grows says less about the
+   document in front of you than the one line under it does. */
 
 function money(usd) {
   if (usd == null) return "";
@@ -1099,34 +1146,17 @@ function spendText(s) {
   return parts.join(" · ");
 }
 
-function drawSpend() {
-  const el = $("hs-spend");
-  const text = spendText(vaultSpend);
-  el.classList.toggle("hidden", !text);
-  el.textContent = text;
-}
-
-function setSpend(s) {
-  // From /status: the vault's own total, so a refresh does not reset it to zero.
-  vaultSpend = s && s.calls
-    ? { ...s, cost_usd: s.cost_usd || 0 }
-    : { calls: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0, priced_calls: 0 };
-  drawSpend();
-}
-
-function addSpend(s) {
-  if (!s || !s.calls) return;
-  vaultSpend.calls += s.calls;
-  vaultSpend.input_tokens += s.input_tokens;
-  vaultSpend.output_tokens += s.output_tokens;
-  vaultSpend.priced_calls += s.priced_calls;
-  vaultSpend.cost_usd += s.cost_usd || 0;
-  drawSpend();
-}
-
 /* ---------------- uploads ---------------- */
 
-async function upload(files) {
+// The picker filters by `accept`; a drag from the desktop does not, so the rule lives
+// here as well. The server refuses either way -- this is only so the refusal arrives
+// before the bytes do.
+const PDF_ONLY = (files) => files.filter((f) => f.name.toLowerCase().endsWith(".pdf"));
+
+async function upload(all) {
+  const files = PDF_ONLY(all);
+  const refused = all.length - files.length;
+  if (refused) alert(`올릴 수 없는 파일 ${refused}개를 빼고 올립니다.`);
   if (!files.length) return;
   const box = document.createElement("div");
   box.className = "up";
@@ -1176,7 +1206,6 @@ async function upload(files) {
     box.querySelectorAll(".job").forEach((el) => {
       if (el.querySelector(".fn")?.textContent === f.name) el.remove();
     });
-    addSpend(result.spend);
     summary.insertAdjacentHTML("beforeend", resultHtml(result));
     if (!result.ok) box.classList.add("err");
     else if (result.duplicate) box.classList.add("dup");
@@ -1223,132 +1252,28 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-/* ---------------- organize ---------------- */
-
-$("btn-organize").addEventListener("click", async () => {
-  $("organize").classList.remove("hidden");
-  $("o-body").innerHTML = `<div class="empty">에이전트가 볼트 구조를 살펴보는 중… (조금 걸립니다)</div>`;
-  try {
-    const plan = await api("/organize/propose", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-    renderPlan(plan);
-  } catch (err) { $("o-body").innerHTML = `<div class="err">${esc(err.message)}</div>`; }
-});
-$("o-close").addEventListener("click", () => $("organize").classList.add("hidden"));
-
-function renderPlan(plan) {
-  const moves = plan.moves || [];
-  const renames = plan.renames || [];
-  const summary = plan.summary || "";
-  if (!moves.length && !renames.length) {
-    $("o-body").innerHTML = `<div class="note-box">${esc(summary) || "바꿀 것이 없습니다. 구조가 괜찮습니다."}</div>`;
-    return;
-  }
-  $("o-body").innerHTML = `
-    ${summary ? `<div class="note-box">${esc(summary)}</div>` : ""}
-    ${renames.length ? `<div class="sect">이름 변경 ${renames.length}건</div>
-      ${renames.map((r) => `<div class="doc"><div class="t">✎ ${esc(r.folder)} → <span class="dest">${esc(r.new_name)}</span></div></div>`).join("")}` : ""}
-    ${moves.length ? `<div class="sect">이동 ${moves.length}건</div>
-      ${moves.map((m) => `<div class="doc">
-        <div class="t">→ <span class="dest">${esc(m.target)}/</span></div>
-        <div class="sm">${m.paths.map((p) => esc(p.split("/").pop())).join(", ")}</div>
-      </div>`).join("")}` : ""}
-    <div class="rowend">
-      <button class="ghost" id="o-cancel">취소</button>
-      <button class="primary" id="o-apply">이대로 적용</button>
-    </div>`;
-  $("o-cancel").onclick = () => $("organize").classList.add("hidden");
-  $("o-apply").onclick = async () => {
-    const btn = $("o-apply"); btn.disabled = true; btn.textContent = "적용 중…";
-    try {
-      await api("/organize/apply", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ moves, renames }) });
-      $("organize").classList.add("hidden");
-      await refresh();
-    } catch (err) { alert(err.message); btn.disabled = false; btn.textContent = "이대로 적용"; }
-  };
-}
-
-/* ---------------- redesign ---------------- */
-
-/* The one operation not asked from inside a folder, so it is the only one that can see
-   two folders on the same subject in different branches. It applies in a single batch:
-   there is nothing to approve first, and one entry in 기록 undoes all of it. */
-// Emptying and re-filing are the tuning loop: the reading of a document is fixed, the
-// tree built from it is what changes, so both of these leave every card alone.
-$("btn-empty").addEventListener("click", async () => {
-  const docs = state.documents ?? 0, folders = state.folders ?? 0;
-  if (!folders) return alert("해체할 폴더가 없습니다.");
-  if (!confirm(`폴더 ${folders}개를 해체하고 문서 ${docs}건을 모두 루트로 되돌립니다.\n\n문서와 문서 카드(사이드카)는 그대로 남습니다. 지워지는 것은 폴더와 폴더 설명뿐이고, [기록]에서 한 번에 되돌릴 수 있습니다.\n\n진행할까요?`)) return;
-  try {
-    const result = await api("/tree/empty", { method: "POST" });
-    await refresh();
-    alert(`폴더 ${result.folders}개를 해체했습니다. 문서 ${result.documents}건이 루트에 있습니다.`);
-  } catch (err) { alert(err.message); }
-});
-
-$("btn-refile").addEventListener("click", async () => {
-  const docs = state.documents ?? 0;
-  if (!docs) return alert("배치할 문서가 없습니다.");
-  if (!confirm(`문서 ${docs}건을 다시 읽지 않고, 이미 만들어둔 카드로 폴더를 처음부터 다시 짭니다.\n\n먼저 지금 폴더를 전부 해체하고, 10건씩 배치하면서 중간중간 전체 구조를 점검합니다. 문서를 읽는 호출은 없으므로 ${Math.max(1, Math.round(docs / 10 * 3 / 60))}분 안팎이면 끝납니다.\n\n진행할까요?`)) return;
-  try {
-    await api("/refile-all", { method: "POST" });
-    ensureBatchPolling();
-    syncBatches();
-  } catch (err) { alert(err.message); }
-});
-
-$("btn-redesign").addEventListener("click", async () => {
-  if (!confirm("장서 전체를 보고 최상위 폴더를 다시 그립니다.\n\n폴더는 통째로 움직이고 문서는 자기 폴더에 그대로 있습니다. 한 번에 적용되며, 마음에 안 들면 [기록]에서 한 번에 되돌릴 수 있습니다.\n\n진행할까요?")) return;
-  $("redesign").classList.remove("hidden");
-  $("r-body").innerHTML = `<div class="empty">장서 전체를 보고 최상위를 다시 그리는 중… (폴더 수만큼 걸립니다)</div>`;
-  try {
-    const result = await api("/redesign", { method: "POST" });
-    renderRedesign(result);
-    if (result.applied) await refresh();
-  } catch (err) { $("r-body").innerHTML = `<div class="err">${esc(err.message)}</div>`; }
-});
-$("r-close").addEventListener("click", () => $("redesign").classList.add("hidden"));
-
-function renderRedesign(result) {
-  if (!result.applied) {
-    $("r-body").innerHTML = `<div class="note-box">아무것도 바꾸지 않았습니다.<br><span class="sm">${esc(result.refused || "적용할 것이 없습니다.")}</span></div>`;
-    return;
-  }
-  const classes = result.classes || [];
-  $("r-body").innerHTML = `
-    <div class="note-box">${esc(result.question || "")}<br>
-      <span class="sm">폴더 ${(result.moved_folders || []).length}개, 문서 ${result.moved_documents || 0}건이 옮겨졌습니다. [기록]에서 한 번에 되돌릴 수 있습니다.</span></div>
-    <div class="sect">새 최상위 ${classes.length}개</div>
-    ${classes.map((c) => `<div class="doc"><div class="t"><span class="dest">${esc(c.name)}/</span></div><div class="sm">${esc(c.sign || "")}</div></div>`).join("")}
-    ${(result.unsound || []).length ? `<div class="sect">이름이 내용을 말해주지 않는 폴더 ${result.unsound.length}개</div>
-      <div class="note-box sm">${result.unsound.map(esc).join(", ")}</div>` : ""}`;
-}
-
-/* ---------------- history ---------------- */
-
-$("btn-history").addEventListener("click", async () => {
-  const entries = await api("/journal?limit=25");
-  $("h-body").innerHTML = entries.map((e) => `<tr>
-    <td>${new Date(e.created_at).toLocaleString("ko")}</td>
-    <td>${esc(e.reason)}</td>
-    <td style="text-align:right">${e.status === "applied"
-      ? `<button class="ghost" data-undo="${e.id}">되돌리기</button>`
-      : `<span class="muted">${e.status === "reverted" ? "되돌림" : esc(e.status)}</span>`}</td>
-  </tr>`).join("") || `<tr><td class="muted">아직 없습니다.</td></tr>`;
-  $("h-body").querySelectorAll("[data-undo]").forEach((b) => b.addEventListener("click", async () => {
-    b.disabled = true;
-    try { await api(`/journal/${b.dataset.undo}/undo`, { method: "POST" }); $("btn-history").click(); await refresh(); }
-    catch (err) { alert(err.message); b.disabled = false; }
-  }));
-  $("history").classList.remove("hidden");
-});
-$("h-close").addEventListener("click", () => $("history").classList.add("hidden"));
-
 /* ---------------- setup wizard ---------------- */
 
 let setup = {};
 function openSetup(force) { $("setup").classList.remove("hidden"); loadSetup(force); }
+
+/** Step one asks the provider; step two picks the models. The footer says which. */
+function setupStep(picking) {
+  $("s-models").classList.toggle("hidden", !picking);
+  $("s-check").classList.toggle("hidden", picking);
+  $("s-save").classList.toggle("hidden", !picking);
+  $("s-cancel").classList.toggle("hidden", !picking || !state.configured);
+}
 $("btn-settings").addEventListener("click", () => openSetup(true));
-$("s-cancel").addEventListener("click", () => { if (state.configured) $("setup").classList.add("hidden"); });
+const closeSetup = () => { if (state.configured) $("setup").classList.add("hidden"); };
+$("s-cancel").addEventListener("click", closeSetup);
+$("s-close").addEventListener("click", closeSetup);
+// Nothing works until this dialog is answered the first time, so on a fresh vault there
+// is nothing to go back to and both ways out are hidden rather than shown and refused.
+$("setup").addEventListener("click", (e) => { if (e.target.id === "setup") closeSetup(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("setup").classList.contains("hidden")) closeSetup();
+});
 
 async function loadSetup() {
   setup = await api("/setup");
@@ -1359,14 +1284,15 @@ async function loadSetup() {
       <span>${esc(p.label)}</span>${p.local ? `<span class="tag">내 컴퓨터</span>` : ""}
     </label>`).join("");
   document.querySelectorAll('input[name=provider]').forEach((r) => r.addEventListener("change", onProvider));
-  $("s-models").classList.add("hidden");
+  setupStep(false);
+  $("s-close").classList.toggle("hidden", !setup.configured);
   if (setup.provider_id) onProvider();
 }
 const currentProvider = () => { const p = document.querySelector("input[name=provider]:checked"); return p ? setup.providers.find((x) => x.id === p.value) : null; };
 function onProvider() {
   const p = currentProvider();
   document.querySelectorAll(".choice").forEach((c) => c.classList.toggle("on", c.querySelector("input").checked));
-  $("s-models").classList.add("hidden"); $("s-error").classList.add("hidden");
+  setupStep(false); $("s-error").classList.add("hidden");
   if (!p) return;
   $("s-hint").textContent = p.hint || "";
   // Shown for every provider. "A key is not required" is not "a key cannot be given":
@@ -1383,14 +1309,36 @@ function onProvider() {
   if (p.needs_api_base) $("s-base").value = setup.api_base || p.default_api_base || "";
   // Only the OpenAI-compatible option sits behind arbitrary gateways; the hosted two
   // authenticate the way they document.
-  $("s-headers-field").classList.toggle("hidden", p.id !== "custom");
-  $("s-body-field").classList.toggle("hidden", p.id !== "custom");
+  // Headers and a request body are only ever needed by the compatible option; the
+  // hosted two authenticate the way they document.
+  $("s-advanced").classList.toggle("hidden", p.id !== "custom");
   renderHeaders(setup.api_headers);
   $("s-body").value = Object.keys(setup.api_body || {}).length
     ? JSON.stringify(setup.api_body, null, 2)
     : "";
   $("s-body-error").classList.add("hidden");
+  const saved = p.id === setup.provider_id;
+  $("s-api-mode").value = saved ? (setup.api_mode || "auto") : "auto";
+  $("s-reasoning-effort").value = saved ? (setup.reasoning_effort || "auto") : "auto";
+  explainRuntime();
 }
+
+function explainRuntime() {
+  const p = currentProvider();
+  const model = $("s-model").value.trim();
+  const mode = $("s-api-mode").value;
+  let text = "자동은 프로바이더와 모델에 맞는 방식을 고릅니다.";
+  if (mode === "responses") text = "Responses API로 호출합니다.";
+  if (mode === "chat_completions") text = "Chat Completions로 호출합니다.";
+  if (p?.id === "openai" && model.startsWith("gpt-5.6") && mode === "auto") {
+    text += " 이 정리 작업은 도구를 쓰지 않으므로 기본 호출 방식을 유지합니다.";
+  }
+  $("s-runtime-hint").textContent = text;
+}
+
+$("s-model").addEventListener("input", explainRuntime);
+$("s-api-mode").addEventListener("change", explainRuntime);
+$("s-reasoning-effort").addEventListener("change", explainRuntime);
 
 /* The body box is JSON because the values are typed and nested -- 0.7 is a number,
    chat_template_kwargs is an object, and a key/value grid cannot say either. */
@@ -1459,6 +1407,8 @@ function setupBody(p) {
     api_base: p.needs_api_base ? $("s-base").value : null,
     api_headers: p.id === "custom" ? collectHeaders() : {},
     api_body: p.id === "custom" ? collectBody() : {},
+    api_mode: $("s-api-mode").value,
+    reasoning_effort: $("s-reasoning-effort").value,
   };
 }
 
@@ -1489,12 +1439,13 @@ $("s-check").addEventListener("click", async () => {
     // endpoint is a name that will simply 404 on the first upload.
     const saved = p.id === setup.provider_id;
     $("s-model").value = (saved && setup.model) || r.suggested_model || "";
+    explainRuntime();
     // A missing catalogue is not a missing endpoint. Plenty of OpenAI-compatible servers
     // never expose /models, or gate it differently from the thing we actually call.
     $("s-models-count").textContent = r.models.length
       ? `쓸 수 있는 모델 ${r.models.length}개. 무난한 모델을 골라 뒀으니 원하면 바꾸세요.`
       : `모델 목록을 받지 못했습니다${r.error ? ` (${r.error})` : ""} — 쓸 모델 이름을 직접 적어 주세요.`;
-    $("s-models").classList.remove("hidden");
+    setupStep(true);
   } catch (err) { showErr(err.message); } finally { btn.disabled = false; btn.textContent = "다음"; }
 });
 $("s-save").addEventListener("click", async () => {
@@ -1508,6 +1459,12 @@ $("s-save").addEventListener("click", async () => {
     $("setup").classList.add("hidden"); await refresh();
   } catch (err) { showErr(err.message); } finally { btn.disabled = false; }
 });
+
+// Arrived from 서고에 묻기, which has no wizard of its own.
+if (location.search.includes("setup")) {
+  history.replaceState(null, "", location.pathname);
+  setTimeout(() => openSetup(true), 0);
+}
 
 refresh()
   .then(syncBatches)
