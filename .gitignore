@@ -30,19 +30,11 @@ htmlcov/
 /TEAM.md
 /docs/git-workflow.md
 
-# Working notes for the agents that develop this repository, and the tuning
-# harness they drive. What the repository must be true to is SPEC.md and
-# docs/adr/; these are the scaffolding used to get there, and they carry
-# corpus-specific paths, round-by-round scores and abandoned experiments that
-# would read as decisions to anyone else.
+# Local specifications, design notes, experiments, and agent handoffs.
+/SPEC.md
+/docs/
 /CLAUDE.md
 /HANDOFF.md
-/docs/agent-plan.md
-/docs/ralf-handoff.md
-/docs/ralph/
-/docs/eval/
-/docs/troubleshooting/
-/docs/adr/archive/
 /scripts/
 /tests/test_log_analysis.py
 /tests/test_compare_vaults.py
@@ -56,6 +48,9 @@ Thumbs.db
 
 # Debug logs (per-run, regenerated)
 /logs/
+
+# Locally rendered product-demo videos and posters
+/artifacts/
 
 # Local agent handoff and one-off experiment process artifacts
 /NEXT_AGENT_HANDOFF.md

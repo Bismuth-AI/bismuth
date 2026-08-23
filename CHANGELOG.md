@@ -99,10 +99,9 @@ built yet.
 ### Notes
 
 - Every runtime dependency is MIT, BSD or Apache-2.0, and CI fails if anything
-  copyleft appears transitively. See [`docs/licensing.md`](docs/licensing.md).
+  copyleft appears transitively.
 - Quality on small local models is **not measured**. "Local works" is an argument
-  from the design (task decomposition and schema constraints), not a result. The
-  ADRs say so too.
+  from the design (task decomposition and schema constraints), not a result.
 
 [Unreleased]: https://github.com/Bismuth-AI/bismuth/compare/v0.1.1...HEAD
 [0.1.1]: https://github.com/Bismuth-AI/bismuth/compare/v0.1.0...v0.1.1

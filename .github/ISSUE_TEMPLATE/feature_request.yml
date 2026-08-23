@@ -20,9 +20,8 @@ body:
     attributes:
       label: What this would cost
       description: |
-        New dependency, a slower ingest, a decision that contradicts an ADR --
-        whatever you can see. An honest cost makes a proposal easier to accept,
-        not harder.
+        New dependency, a slower ingest, or a design tradeoff -- whatever you can
+        see. An honest cost makes a proposal easier to accept, not harder.
 
   - type: checkboxes
     id: licence

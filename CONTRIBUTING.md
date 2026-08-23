@@ -54,7 +54,7 @@ thing you need into `domain/`, not to add an ignore.
   Bismuth on a real corpus in your language and the cards come out wrong, that is a
   valuable bug report even without a fix.
 - **Small-model quality.** The claim "local models work" rests on task decomposition
-  and schema constraints ([ADR-0004](docs/adr/0004-llm-provider-abstraction.md)). It
+  and bounded output contracts. It
   is an argument about design, not a measurement. Measuring it would be the single
   most useful contribution available.
 - **Slow-loop signals.** The thresholds in [`config.py`](src/bismuth/config.py) are
@@ -68,8 +68,8 @@ licence rules it out. CI fails on AGPL/GPL/LGPL appearing anywhere in the tree.
 
 This has cost us real quality: PyMuPDF is a better PDF extractor than pypdf and we
 do not use it, and we hand-wrote an HWPX parser rather than take the AGPL one.
-[`docs/licensing.md`](docs/licensing.md) explains both. If a permissive alternative
-exists for something we currently do badly, that is a very welcome PR.
+If a permissive alternative exists for something we currently do badly, that is a
+very welcome PR.
 
 ## Tests
 
@@ -88,10 +88,9 @@ unit test stayed green.
 
 ## Changing a decision
 
-Design decisions live in [`docs/adr/`](docs/adr/) with their costs and the conditions
-that would overturn them. If your change contradicts one, that is allowed and
-interesting ??but say so in the PR, and add an ADR superseding it. Superseded ADRs
-stay; the reasoning is the point, including the reasoning we abandoned.
+Significant design changes should explain their rationale, costs, and alternatives in
+the PR. A change in direction is allowed and interesting; make the reasoning explicit
+so it remains recoverable from the repository history.
 
 ## Reporting bugs
 

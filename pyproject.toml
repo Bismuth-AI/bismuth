@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Text Processing :: Indexing",
 ]
 
-# Permissive licences only (MIT/BSD/Apache-2.0); see docs/licensing.md.
+# Permissive licences only (MIT/BSD/Apache-2.0).
 # PyMuPDF is avoided on purpose: AGPL-3.0 would relicense this project.
 dependencies = [
     "pydantic>=2.7,<3",           # MIT
