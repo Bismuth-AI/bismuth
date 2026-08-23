@@ -25,14 +25,25 @@ class FakeModel:
         self.calls: list[tuple[str, list[Message], list[ToolSpec]]] = []
 
     async def complete(
-        self, *, system: str, messages: Sequence[Message], tools: Sequence[ToolSpec]
+        self,
+        *,
+        system: str,
+        messages: Sequence[Message],
+        tools: Sequence[ToolSpec],
+        on_text: Callable[[str], None] | None = None,
     ) -> AssistantMessage:
         self.calls.append((system, list(messages), list(tools)))
         if self._handler is not None:
-            return self._handler(system, list(messages), list(tools))
-        if self._turns:
-            return self._turns.pop(0)
-        raise AssertionError("FakeModel ran out of scripted turns")
+            turn = self._handler(system, list(messages), list(tools))
+        elif self._turns:
+            turn = self._turns.pop(0)
+        else:
+            raise AssertionError("FakeModel ran out of scripted turns")
+        if on_text is not None and turn.text:
+            # A word at a time, so a caller that reassembles deltas is exercised.
+            for piece in turn.text.split(" "):
+                on_text(piece + " ")
+        return turn
 
 
 def call(name: str, arguments: dict[str, object] | None = None, *, call_id: str = "c1") -> ToolCall:

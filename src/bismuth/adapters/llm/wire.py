@@ -170,10 +170,17 @@ def _first_choice(chunk: Any) -> Any:
 
 
 def _dump_chunk(chunk: Any) -> Any:
-    """Preserve every field LiteLLM exposes for the received stream chunk."""
+    """Preserve every field LiteLLM exposes for the received stream chunk.
+
+    The Responses bridge currently replaces ``ResponsesAPIResponse.usage`` with a
+    chat-shaped dict after Pydantic validation. The data is intentional and usable,
+    but the model still declares ``ResponseAPIUsage`` and warns on every later dump.
+    These dumps are diagnostic snapshots, so retain the actual value without asking
+    Pydantic to warn about LiteLLM's known post-validation type substitution.
+    """
     dump = getattr(chunk, "model_dump", None)
     if dump is not None:
-        return dump(mode="json")
+        return dump(mode="json", warnings=False)
     if isinstance(chunk, dict):
         return chunk
     return str(chunk)

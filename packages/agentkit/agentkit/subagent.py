@@ -58,7 +58,9 @@ def subagent_tool(
         if on_event is not None:
 
             def forward(event: AgentEvent) -> None:
-                on_event(AgentEvent(f"sub:{event.kind}", {"subagent": args.subagent_type, **event.data}))
+                on_event(
+                    AgentEvent(f"sub:{event.kind}", {"subagent": args.subagent_type, **event.data})
+                )
 
         token = _depth.set(_depth.get() + 1)
         try:

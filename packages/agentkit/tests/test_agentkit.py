@@ -33,7 +33,11 @@ def make_delete(recorder: list[str]) -> FunctionTool:
         return f"deleted {args.path}"
 
     return FunctionTool(
-        name="delete", description="Delete a path.", params=PathArgs, handler=_delete, read_only=False
+        name="delete",
+        description="Delete a path.",
+        params=PathArgs,
+        handler=_delete,
+        read_only=False,
     )
 
 
@@ -49,6 +53,36 @@ class TestLoop:
         assert result.text == "done"
         assert result.stopped == "final"
         assert "echo: hi" in _tool_messages(result)[0]
+
+    async def test_history_is_replayed_before_the_new_input(self) -> None:
+        """A follow-up question is only answerable next to what was said before it."""
+        seen: list[list[str]] = []
+
+        def watch(system: str, messages, tools):  # type: ignore[no-untyped-def]
+            seen.append([f"{m.role}:{m.content}" for m in messages])
+            return says("second answer")
+
+        model = FakeModel(handler=watch)
+        before = [
+            agentkit.Message("user", "first question"),
+            agentkit.Message("assistant", "first answer"),
+        ]
+        result = await Agent(model=model, tools=[echo], system="s").run(
+            "and the newest one?", history=before
+        )
+
+        assert seen[0] == [
+            "user:first question",
+            "assistant:first answer",
+            "user:and the newest one?",
+        ]
+        assert result.messages[:2] == before, "the transcript grows, it is not replaced"
+
+    async def test_no_history_starts_from_the_question(self) -> None:
+        model = FakeModel([says("only answer")])
+        result = await Agent(model=model, tools=[echo], system="s").run("go")
+
+        assert [m.content for m in result.messages] == ["go", "only answer"]
 
     async def test_max_turns_guard_stops_a_looping_model(self) -> None:
         # A model that always asks for a tool would loop forever without the guard.
@@ -104,9 +138,7 @@ class TestPermission:
             return Permission.ALLOW
 
         model = FakeModel([says("", call("delete", {"path": "a"})), says("ok")])
-        agent = Agent(
-            model=model, tools=[make_delete(recorder)], system="s", on_ask=approve
-        )
+        agent = Agent(model=model, tools=[make_delete(recorder)], system="s", on_ask=approve)
         result = await agent.run("go")
 
         assert recorder == ["a"]
@@ -117,9 +149,7 @@ class TestObservability:
     async def test_events_trace_the_run(self) -> None:
         seen: list[agentkit.AgentEvent] = []
         model = FakeModel([says("", call("echo", {"text": "hi"})), says("done")])
-        result = await Agent(
-            model=model, tools=[echo], system="s", on_event=seen.append
-        ).run("go")
+        result = await Agent(model=model, tools=[echo], system="s", on_event=seen.append).run("go")
 
         kinds = [e.kind for e in result.events]
         assert kinds[:1] == ["turn"]
@@ -155,7 +185,9 @@ class TestSubAgent:
     async def test_task_delegates_and_returns_only_the_final_text(self) -> None:
         from agentkit import subagent_tool
 
-        finder = Agent(model=FakeModel([says("found: the answer is 42")]), tools=[echo], system="sub")
+        finder = Agent(
+            model=FakeModel([says("found: the answer is 42")]), tools=[echo], system="sub"
+        )
         task = subagent_tool({"finder": finder})
         main_model = FakeModel(
             [
@@ -209,7 +241,10 @@ class TestSubAgent:
         task = subagent_tool({"finder": sub}, on_event=seen.append)
         main = Agent(
             model=FakeModel(
-                [says("", call("task", {"description": "go", "subagent_type": "finder"})), says("ok")]
+                [
+                    says("", call("task", {"description": "go", "subagent_type": "finder"})),
+                    says("ok"),
+                ]
             ),
             tools=[task],
             system="main",

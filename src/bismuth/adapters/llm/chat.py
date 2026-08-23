@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
 from agentkit import AssistantMessage, Message, ToolCall, ToolSpec
@@ -20,7 +21,7 @@ from bismuth.adapters.llm.wire import (
     _shared_aiohttp_session,
 )
 from bismuth.logging_setup import log_llm_call
-from bismuth.ports.llm import Usage
+from bismuth.ports.llm import CURRENT_USAGE, Usage
 
 
 class LiteLLMChatModel:
@@ -56,7 +57,14 @@ class LiteLLMChatModel:
         system: str,
         messages: Sequence[Message],
         tools: Sequence[ToolSpec],
+        on_text: Callable[[str], None] | None = None,
     ) -> AssistantMessage:
+        """One turn. ``on_text`` receives prose as the provider emits it.
+
+        The chunks were always arriving -- they were accumulated and rebuilt into one
+        message, and nothing downstream ever saw them go past. A caller that wants to
+        show the answer being written only needs them handed on.
+        """
         wire: list[dict[str, Any]] = [{"role": "system", "content": system}]
         wire.extend(_to_wire(m) for m in messages)
 
@@ -117,6 +125,8 @@ class LiteLLMChatModel:
                             break
                         now = time.monotonic()
                         chunks.append(chunk)
+                        if on_text is not None and (piece := _text_of(chunk)):
+                            on_text(piece)
                         stream_log["chunks"].append(
                             {
                                 "n": len(chunks),
@@ -133,6 +143,11 @@ class LiteLLMChatModel:
                     "absolute_timeout": absolute.expired(),
                 }
                 log_llm_call(record)
+                if stated := _stated_context_limit(str(exc)):
+                    # The refusal knows the real window; the configured one was a
+                    # guess. Carry it on the exception so the loop can adopt it
+                    # instead of failing the same way on the next question too.
+                    exc.context_limit = stated  # type: ignore[attr-defined]
                 raise
             finally:
                 if response_stream is not None and not stream_log["completed"]:
@@ -149,13 +164,33 @@ class LiteLLMChatModel:
 
         # The agent runs on every upload; leaving its calls out of the total would make
         # the reported cost quietly wrong rather than merely incomplete.
-        self._usage.append(usage_of(response, self._model))
-        return _from_wire(response.choices[0].message)
+        spent = usage_of(response, self._model)
+        self._usage.append(spent)
+        captured = CURRENT_USAGE.get()
+        if captured is not None:
+            captured.append(spent)
+        # The loop budgets against the window; what the provider counted for this
+        # request is the only number that is not a guess.
+        return _from_wire(response.choices[0].message, spent.input_tokens)
 
     def drain_usage(self) -> list[Usage]:
         """Return usage recorded since the last drain, and reset."""
         drained, self._usage = self._usage, []
         return drained
+
+
+def _text_of(chunk: Any) -> str:
+    """The prose in one streamed chunk, if it carries any.
+
+    Defensive about the shape: a chunk may hold tool-call fragments, a usage report, or
+    nothing at all, and none of those should raise on the way to a UI.
+    """
+    try:
+        delta = chunk.choices[0].delta
+    except (AttributeError, IndexError, TypeError):
+        return ""
+    content = getattr(delta, "content", None)
+    return content if isinstance(content, str) else ""
 
 
 def _to_wire(message: Message) -> dict[str, Any]:
@@ -188,7 +223,16 @@ def _tool_to_wire(spec: ToolSpec) -> dict[str, Any]:
     }
 
 
-def _from_wire(message: Any) -> AssistantMessage:
+_CONTEXT_LIMIT = re.compile(r"maximum context length is (\d+)", re.IGNORECASE)
+
+
+def _stated_context_limit(message: str) -> int:
+    """The window size a provider names when it refuses an over-long request."""
+    found = _CONTEXT_LIMIT.search(message)
+    return int(found.group(1)) if found else 0
+
+
+def _from_wire(message: Any, input_tokens: int = 0) -> AssistantMessage:
     calls = []
     for raw in getattr(message, "tool_calls", None) or []:
         try:
@@ -196,4 +240,6 @@ def _from_wire(message: Any) -> AssistantMessage:
         except json.JSONDecodeError:
             arguments = {}
         calls.append(ToolCall(id=raw.id, name=raw.function.name, arguments=arguments))
-    return AssistantMessage(text=message.content or "", tool_calls=tuple(calls))
+    return AssistantMessage(
+        text=message.content or "", tool_calls=tuple(calls), input_tokens=input_tokens
+    )

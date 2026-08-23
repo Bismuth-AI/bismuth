@@ -9,6 +9,7 @@ Standalone by design -- it must never import its host application.
 
 from __future__ import annotations
 
+from agentkit import budget
 from agentkit.loop import Agent, AgentEvent, RunResult
 from agentkit.messages import AssistantMessage, Message, ToolCall, ToolSpec
 from agentkit.model import ChatModel
@@ -29,6 +30,7 @@ __all__ = [
     "ToolCall",
     "ToolRegistry",
     "ToolSpec",
+    "budget",
     "subagent_tool",
     "tool",
     "tool_spec",

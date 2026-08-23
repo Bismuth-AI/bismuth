@@ -24,6 +24,10 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         return self._by_name.get(name)
 
+    def all(self) -> list[Tool]:
+        """Every tool, in the order they were added."""
+        return list(self._by_name.values())
+
     def specs(self) -> list[ToolSpec]:
         return [tool_spec(t) for t in self._by_name.values()]
 
