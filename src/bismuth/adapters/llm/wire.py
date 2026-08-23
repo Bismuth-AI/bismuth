@@ -1,8 +1,4 @@
-"""The stream, and digging one reply out of it.
-
-Pure functions over what the provider sent back. Nothing here knows about schemas, budgets
-or retries -- those belong to the adapter, which is what makes these testable on their own.
-"""
+"""Streaming transport and response parsing helpers."""
 
 from __future__ import annotations
 
@@ -23,17 +19,10 @@ _owned_aiohttp_sessions: dict[int, Any] = {}
 
 
 def _load_litellm() -> Any:
-    """Import LiteLLM lazily, not at module scope, so our own ``.env`` load wins over python-dotenv's upward directory scan on import."""
+    """Import LiteLLM after application configuration is loaded."""
     global _litellm
     if _litellm is None:
-        # LiteLLM downloads its price list from GitHub while importing, with a five second
-        # timeout and a warning when it expires. Measured on a box that cannot reach
-        # raw.githubusercontent.com: 8.5s to import, against 3.1s with the bundled copy --
-        # paid at every start, and the first thing the user sees is a network warning from
-        # a tool that organises local files. The bundled copy ships with the installed
-        # LiteLLM, so a model priced only in a newer list reports no cost rather than a
-        # wrong one, which is what usage_of already does for anything unlisted. Set
-        # LITELLM_LOCAL_MODEL_COST_MAP=false to fetch the current list instead.
+        # Avoid network access while importing. Users may override this setting.
         os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
 
         import litellm
@@ -45,13 +34,7 @@ def _load_litellm() -> Any:
 
 
 async def _shared_aiohttp_session() -> Any | None:
-    """Own one explicit aiohttp session per event loop for real LiteLLM calls.
-
-    LiteLLM otherwise creates an implicit session on some OpenAI-compatible streaming
-    paths.  Exception/fallback paths can let that object be collected before its cache
-    cleanup runs, producing ``Unclosed client session`` during a live batch.  Tests and
-    embedders that replace LiteLLM with a stub do not need or receive this transport.
-    """
+    """Return the owned aiohttp session for the current event loop."""
     client = _load_litellm()
     if getattr(client, "__name__", "") != "litellm":
         return None
@@ -109,6 +92,13 @@ class _AbsoluteTimeoutError(TimeoutError):
 def _looks_like_timeout(exc: Exception) -> bool:
     names = " ".join(item.__name__ for item in exc.__class__.__mro__)
     return "timeout" in names.casefold() or "timed out" in str(exc).casefold()
+
+
+def _is_retryable_transport_error(exc: Exception) -> bool:
+    if _looks_like_timeout(exc):
+        return True
+    code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    return code in {408, 429, 500, 502, 503, 504}
 
 
 def _looks_like_repetition(exc: Exception) -> bool:
@@ -170,14 +160,7 @@ def _first_choice(chunk: Any) -> Any:
 
 
 def _dump_chunk(chunk: Any) -> Any:
-    """Preserve every field LiteLLM exposes for the received stream chunk.
-
-    The Responses bridge currently replaces ``ResponsesAPIResponse.usage`` with a
-    chat-shaped dict after Pydantic validation. The data is intentional and usable,
-    but the model still declares ``ResponseAPIUsage`` and warns on every later dump.
-    These dumps are diagnostic snapshots, so retain the actual value without asking
-    Pydantic to warn about LiteLLM's known post-validation type substitution.
-    """
+    """Serialize a stream chunk without emitting adapter-library warnings."""
     dump = getattr(chunk, "model_dump", None)
     if dump is not None:
         return dump(mode="json", warnings=False)
@@ -187,7 +170,7 @@ def _dump_chunk(chunk: Any) -> Any:
 
 
 def _parse_json(raw: str) -> Any:
-    """Recover a JSON object from a model reply: strict parse, then a fenced code block, then a balanced-brace scan.
+    """Recover a JSON object from plain, fenced, or prose-prefixed output.
 
     Raises:
         ValueError: if no JSON object can be found.
@@ -214,7 +197,7 @@ def _parse_json(raw: str) -> Any:
 
 
 def _first_balanced_object(text: str) -> Any | None:
-    """Scan for the first brace-balanced object, respecting string literals (a naive find/rfind slice breaks on nested braces)."""
+    """Parse the first brace-balanced JSON object while respecting strings."""
     start = text.find("{")
     if start == -1:
         return None
@@ -249,12 +232,7 @@ def _first_balanced_object(text: str) -> Any | None:
 
 
 def preload() -> None:
-    """Do the deferred LiteLLM import now.
-
-    The deferral exists to win a race against python-dotenv, not to postpone the cost:
-    importing LiteLLM takes seconds, and paying that inside the first request makes a
-    started server look like a hung one. Call once, after the configuration is loaded.
-    """
+    """Load LiteLLM after configuration and before the first request."""
     _load_litellm()
 
 

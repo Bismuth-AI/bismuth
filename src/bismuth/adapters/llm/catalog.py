@@ -1,4 +1,4 @@
-"""Asking a provider what models it will actually sell you, via plain HTTP rather than LiteLLM."""
+"""Provider capability checks over HTTP."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def list_models(
             return _custom(api_key, api_base or "http://localhost:11434/v1", extra)
     except Exception as exc:
         return ProviderCheck(ok=False, error=_explain(exc))
-    return ProviderCheck(ok=False, error=f"알 수 없는 프로바이더: {provider_id}")
+    return ProviderCheck(ok=False, error=f"Unknown provider: {provider_id}")
 
 
 def _openai(api_key: str, base: str, extra: dict[str, str]) -> ProviderCheck:
@@ -64,15 +64,7 @@ def _anthropic(api_key: str, extra: dict[str, str]) -> ProviderCheck:
 
 
 def _custom(api_key: str, base: str, extra: dict[str, str]) -> ProviderCheck:
-    """An OpenAI-shaped endpoint, where listing models is a courtesy rather than a rule.
-
-    vLLM, LM Studio and every gateway in front of them differ on whether `/models`
-    exists, whether it needs the same credential, and whether it needs one at all. A
-    KT Cloud proxy that served `/chat/completions` perfectly well answered `/models`
-    with `401 Not Authenticated - INVALIDCOOKIE`, and setup refused to continue --
-    over a listing nothing actually needs. So a failure here is reported and survived:
-    the model name gets typed instead.
-    """
+    """Query an OpenAI-compatible endpoint without requiring model listing support."""
     request_headers = {**({"Authorization": f"Bearer {api_key}"} if api_key else {}), **extra}
     try:
         body = _get(f"{base.rstrip('/')}/models", request_headers)
@@ -100,16 +92,7 @@ _PROBE_SCHEMA = {
 def supports_response_schema(
     *, api_base: str, model: str, api_key: str = "", headers: dict[str, str] | None = None
 ) -> bool:
-    """Whether this endpoint will constrain decoding to a JSON Schema.
-
-    Worth one call at setup, because the alternative is paid on every call afterwards.
-    LiteLLM answers this from a table of models it knows, so anything self-hosted is
-    "no" by default and every structured call falls back to describing the schema in the
-    prompt and hoping -- which cost two repair turns in eight calls on a 35B model,
-    returning eight topics where six were allowed and entities as strings.
-
-    Asked of the endpoint rather than of a table, because that is where the answer is.
-    """
+    """Return whether the endpoint enforces a JSON Schema response format."""
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": "ok"}],
@@ -122,11 +105,21 @@ def supports_response_schema(
         **(headers or {}),
     }
     try:
-        _post(f"{api_base.rstrip('/')}/chat/completions", request_headers, payload)
+        response = _post(f"{api_base.rstrip('/')}/chat/completions", request_headers, payload)
     except Exception as exc:
         logger.info("%s does not take a json_schema response_format: %s", api_base, _explain(exc))
         return False
-    return True
+    return _probe_succeeded(response)
+
+
+def _probe_succeeded(response: dict[str, Any]) -> bool:
+    try:
+        message = response["choices"][0]["message"]
+        content = message.get("parsed", message.get("content"))
+        parsed = json.loads(content) if isinstance(content, str) else content
+        return isinstance(parsed, dict) and isinstance(parsed.get("ok"), str)
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+        return False
 
 
 def _get(url: str, headers: dict[str, str]) -> dict[str, Any]:
@@ -143,7 +136,7 @@ def _post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[st
 
 
 def _explain(exc: Exception) -> str:
-    """Turn a provider's failure into a message that names the fix rather than the symptom."""
+    """Convert a provider error into a concise user-facing message."""
     if isinstance(exc, urllib.error.HTTPError):
         raw = b""
         try:
@@ -151,26 +144,18 @@ def _explain(exc: Exception) -> str:
             detail = json.loads(raw).get("error", {})
             message = detail.get("message") if isinstance(detail, dict) else str(detail)
         except Exception:
-            # Not every gateway answers in JSON, and the plain-text ones are often the
-            # only thing that says what is actually wrong.
             message = raw.decode("utf-8", "replace").strip()[:200]
-        # The server's own words, always. A gateway that says
-        # "Not Authenticated - INVALIDCOOKIE" is telling you it wants a cookie; reporting
-        # that as "키가 거부되었습니다" sends you to check a key that was never the problem.
-        said = f'서버 응답: "{message}"' if message else ""
+        said = f'Provider response: "{message}"' if message else ""
         if exc.code == 401:
-            return f"401 인증 실패 — 키나 헤더를 받아주지 않았습니다. {said}".strip()
+            return f"401 authentication failed. Check the API key and headers. {said}".strip()
         if exc.code == 403:
-            return f"403 — 인증은 됐지만 이 작업 권한이 없습니다. {said}".strip()
+            return f"403 permission denied. {said}".strip()
         if exc.code == 404:
-            return f"404 — 이 주소에 그런 경로가 없습니다. {said}".strip()
+            return f"404 endpoint not found. {said}".strip()
         return f"HTTP {exc.code}. {said}".strip()
 
     if isinstance(exc, urllib.error.URLError):
-        return (
-            f"엔드포인트에 연결하지 못했습니다 ({exc.reason}). 로컬 모델이라면 "
-            f"실행 중인지, 주소가 맞는지 확인해 주세요."
-        )
+        return f"Could not connect to the endpoint ({exc.reason}). Check its address and status."
     return str(exc)[:200]
 
 

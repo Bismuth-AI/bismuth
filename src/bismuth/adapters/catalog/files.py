@@ -1,4 +1,4 @@
-"""Derived state as plain files under ``.bismuth/``; fully reconstructible from the vault, so nothing here is irreplaceable."""
+"""File-backed cards and placements under ``.bismuth/``."""
 
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ class FileCatalog:
 
 
 def _safe_id(value: str) -> str:
-    """Refuse ids that could become a path. Document ids are hex, so this never fires."""
+    """Reject identifiers that could alter a filesystem path."""
     if not value or not all(c.isalnum() or c in "-_" for c in value):
         raise ValueError(f"unsafe catalog id: {value!r}")
     return value

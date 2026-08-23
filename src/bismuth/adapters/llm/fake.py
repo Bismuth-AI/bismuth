@@ -1,4 +1,4 @@
-"""A scripted model, for tests and offline demos; shipped rather than kept in ``tests/`` so embedders can test their own integration."""
+"""Scripted model for tests and offline use."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ Handler = Callable[[Prompt, type[BaseModel] | None], BaseModel | str]
 
 
 class FakeLLM:
-    """Returns canned objects and records what it was asked; a ``queue`` returns responses in order, a ``handler`` computes one from the prompt."""
+    """Return scripted responses and record calls."""
 
     def __init__(
         self,
@@ -125,9 +125,7 @@ class FakeLLM:
             selected = response.strip().upper()
         else:
             raise StructuredOutputError(f"FakeLLM choice needs str, got {type(response).__name__}")
-        # Deliberately let a scripted invalid literal through. Production adapters
-        # enforce the allow-list; service tests still need to exercise their own final
-        # trust boundary against a faulty adapter.
+        # Allow invalid scripts so service boundaries can be tested.
         return selected
 
     def drain_usage(self) -> list[Usage]:
@@ -139,7 +137,7 @@ class FakeLLM:
         return len(self.calls)
 
     def prompts_for(self, schema: type[BaseModel] | None) -> list[Prompt]:
-        """Every prompt sent while asking for ``schema``, so a test can assert on what the service told the model."""
+        """Return prompts sent for ``schema``."""
         from bismuth.prompts.placement import PlacementDecision
 
         if schema is PlacementDecision:

@@ -144,7 +144,8 @@ class LiteLLMChatModel:
                     "absolute_timeout": absolute.expired(),
                 }
                 log_llm_call(record)
-                if stated := _stated_context_limit(str(exc)):
+                overflow, stated = _context_overflow(exc)
+                if overflow:
                     raise ContextWindowExceededError(str(exc), context_limit=stated) from exc
                 raise
             finally:
@@ -213,13 +214,32 @@ def _tool_to_wire(spec: ToolSpec) -> dict[str, Any]:
     }
 
 
-_CONTEXT_LIMIT = re.compile(r"maximum context length is (\d+)", re.IGNORECASE)
+_CONTEXT_LIMIT_PATTERNS = (
+    re.compile(r"maximum context length is\s*(\d+)", re.IGNORECASE),
+    re.compile(r"context (?:window|length|limit)[^\d]{0,40}(\d+)\s*tokens", re.IGNORECASE),
+)
 
 
 def _stated_context_limit(message: str) -> int:
-    """The window size a provider names when it refuses an over-long request."""
-    found = _CONTEXT_LIMIT.search(message)
-    return int(found.group(1)) if found else 0
+    """Return a context limit stated in a provider error message."""
+    for pattern in _CONTEXT_LIMIT_PATTERNS:
+        if found := pattern.search(message):
+            return int(found.group(1))
+    return 0
+
+
+def _context_overflow(exc: Exception) -> tuple[bool, int]:
+    stated = getattr(exc, "context_limit", 0)
+    if isinstance(stated, int) and stated > 0:
+        return True, stated
+    message = str(exc)
+    stated = _stated_context_limit(message)
+    name = type(exc).__name__.casefold()
+    looks_named = "context" in name and any(word in name for word in ("limit", "length", "window"))
+    looks_messaged = "context" in message.casefold() and any(
+        word in message.casefold() for word in ("exceed", "too long", "maximum", "limit")
+    )
+    return bool(stated or looks_named or looks_messaged), stated
 
 
 def _from_wire(message: Any, input_tokens: int = 0) -> AssistantMessage:

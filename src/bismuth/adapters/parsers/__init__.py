@@ -1,4 +1,4 @@
-"""Document parsers; all under permissive licences (PyMuPDF/AGPL is deliberately excluded)."""
+"""Document parser adapters."""
 
 from bismuth.adapters.parsers.hwpx import HwpxParser
 from bismuth.adapters.parsers.office import DocxParser, PptxParser, XlsxParser
@@ -21,7 +21,7 @@ __all__ = [
 
 
 def build_registry() -> ExtensionRegistry:
-    """The default parser set; order is precedence, first parser claiming an extension keeps it."""
+    """Build the default parser registry in precedence order."""
     return ExtensionRegistry(
         [
             PlainTextParser(),

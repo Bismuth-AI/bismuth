@@ -23,6 +23,7 @@ from bismuth.adapters.llm.wire import (
     _field,
     _first_choice,
     _InactivityTimeoutError,
+    _is_retryable_transport_error,
     _load_litellm,
     _looks_like_repetition,
     _looks_like_timeout,
@@ -43,18 +44,12 @@ SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
-# Re-exported so callers keep one import for the provider adapter: the lifecycle lives in
-# :mod:`wire` because it belongs to the transport, not to this class.
+# Re-export transport lifecycle helpers with the adapter.
 __all__ = ["LiteLLMAdapter", "close_clients", "preload", "usage_of"]
 
 
 def usage_of(response: Any, model: str) -> Usage:
-    """Tokens and price for one completion. Shared with the chat adapter so the agent's
-    calls are counted the same way -- a total that silently omits them is a wrong total.
-
-    ``cost_usd`` is None when LiteLLM has no published rate for the model (local models,
-    anything unlisted); that is reported rather than guessed at.
-    """
+    """Return provider-reported tokens and price for one completion."""
     raw = getattr(response, "usage", None)
     try:
         cost = _load_litellm().completion_cost(completion_response=response)
@@ -69,40 +64,14 @@ def usage_of(response: Any, model: str) -> Usage:
     )
 
 
-"""Body values LiteLLM understands as its own arguments. Everything else has to be
-smuggled past it -- see :func:`apply_body`."""
-"""How the model picks its next token. A classification call owns these; see
-:func:`apply_body`."""
-
-
 _MINIMAL_REASONING = "minimal"
-"""What a classification call asks a reasoning model to spend on itself.
-
-A reasoning model's ``max_tokens`` is a total, not an output cap: its thinking is billed
-against the same budget and never streamed. Measured on gpt-5-nano at default effort --
-a placement choice returned ``out_tokens: 32``, ``finish_reason: length`` and an empty
-reply, twice, so every document failed; a card spent 2048 tokens and then 4096 the same
-way. There is nothing to reason about in these calls anyway. They ask a closed question
-with the answers listed, which is the same thing qwen's ``enable_thinking: false``
-already turns off, and thinking there cost 93 seconds a document instead of 6.
-
-LiteLLM removes the parameter for models it knows have no reasoning to configure, and an
-endpoint that refuses it by name is honoured through :func:`_learn_refusal`. An operator
-who wants more can set ``reasoning_effort`` in the configured body.
-"""
+"""Default reasoning effort for schema-bound and closed-choice calls."""
 
 
 def _loggable_parameters(
     kwargs: dict[str, Any], *, schema: type[BaseModel] | None
 ) -> dict[str, Any]:
-    """The generation settings this attempt actually ran with, minus the credentials.
-
-    An allowlist, not a blocklist: ``kwargs`` carries the api key and gateway headers,
-    and a diagnostic file is the last place either should be able to reach. Recorded
-    per attempt because a retry can change the cap and drop native schema enforcement,
-    and because a repetition cannot be blamed on or cleared of sampling without knowing
-    what the sampling was.
-    """
+    """Return non-secret generation settings for diagnostics."""
     logged: dict[str, Any] = {
         name: kwargs[name]
         for name in (
@@ -119,7 +88,13 @@ def _loggable_parameters(
         if name in kwargs
     }
     if extra := kwargs.get("extra_body"):
-        logged["extra_body"] = extra
+        safe_extra = {
+            name: extra[name]
+            for name in ("top_k", "min_p", "chat_template_kwargs")
+            if name in extra
+        }
+        if safe_extra:
+            logged["extra_body"] = safe_extra
     logged["native_schema"] = schema is not None
     return logged
 
@@ -158,13 +133,7 @@ markdown, or an answer wrapper.
 """
 _MAX_SCHEMA_MAX_TOKENS = 8192
 _CHOICE_MAX_TOKENS = 64
-"""What one literal out of a listed set is allowed to cost.
-
-A ceiling is free when the model stops on its own: an answer of ``F003`` is three tokens
-whether the ceiling is 8 or 64. The only thing a small one can do is cut the answer off,
-and for a model whose thinking is invisible it cuts before the answer starts. Measured on
-gpt-5-nano at minimal effort: 8 tokens spent with nothing shown, then ``SHELF`` in 12.
-"""
+"""Initial output budget for a closed-choice response."""
 _MAX_CHOICE_MAX_TOKENS = 512
 _REPAIR_RAW_CHARS = 2000
 _STALLED_WHITESPACE_CHARS = 512
@@ -258,10 +227,7 @@ class LiteLLMAdapter:
                 )
                 if attempt == self._max_retries:
                     break
-                # A native constrained decoder can itself be the source of a loop: JSON
-                # whitespace remains legal forever when it cannot choose the next field.
-                # Retry from the original task, without poisoned partial output, using
-                # prompt-embedded JSON instead of the same decoder path.
+                # Retry decoder loops without native schema enforcement.
                 native = False
                 messages = self._build_messages(prompt, schema=schema, native=False)
                 continue
@@ -275,18 +241,15 @@ class LiteLLMAdapter:
                 log_llm_call(record)
                 if isinstance(exc, _AbsoluteTimeoutError):
                     raise ModelRequestError(
-                        f"LLM 응답 제한시간 {self._absolute_timeout:g}초를 초과했습니다 "
+                        f"LLM response exceeded {self._absolute_timeout:g} seconds "
                         "(absolute generation limit)"
                     ) from exc
                 if _looks_like_timeout(exc):
                     raise ModelRequestError(
-                        f"LLM 응답 제한시간 {self._timeout:g}초를 초과했습니다 "
-                        "(stream inactivity limit)"
+                        f"LLM response exceeded {self._timeout:g} seconds (stream inactivity limit)"
                     ) from exc
-                raise ModelRequestError(f"LLM 요청 실패: {error}") from exc
-            # Waiting for the semaphore counts: on a shared endpoint the queue is most
-            # of the wall clock, and a duration that excluded it would say every call
-            # was fast while the run took an hour.
+                raise ModelRequestError(f"LLM request failed: {error}") from exc
+            # Elapsed time includes waiting for endpoint concurrency.
             elapsed_ms = round((time.monotonic() - started) * 1000)
             self._usage.append(usage.model_copy(update={"retries": attempt}))
             attempt_log.update(
@@ -299,10 +262,6 @@ class LiteLLMAdapter:
             if attempt_log["stream"].get("finish_reason") == "length":
                 last_raw = raw
                 effective_cap = int(attempt_log.get("max_tokens", output_cap))
-                # "output reached the limit" was read off finish_reason alone, and it said
-                # that about a reasoning model that had produced nothing at all: the cap is
-                # a total, and the thinking billed against it is never streamed. Doubling
-                # the budget cannot fix that, so the message must not imply it can.
                 last_error = (
                     f"the {effective_cap}-token budget was spent without producing any "
                     "output; a reasoning model counts its own thinking against it"
@@ -322,17 +281,12 @@ class LiteLLMAdapter:
                     self._max_retries + 1,
                 )
                 if effective_cap < output_cap:
-                    # A user-configured API body deliberately imposed the lower cap;
-                    # retrying cannot raise it and would reproduce the same truncation.
+                    # A configured lower cap cannot be raised by a retry.
                     break
                 next_cap = min(max(output_cap, effective_cap) * 2, _MAX_SCHEMA_MAX_TOKENS)
                 if attempt == self._max_retries or next_cap <= effective_cap:
                     break
                 output_cap = next_cap
-                # Say what went wrong. Silently doubling the budget is fuel when the
-                # cause is a model enumerating rather than a document that is genuinely
-                # long: one card filled 2048, then 4096, then 8192 tokens and the
-                # document was lost. A reply that stops is worth more than a longer one.
                 messages = [
                     *self._build_messages(prompt, schema=schema, native=native),
                     {"role": "user", "content": _LENGTH_INSTRUCTION},
@@ -357,9 +311,7 @@ class LiteLLMAdapter:
                 )
                 if attempt == self._max_retries:
                     break
-                # Start a clean request from the original task. The full invalid reply
-                # remains in the diagnostic log, but only a bounded fragment is allowed
-                # back into model context.
+                # Bound invalid output before including it in a repair prompt.
                 messages = [
                     *self._build_messages(prompt, schema=schema, native=native),
                     {
@@ -389,17 +341,7 @@ class LiteLLMAdapter:
         max_tokens: int,
         temperature: float = 0.0,
     ) -> str:
-        """Open text, with a budget and no grammar.
-
-        The same transport, the same repetition breaker, the same logging as every other
-        call -- the only difference is that nothing constrains the tokens. Measured over
-        twelve documents, a JSON schema compiled to a grammar emptied a nested array in
-        21 of 36 replies and cut eleven labels mid-word at its own ceiling, while a line
-        format asked for in the prompt lost neither.
-
-        One clean retry if the reply is empty. There is no schema to repair against, so a
-        second attempt starts from the original task rather than from the bad answer.
-        """
+        """Return open text, retrying one empty or transiently failed response."""
         model = self._model
         call_id = self._next_call_id()
         record: dict[str, Any] = {
@@ -435,8 +377,6 @@ class LiteLLMAdapter:
                 raw = str(attempt_log.get("stream", {}).get("content", ""))
                 last_error = str(exc)
                 attempt_log.update(ms=round((time.monotonic() - started) * 1000), error=last_error)
-                # Whatever arrived before the loop is still the model's answer to this
-                # task, and a line format loses only the lines after the break.
                 if raw.strip():
                     record["ok"] = True
                     record["ms"] = round((time.monotonic() - began) * 1000)
@@ -448,7 +388,7 @@ class LiteLLMAdapter:
                 attempt_log.update(
                     ms=round((time.monotonic() - started) * 1000), transport_error=last_error
                 )
-                if attempt:
+                if attempt or not _is_retryable_transport_error(exc):
                     break
                 continue
             self._usage.append(usage.model_copy(update={"retries": attempt}))
@@ -510,10 +450,6 @@ class LiteLLMAdapter:
         last_raw = ""
         last_error = ""
         cap = _CHOICE_MAX_TOKENS
-        # A queue rather than a fixed pair, because the two recoveries are different
-        # questions. The stripped prompt is for a model that answered with the wrong kind
-        # of thing; a spent budget means the real question was never answered at all, and
-        # asking a smaller version of it instead is a worse question, not a retry.
         pending = [base_messages, clean_messages]
         attempt = -1
         while pending:
@@ -569,10 +505,6 @@ class LiteLLMAdapter:
                 log_llm_call(record)
                 return selected
             if not selected and attempt_log.get("stream", {}).get("finish_reason") == "length":
-                # Nothing was output and the budget is gone, so it went somewhere invisible:
-                # a reasoning model bills its thinking against the same cap. Raising it is
-                # safe here in a way it is not for a card -- a closed choice's output is
-                # bounded by the literals, so the extra room can only absorb thinking.
                 last_error = (
                     f"the {cap}-token budget was spent without producing any output; "
                     "a reasoning model counts its own thinking against it"
@@ -581,7 +513,7 @@ class LiteLLMAdapter:
                 logger.warning("%s produced no choice within %d tokens", self._model, cap)
                 if (raised := min(cap * 8, _MAX_CHOICE_MAX_TOKENS)) > cap:
                     cap = raised
-                    pending.insert(0, messages)  # the same question, with room to answer it
+                    pending.insert(0, messages)
                 continue
             last_error = f"reply {raw[:200]!r} is not one exact allowed literal"
             attempt_log["error"] = last_error
@@ -593,7 +525,7 @@ class LiteLLMAdapter:
         )
         log_llm_call(record)
         raise StructuredOutputError(
-            f"{self._model} did not return one allowed choice after 2 attempts. "
+            f"{self._model} did not return one allowed choice after {attempt + 1} attempts. "
             f"Last error: {last_error}. Last reply: {last_raw[:200]!r}"
         )
 
@@ -606,12 +538,7 @@ class LiteLLMAdapter:
         return drained
 
     def _supports_native_schema(self, model: str) -> bool:
-        """Whether decoding can be constrained to the schema.
-
-        Configured first: LiteLLM answers from a table of models it knows, so a
-        self-hosted endpoint is always "no" there even when it does support it, and the
-        difference is a repair turn on every reply the model gets slightly wrong.
-        """
+        """Return whether decoding can be constrained to the schema."""
         if self._native_schema is not None:
             return self._native_schema
         if model not in self._native_schema_support:
@@ -628,14 +555,14 @@ class LiteLLMAdapter:
     ) -> list[dict[str, Any]]:
         system = prompt.system
         if not native:
-            # Tier 2/3: embed the schema in the prompt since nothing downstream enforces it.
+            # Embed the schema when native enforcement is unavailable.
             system = f"{system}\n\n" + _JSON_INSTRUCTION.format(
                 schema=json.dumps(schema.model_json_schema(), ensure_ascii=False, indent=2)
             )
 
         system_message: dict[str, Any] = {"role": "system", "content": system}
         if prompt.cache_hint:
-            # Anthropic-style prompt caching; drop_params discards this for providers that don't support it.
+            # Mark reusable system content for providers that support prompt caching.
             system_message["content"] = [
                 {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
             ]
@@ -660,31 +587,23 @@ class LiteLLMAdapter:
             "timeout": self._timeout,
             "stream": True,
             "stream_options": {"include_usage": True},
-            # OpenAI-compatible clients otherwise retry a timed-out local request twice.
-            # The server may keep generating the abandoned requests, turning one
-            # 120-second timeout into a six-minute queue that looks like a dead batch.
+            # Keep transport retries under application control.
             "max_retries": 0,
         }
         if self._api_key:
-            # Explicit every call, so a stale key in os.environ can't silently
-            # override the one configured in .env.
+            # Prefer the configured key over environment state.
             kwargs["api_key"] = self._api_key
         if self._api_base:
             kwargs["api_base"] = self._api_base
         if self._headers:
-            # Some endpoints sit behind a gateway that authenticates with a cookie or
-            # its own header; without these the call never reaches the model.
             kwargs["extra_headers"] = self._headers
-        # Every call through this adapter is schema-bound or a closed choice, so Bismuth
-        # owns how the token is picked. The agent chat path keeps the operator's values.
+        # Classification calls own their sampling behavior.
         apply_body(kwargs, self._body, owns_sampling=True)
         if "reasoning_effort" not in kwargs:
             kwargs["reasoning_effort"] = _MINIMAL_REASONING
         if force_temperature:
             kwargs["temperature"] = temperature
-        # Config may request a smaller budget, but it cannot raise a task's reviewed
-        # safety ceiling. Use one OpenAI-compatible spelling to avoid sending two
-        # contradictory limits.
+        # Configuration may lower, but not raise, the task output cap.
         configured_limits = [
             value
             for value in (kwargs.pop("max_tokens", None), kwargs.pop("max_completion_tokens", None))
@@ -806,8 +725,7 @@ class LiteLLMAdapter:
                     raise _RepetitionDetectedError("<provider repeated stream chunk>") from exc
                 raise
             finally:
-                # Preserve the complete partial output even when reading the next chunk
-                # raises a timeout. Joining once avoids quadratic work on long streams.
+                # Preserve partial output and join once.
                 stream_log["content"] = "".join(content_parts)
                 stream_log["reasoning_content"] = "".join(reasoning_parts)
                 if response_stream is not None and not stream_log["completed"]:
