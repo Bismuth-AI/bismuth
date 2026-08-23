@@ -1,9 +1,4 @@
-"""Delegation: a `task` tool that runs a named sub-agent and returns only its answer.
-
-A sub-agent is just another :class:`Agent`. ``task`` runs it fresh (its own message
-history, its own tools) and hands back only its final text -- the parent never sees
-the sub-agent's intermediate work. That context isolation is the whole point.
-"""
+"""Isolated delegation to named sub-agents."""
 
 from __future__ import annotations
 
@@ -21,9 +16,7 @@ standalone description -- it does not see this conversation, only what you write
 here. You get back its final answer. Available sub-agents: {agents}.\
 """
 
-# Delegation depth, tracked across awaits so a sub-agent that itself delegates
-# cannot recurse without bound. asyncio.gather copies the context per task, so
-# parallel sub-agents each count from the same base.
+# Context-local depth prevents unbounded nested delegation.
 _depth: contextvars.ContextVar[int] = contextvars.ContextVar("agentkit_task_depth", default=0)
 
 
@@ -35,12 +28,7 @@ def subagent_tool(
     max_depth: int = 4,
     on_event: OnEvent | None = None,
 ) -> Tool:
-    """A tool that dispatches to one of ``subagents`` by name.
-
-    ``max_depth`` bounds nested delegation. If ``on_event`` is given, the
-    sub-agent's events are forwarded to it, tagged ``sub:<kind>`` with the
-    sub-agent's name, so one sink can observe the whole tree.
-    """
+    """Create a tool that delegates to a named sub-agent."""
     available = ", ".join(subagents) or "(none)"
 
     class TaskArgs(BaseModel):
@@ -75,5 +63,5 @@ def subagent_tool(
         params=TaskArgs,
         handler=handler,
         read_only=True,
-        concurrency_safe=False,  # a sub-agent may do anything, incl. mutate -- serialize
+        concurrency_safe=False,  # Sub-agents may mutate shared state.
     )

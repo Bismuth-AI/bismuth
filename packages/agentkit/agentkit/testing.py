@@ -40,7 +40,7 @@ class FakeModel:
         else:
             raise AssertionError("FakeModel ran out of scripted turns")
         if on_text is not None and turn.text:
-            # A word at a time, so a caller that reassembles deltas is exercised.
+            # Exercise callers that reassemble streamed deltas.
             for piece in turn.text.split(" "):
                 on_text(piece + " ")
         return turn

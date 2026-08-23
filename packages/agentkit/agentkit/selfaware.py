@@ -1,16 +1,4 @@
-"""Tools that let a run see its own state: what budget is left, and what it planned to do.
-
-Both are taken from codex (`get_context_remaining`, `update_plan`). The reasoning behind
-each is the same: an agent that cannot see a constraint cannot work within it.
-
-Bismuth's measurements said the same thing twice. One question needed four laws, spent its
-whole budget reading the first, and said so in its own answer -- "이 서고에 있는 단일 문서를
-근거로 정리한 것입니다". Another opened every document it needed and then stopped at the turn
-backstop. Neither knew how much was left, and neither had written down what it still owed.
-
-Unlike the vault tools these are not about the corpus, so they live in agentkit: any agent
-with a budget can use them, and the loop is the only thing that knows what the budget is.
-"""
+"""Tools for tracking a run's budget and plan."""
 
 from __future__ import annotations
 
@@ -53,7 +41,7 @@ class Plan:
 
     def render(self) -> str:
         if not self.steps:
-            return "(계획 없음)"
+            return "(no plan)"
         mark = {"pending": "☐", "in_progress": "▶", "completed": "☑", "dropped": "✕"}
         return "\n".join(f"{mark[s.status]} {s.step}" for s in self.steps)
 
@@ -66,27 +54,27 @@ class _NoArgs(BaseModel):
 
 
 class _StepIn(BaseModel):
-    step: str = Field(description="무엇을 할지 한 줄로.")
+    step: str = Field(description="One concise action.")
     status: str = Field(
         default="pending",
-        description="pending | in_progress | completed | dropped. 동시에 in_progress 는 하나만.",
+        description="pending | in_progress | completed | dropped. Only one may be in progress.",
     )
 
 
 class _PlanIn(BaseModel):
-    plan: list[_StepIn] = Field(description="계획 전체. 부분이 아니라 매번 전체를 준다.")
-    note: str = Field(default="", description="계획을 바꿨다면 왜 바꿨는지 한 줄.")
+    plan: list[_StepIn] = Field(description="The complete plan, including unchanged steps.")
+    note: str = Field(default="", description="A concise reason for changing the plan.")
 
 
 def budget_tool(spend: Spend) -> FunctionTool:
-    """Lets the agent ask how much room is left before it has to answer."""
+    """Create a tool that reports the remaining run budget."""
 
     async def _left(args: _NoArgs) -> str:
         if not spend.budget:
-            return "예산 한도가 없다."
+            return "No budget limit is set."
         return (
-            f"예산의 {spend.share_left:.0%}가 남았다 (약 {spend.left:,} 토큰). "
-            f"다 쓰면 도구 없이 답만 쓰게 된다."
+            f"{spend.share_left:.0%} of the budget remains (about {spend.left:,} tokens). "
+            "When it is exhausted, no more tools can be used."
         )
 
     return FunctionTool(
@@ -101,17 +89,17 @@ def budget_tool(spend: Spend) -> FunctionTool:
 
 
 def plan_tool(plan: Plan) -> FunctionTool:
-    """Lets the agent write down what it owes, so a wide question is not silently narrowed."""
+    """Create a tool that replaces and reports the current plan."""
 
     async def _update(args: _PlanIn) -> str:
         for item in args.plan:
             if item.status not in STATUSES:
-                return f"status 는 {' | '.join(STATUSES)} 중 하나여야 한다: {item.status!r}"
+                return f"Status must be one of {' | '.join(STATUSES)}: {item.status!r}"
         running = [i for i in args.plan if i.status == "in_progress"]
         if len(running) > 1:
             return (
-                "in_progress 는 한 번에 하나만 둔다. 지금 하는 것 하나만 in_progress 로 두고 "
-                f"나머지는 pending 으로: {[i.step for i in running]}"
+                "Only one step may be in progress. Mark the others as pending: "
+                f"{[i.step for i in running]}"
             )
         plan.steps = [Step(step=i.step, status=i.status) for i in args.plan]
         return plan.render()

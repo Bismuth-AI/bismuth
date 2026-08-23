@@ -39,11 +39,7 @@ def tool_spec(t: Tool) -> ToolSpec:
 
 
 class FunctionTool:
-    """A tool backed by an async function taking one pydantic model and returning text.
-
-    Permission defaults fail-closed: a ``read_only`` tool is ALLOW, anything that
-    mutates is ASK, unless an explicit ``permission`` callable overrides.
-    """
+    """An async function exposed as a typed tool with fail-closed permissions."""
 
     def __init__(
         self,
@@ -82,11 +78,7 @@ def tool(
     concurrency_safe: bool | None = None,
     permission: Callable[[BaseModel], Permission] | None = None,
 ) -> Callable[[Callable[[Any], Awaitable[str]]], FunctionTool]:
-    """Wrap an ``async def fn(args: SomeModel) -> str`` into a :class:`FunctionTool`.
-
-    The params model is read from the function's single argument annotation; the
-    name and description default to the function's name and docstring.
-    """
+    """Wrap a single-parameter async function as a ``FunctionTool``."""
 
     def decorate(fn: Callable[[Any], Awaitable[str]]) -> FunctionTool:
         params = _single_model_param(fn)

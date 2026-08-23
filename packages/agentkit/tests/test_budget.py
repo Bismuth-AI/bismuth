@@ -7,7 +7,7 @@ import itertools
 import pytest
 from pydantic import BaseModel
 
-from agentkit import Agent, budget
+from agentkit import Agent, ContextWindowExceededError, budget
 from agentkit.messages import AssistantMessage, Message
 from agentkit.testing import FakeModel, call, says
 from agentkit.tool import FunctionTool
@@ -24,10 +24,9 @@ def big_tool(size: int) -> FunctionTool:
     return FunctionTool(name="big", description="Return a lot.", params=TextArgs, handler=_big)
 
 
-def test_estimate_does_not_undercount_korean() -> None:
-    korean = "법령의 시행일은 공포한 날부터 기산한다" * 20
-    # A Hangul syllable is about one token; undercounting is what overflows a window.
-    assert budget.estimate(korean) >= len(korean.replace(" ", ""))
+def test_estimate_does_not_undercount_multibyte_text() -> None:
+    text = "🔎📚⚖️" * 20
+    assert budget.estimate(text) >= len(text)
 
 
 def test_clip_keeps_both_ends_and_says_what_it_dropped() -> None:
@@ -88,7 +87,6 @@ def test_evict_never_leaves_a_result_answering_a_dropped_call() -> None:
 
 @pytest.mark.asyncio
 async def test_transcript_is_compacted_instead_of_overflowing() -> None:
-    """A run whose tool results outgrow the window keeps going on cleared results."""
     turns = [says("", call("big", {}, call_id=f"c{i}")) for i in range(12)] + [says("done")]
     model = FakeModel(turns)
     agent = Agent(
@@ -122,12 +120,11 @@ async def test_a_tool_result_is_clipped_before_it_enters_the_transcript() -> Non
 
 @pytest.mark.asyncio
 async def test_a_spent_run_still_answers() -> None:
-    """Out of budget is not a reason to say nothing: the tools go away, the question stays."""
     seen: list[int] = []
 
     def handler(system: str, messages: list[Message], tools: list[object]) -> object:
         seen.append(len(tools))
-        return says("찾은 것까지는 이렇다") if not tools else says("", call("big"))
+        return says("Here is what I found.") if not tools else says("", call("big"))
 
     model = FakeModel(handler=handler)
     agent = Agent(
@@ -140,7 +137,7 @@ async def test_a_spent_run_still_answers() -> None:
     result = await agent.run("go")
 
     assert result.stopped == "budget"
-    assert result.text == "찾은 것까지는 이렇다"
+    assert result.text == "Here is what I found."
     assert seen[-1] == 0, "the last turn must be asked without tools"
     assert result.turns < 100, "the budget, not the backstop, ended this"
 
@@ -148,7 +145,7 @@ async def test_a_spent_run_still_answers() -> None:
 @pytest.mark.asyncio
 async def test_the_turn_backstop_also_answers() -> None:
     def handler(system: str, messages: list[Message], tools: list[object]) -> object:
-        return says("여기까지 확인했다") if not tools else says("", call("big"))
+        return says("This is what I confirmed.") if not tools else says("", call("big"))
 
     agent = Agent(
         model=FakeModel(handler=handler),
@@ -160,18 +157,17 @@ async def test_the_turn_backstop_also_answers() -> None:
     result = await agent.run("go")
 
     assert result.stopped == "max_turns"
-    assert result.text == "여기까지 확인했다"
+    assert result.text == "This is what I confirmed."
 
 
 @pytest.mark.asyncio
 async def test_a_refused_request_is_retried_against_a_smaller_transcript() -> None:
-    """The estimate can be wrong; the provider saying no is not the end of the run."""
     tries: list[int] = []
 
     def handler(system: str, messages: list[Message], tools: list[object]) -> object:
         tries.append(len(messages))
         if len(tries) == 2:
-            raise RuntimeError("ContextWindowExceededError")
+            raise ContextWindowExceededError("request exceeds context window")
         return says("done") if len(tries) > 2 else says("", call("big", {}, call_id="c1"))
 
     model = FakeModel(handler=handler)
@@ -189,10 +185,28 @@ async def test_a_refused_request_is_retried_against_a_smaller_transcript() -> No
 
 
 @pytest.mark.asyncio
+async def test_an_unrelated_model_error_is_not_retried() -> None:
+    calls = 0
+
+    def handler(system: str, messages: list[Message], tools: list[object]) -> object:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("authentication failed")
+
+    agent = Agent(model=FakeModel(handler=handler), tools=[], system="s")
+
+    with pytest.raises(RuntimeError, match="authentication failed"):
+        await agent.run("go")
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_history_goes_before_the_question_does() -> None:
-    """Compaction eats an earlier conversation first; the question asked is untouchable."""
-    history = [Message("user", "옛 질문 " * 2_000), Message("assistant", "옛 답 " * 2_000)]
-    model = FakeModel([says("", call("big", {}, call_id="c1")), says("답")])
+    history = [
+        Message("user", "old question " * 2_000),
+        Message("assistant", "old answer " * 2_000),
+    ]
+    model = FakeModel([says("", call("big", {}, call_id="c1")), says("answer")])
     agent = Agent(
         model=model,
         tools=[big_tool(50)],
@@ -200,20 +214,16 @@ async def test_history_goes_before_the_question_does() -> None:
         context_tokens=6_000,
         result_max_chars=100_000,
     )
-    result = await agent.run("이번 질문", history=history)
+    result = await agent.run("current question", history=history)
 
     sent = model.calls[-1][1]
-    assert any(m.content == "이번 질문" for m in sent), "the question was evicted"
-    assert not any(m.content.startswith("옛 질문") for m in sent), "history should go first"
-    assert result.text == "답"
+    assert any(m.content == "current question" for m in sent), "the question was evicted"
+    assert not any(m.content.startswith("old question") for m in sent), "history should go first"
+    assert result.text == "answer"
 
 
 def test_since_trusts_the_measured_prefix_over_the_estimate() -> None:
-    """A measured count plus the delta -- not a guess at the whole thing."""
     messages = [Message("user", "x" * 100_000), Message("tool", "y" * 30, tool_call_id="1")]
-
-    # The provider said the first message's request cost 7 tokens. It is wrong about
-    # nothing: that IS what it cost. Only what came after it is estimated.
     counted = budget.since(7, messages, at=1)
 
     assert counted < 50, "the measured prefix was re-estimated instead of trusted"
@@ -237,7 +247,6 @@ def test_fit_batch_leaves_a_turn_that_already_fits() -> None:
 
 @pytest.mark.asyncio
 async def test_the_loop_budgets_against_the_provider_count_when_it_has_one() -> None:
-    """Several parallel results, each under the per-result cap, still bound as one turn."""
     turns = [
         AssistantMessage(
             "",
@@ -264,12 +273,6 @@ async def test_the_loop_budgets_against_the_provider_count_when_it_has_one() -> 
 
 @pytest.mark.asyncio
 async def test_compaction_leaves_room_instead_of_clearing_to_the_line() -> None:
-    """Freeing exactly the overage puts the next turn over the line again, and every turn after.
-
-    Measured as the gap between compactions: clearing to the ceiling makes it fire on
-    consecutive turns once the transcript is full, which re-invalidates the prompt cache
-    each time. Clearing to a target below it buys several quiet turns.
-    """
     turns = [says("", call("big", {}, call_id=f"c{i}")) for i in range(30)] + [says("done")]
     agent = Agent(
         model=FakeModel(turns),
@@ -292,15 +295,14 @@ async def test_compaction_leaves_room_instead_of_clearing_to_the_line() -> None:
 
 @pytest.mark.asyncio
 async def test_a_stated_context_limit_is_adopted_over_the_configured_one() -> None:
-    """The configured window is an assumption; the refusal that names one is a fact."""
     tries: list[int] = []
 
     def handler(system: str, messages: list[Message], tools: list[object]) -> object:
         tries.append(1)
         if len(tries) == 1:
-            refusal = RuntimeError("maximum context length is 8000 tokens")
-            refusal.context_limit = 8_000  # type: ignore[attr-defined]
-            raise refusal
+            raise ContextWindowExceededError(
+                "maximum context length is 8000 tokens", context_limit=8_000
+            )
         return says("done")
 
     agent = Agent(

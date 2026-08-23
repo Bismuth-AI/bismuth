@@ -9,7 +9,13 @@ import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
-from agentkit import AssistantMessage, Message, ToolCall, ToolSpec
+from agentkit import (
+    AssistantMessage,
+    ContextWindowExceededError,
+    Message,
+    ToolCall,
+    ToolSpec,
+)
 
 from bismuth.adapters.llm.body import _drop_unsupported, apply_body
 from bismuth.adapters.llm.litellm_adapter import usage_of
@@ -59,12 +65,7 @@ class LiteLLMChatModel:
         tools: Sequence[ToolSpec],
         on_text: Callable[[str], None] | None = None,
     ) -> AssistantMessage:
-        """One turn. ``on_text`` receives prose as the provider emits it.
-
-        The chunks were always arriving -- they were accumulated and rebuilt into one
-        message, and nothing downstream ever saw them go past. A caller that wants to
-        show the answer being written only needs them handed on.
-        """
+        """Return one model turn and stream text through ``on_text`` when provided."""
         wire: list[dict[str, Any]] = [{"role": "system", "content": system}]
         wire.extend(_to_wire(m) for m in messages)
 
@@ -144,10 +145,7 @@ class LiteLLMChatModel:
                 }
                 log_llm_call(record)
                 if stated := _stated_context_limit(str(exc)):
-                    # The refusal knows the real window; the configured one was a
-                    # guess. Carry it on the exception so the loop can adopt it
-                    # instead of failing the same way on the next question too.
-                    exc.context_limit = stated  # type: ignore[attr-defined]
+                    raise ContextWindowExceededError(str(exc), context_limit=stated) from exc
                 raise
             finally:
                 if response_stream is not None and not stream_log["completed"]:
@@ -162,15 +160,11 @@ class LiteLLMChatModel:
         stream_log["elapsed_ms"] = round((time.monotonic() - began) * 1000)
         log_llm_call(record)
 
-        # The agent runs on every upload; leaving its calls out of the total would make
-        # the reported cost quietly wrong rather than merely incomplete.
         spent = usage_of(response, self._model)
         self._usage.append(spent)
         captured = CURRENT_USAGE.get()
         if captured is not None:
             captured.append(spent)
-        # The loop budgets against the window; what the provider counted for this
-        # request is the only number that is not a guess.
         return _from_wire(response.choices[0].message, spent.input_tokens)
 
     def drain_usage(self) -> list[Usage]:
@@ -180,11 +174,7 @@ class LiteLLMChatModel:
 
 
 def _text_of(chunk: Any) -> str:
-    """The prose in one streamed chunk, if it carries any.
-
-    Defensive about the shape: a chunk may hold tool-call fragments, a usage report, or
-    nothing at all, and none of those should raise on the way to a UI.
-    """
+    """Return text from a streamed chunk when present."""
     try:
         delta = chunk.choices[0].delta
     except (AttributeError, IndexError, TypeError):

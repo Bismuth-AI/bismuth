@@ -1,8 +1,8 @@
 # agentkit
 
-A minimal, framework-free tool-using agent loop. No LangChain, no LangGraph — the
-core is a loop that asks a model for a turn, runs the tools it requests through a
-fail-closed permission gate, and feeds the results back until the model is done.
+A minimal, framework-free tool-using agent loop. It asks a model for a turn, runs
+requested tools through a fail-closed permission gate, and feeds results back until
+the model is done.
 
 Depends only on `pydantic` and a `ChatModel` protocol you implement for your
 provider. Standalone by design: it never imports its host application (enforced by
@@ -13,12 +13,8 @@ a test), so it can be extracted and published on its own.
 - **`Agent`** — the loop: call model → run tool calls → feed results back → stop
   when a turn has no tool calls. Concurrency-safe tools in a turn run in parallel;
   every step is an `AgentEvent` for logging.
-- **`budget`** — what actually ends a run: the context window, not a turn count. The
-  transcript is measured before every call; over the ceiling, over-long tool results
-  are clipped, the oldest ones cleared (the recent ones kept, so the model still has
-  working context), and whole messages evicted only as a last resort. A run that
-  spends its token budget gets one final turn with the tools withdrawn, so it answers
-  from what it found instead of falling silent. `max_turns` is only a runaway backstop.
+- **`budget`** — estimates transcript size, clips large results, compacts old results,
+  and evicts messages only when needed. Exhausted runs get one final turn without tools.
 - **`Tool` / `FunctionTool` / `@tool`** — typed actions (pydantic params) with a
   fail-closed permission gate: read-only tools `ALLOW`, mutating tools `ASK`.
 - **`subagent_tool`** — delegate a task to a named sub-agent in an isolated context;

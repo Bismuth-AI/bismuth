@@ -283,8 +283,6 @@ class TestConcurrency:
 
 
 def test_agentkit_never_imports_its_host() -> None:
-    # The whole point of the library is to be extractable; a stray bismuth import
-    # would tie it to this app forever.
     root = pathlib.Path(agentkit.__file__).parent
     for path in root.rglob("*.py"):
         assert "bismuth" not in path.read_text(encoding="utf-8"), f"{path} imports the host"

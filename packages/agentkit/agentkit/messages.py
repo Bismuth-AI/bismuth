@@ -22,10 +22,7 @@ class AssistantMessage:
     text: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
     input_tokens: int = 0
-    """What the provider counted for the request that produced this turn.
-
-    Zero when the provider does not say. A real number here anchors the context
-    budget to something measured instead of estimated -- see ``budget.since``."""
+    """Provider-reported input tokens, or zero when unavailable."""
 
 
 @dataclass(frozen=True, slots=True)

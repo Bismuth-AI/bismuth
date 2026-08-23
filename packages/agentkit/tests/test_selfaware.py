@@ -40,7 +40,7 @@ async def test_plan_refuses_two_things_at_once() -> None:
         plan_tool(plan),
         plan=[{"step": "A", "status": "in_progress"}, {"step": "B", "status": "in_progress"}],
     )
-    assert "하나만" in reply
+    assert "Only one" in reply
     assert not plan.steps, "a refused update must not be applied"
 
 
@@ -50,17 +50,16 @@ async def test_plan_keeps_what_was_written() -> None:
     await run_tool(
         plan_tool(plan),
         plan=[
-            {"step": "전자상거래법", "status": "completed"},
-            {"step": "방문판매법", "status": "in_progress"},
-            {"step": "표시광고법", "status": "pending"},
+            {"step": "First source", "status": "completed"},
+            {"step": "Second source", "status": "in_progress"},
+            {"step": "Third source", "status": "pending"},
         ],
     )
-    assert plan.unfinished() == ["방문판매법", "표시광고법"]
+    assert plan.unfinished() == ["Second source", "Third source"]
 
 
 @pytest.mark.asyncio
 async def test_the_warning_comes_once_and_early_enough_to_act_on() -> None:
-    """A warning at the moment the budget runs out is not information."""
     seen: list[str] = []
 
     def handler(system: str, messages: list[Message], tools: list[object]) -> object:
@@ -72,7 +71,7 @@ async def test_the_warning_comes_once_and_early_enough_to_act_on() -> None:
         tools=[noop()],
         system="s",
         budget_tokens=3_000,
-        low_budget="남은 예산 {share:.0%}",
+        low_budget="Remaining budget: {share:.0%}",
         max_turns=40,
     )
     result = await agent.run("go")
@@ -89,7 +88,7 @@ async def test_the_warning_comes_once_and_early_enough_to_act_on() -> None:
 async def test_a_spent_run_is_told_what_it_left_undone() -> None:
     def handler(system: str, messages: list[Message], tools: list[object]) -> object:
         if not tools:
-            return says("여기까지입니다")
+            return says("This is what I found.")
         if not any(m.role == "tool" for m in messages):
             return says(
                 "",
@@ -97,8 +96,8 @@ async def test_a_spent_run_is_told_what_it_left_undone() -> None:
                     "plan",
                     {
                         "plan": [
-                            {"step": "전자상거래법", "status": "in_progress"},
-                            {"step": "방문판매법", "status": "pending"},
+                            {"step": "First source", "status": "in_progress"},
+                            {"step": "Second source", "status": "pending"},
                         ]
                     },
                 ),
@@ -113,11 +112,11 @@ async def test_a_spent_run_is_told_what_it_left_undone() -> None:
         self_tools=("plan", "budget"),
         max_turns=40,
     )
-    result = await agent.run("두 법을 비교하라")
+    result = await agent.run("Compare both sources.")
 
     final = [m for m in result.messages if m.role == "user"][-1]
-    assert "아직 못 끝낸 것" in final.content
-    assert "방문판매법" in final.content
+    assert "Unfinished items" in final.content
+    assert "Second source" in final.content
 
 
 @pytest.mark.asyncio

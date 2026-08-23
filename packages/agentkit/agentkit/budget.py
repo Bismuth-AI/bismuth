@@ -1,26 +1,4 @@
-"""Keeping a run inside the model's context window.
-
-A turn cap is the wrong instrument. It is a guess about cost made before anything is
-known about the question: it cuts off a cheap question that needed one more look, and
-lets an expensive one run until the provider refuses the request. What actually runs
-out is the context window, so that is what this measures.
-
-Three moves, in the order they cost the run something:
-
-1. **Clip** an over-long tool result as it arrives. A sidecar can be a hundred thousand
-   characters; once one lands whole in the transcript it is paid for on every turn
-   afterwards. The head and tail go in, the middle is marked as dropped, and the model
-   is told how to fetch the rest.
-2. **Microcompact** when the transcript approaches the ceiling: blank the *content* of
-   the oldest tool results, keeping the most recent ones. Tool results are the only
-   thing cleared, because they are the only thing the model can get back by asking
-   again -- its own reasoning and the user's words are not re-obtainable. Keeping the
-   recent ones matters: an agent whose every result has been wiped has no working
-   context and starts its search from the beginning.
-3. **Evict** from the front, as a last resort, when clearing results was not enough.
-   Whole messages go, oldest first, and always in one prefix so that no tool result is
-   left answering a call that is no longer there.
-"""
+"""Token estimation and transcript compaction."""
 
 from __future__ import annotations
 
@@ -35,15 +13,7 @@ MESSAGE_OVERHEAD_TOKENS = 4
 
 
 BYTES_PER_TOKEN = 2.7
-"""Divisor for the byte-based estimate.
-
-Counted in UTF-8 bytes rather than characters because the documents are Korean: a
-Hangul syllable is three bytes and about one token, while ASCII is one byte and about
-a quarter. Three looked right on that reasoning and was wrong: measured against the
-provider's own count over fifteen real requests it ran 0.90-1.05 of the truth, and the
-error grew with size -- 0.90 at 8.8k tokens. Under-counting is the dangerous direction,
-so the divisor is set where the worst observed case lands at 1.0 rather than where the
-reasoning said it should be."""
+"""Conservative UTF-8 byte-to-token estimate."""
 
 
 def estimate(text: str) -> int:
@@ -69,23 +39,12 @@ def transcript_tokens(
 
 
 def since(anchor_tokens: int, messages: Sequence[Message], at: int) -> int:
-    """A measured count, plus an estimate of only what has happened since.
-
-    The transcript's true size is known exactly for the prefix the provider last
-    counted; guessing at the whole thing throws that away and compounds the estimate's
-    error over every turn. ``at`` is how many messages were in the request that
-    returned ``anchor_tokens``.
-    """
+    """Add estimated new messages to a provider-counted prefix."""
     return anchor_tokens + sum(message_tokens(m) for m in messages[at:])
 
 
 def fit_batch(results: list[str], *, limit_chars: int) -> list[str]:
-    """Clip the largest of one turn's results until they fit together.
-
-    A per-result cap does not bound a turn: several tools running in parallel, each
-    just under the cap, still arrive as one message. The largest give way first, so
-    a turn that read one big thing and three small ones keeps the small ones whole.
-    """
+    """Clip the largest results until the batch fits within ``limit_chars``."""
     total = sum(len(r) for r in results)
     if total <= limit_chars or not results:
         return results
@@ -106,7 +65,7 @@ def clip(text: str, *, limit_chars: int, head: int = 60, tail: int = 20) -> str:
         return text
     lines = text.splitlines()
     if len(lines) <= head + tail:
-        # Few, enormous lines: there is nothing to cut between, so cut the text itself.
+        # Fall back to character clipping when line clipping cannot help.
         return (
             text[:limit_chars]
             + f"\n… [cut here; {len(text)} characters in total. Read a narrower range for the rest.]"
@@ -117,12 +76,7 @@ def clip(text: str, *, limit_chars: int, head: int = 60, tail: int = 20) -> str:
 
 
 def microcompact(messages: list[Message], *, keep_recent: int, need: int | None = None) -> int:
-    """Blank the oldest tool results in place. Returns the tokens this freed.
-
-    Stops as soon as ``need`` tokens have been freed, so a run that is barely over the
-    ceiling loses only its oldest look rather than all of them. ``need=None`` clears
-    everything eligible.
-    """
+    """Clear old tool results until ``need`` tokens are freed."""
     clearable = [
         index
         for index, message in enumerate(messages)
@@ -140,13 +94,7 @@ def microcompact(messages: list[Message], *, keep_recent: int, need: int | None 
 
 
 def shrink(messages: list[Message], *, limit_chars: int) -> int:
-    """Clip every tool result down to ``limit_chars``. Returns the tokens this freed.
-
-    The reactive fallback, for when the provider refuses a request that the estimate
-    said would fit. Unlike ``microcompact`` this touches the most recent result too --
-    a run whose single look is itself too big has nothing else to give up -- but it
-    clips rather than clears, so the model keeps both ends of what it read.
-    """
+    """Clip every tool result to ``limit_chars`` and return freed tokens."""
     freed = 0
     for index, message in enumerate(messages):
         if message.role != "tool" or len(message.content) <= limit_chars:
@@ -158,11 +106,7 @@ def shrink(messages: list[Message], *, limit_chars: int) -> int:
 
 
 def evict(messages: list[Message], *, need: int, keep_last: int = 1) -> int:
-    """Drop whole messages off the front until ``need`` tokens are freed.
-
-    A prefix, never a hole: an assistant turn and the tool results answering it go
-    together, or the next request describes results for calls that were never made.
-    """
+    """Evict a valid transcript prefix until ``need`` tokens are freed."""
     cut, freed = 0, 0
     limit = len(messages) - keep_last
     while cut < limit and freed < need:
