@@ -1,10 +1,4 @@
-"""Fan-out of ingest progress to whatever browser tab is watching.
-
-In-memory and unpersisted on purpose: this is a localhost tool with one user, and a
-step that nobody saw is not worth keeping. The rule that matters is that reporting
-never slows the pipeline down -- a watcher that cannot keep up loses steps, not the
-ingest.
-"""
+"""Broadcast ingest progress to browser subscribers."""
 
 from __future__ import annotations
 
@@ -17,8 +11,6 @@ from contextlib import contextmanager
 from bismuth.domain.progress import Progress
 
 KEEPALIVE_SECONDS = 15.0
-"""How long to wait before emitting a comment line. Also how a dropped browser tab is
-noticed: the write fails, the generator is cancelled, the subscriber is dropped."""
 
 
 class ProgressBus:
@@ -29,7 +21,7 @@ class ProgressBus:
         self._subscribers: set[asyncio.Queue[Progress]] = set()
 
     def publish(self, event: Progress) -> None:
-        """Non-blocking by contract: called from the ingest loop, which must not wait on a UI."""
+        """Publish without blocking ingest work."""
         for queue in list(self._subscribers):
             # A stalled tab drops steps. The alternative is stalling the ingest.
             with contextlib.suppress(asyncio.QueueFull):
@@ -50,7 +42,7 @@ class ProgressBus:
 
 
 def as_event(progress: Progress) -> str:
-    """One Server-Sent Event. The Korean label ships with it so every client says the same thing."""
+    """Serialize one progress event for SSE."""
     payload = progress.model_dump(mode="json") | {
         "label": progress.label(),
         "terminal": progress.terminal,

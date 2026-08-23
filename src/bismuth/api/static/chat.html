@@ -8,14 +8,7 @@
 <link rel="icon" href="/favicon.png" type="image/png" sizes="180x180">
 <link rel="apple-touch-icon" href="/favicon.png">
 <style>
-/*
-  One file, no build step, no CDN -- the same rule as index.html.
-
-  A transcript, not a search box. The answer to "그중 최신은?" only exists if the turn
-  before it is still on screen, so the conversation is the interface and the search the
-  agent did is shown inside each turn rather than in a panel beside it: what it opened and
-  what it grepped for is how a person decides whether to believe the answer.
-*/
+/* Self-contained chat UI with no external assets. */
 :root {
   --bg: #fbfaf9; --panel: #fff; --line: #e7e3df; --ink: #1c1a19; --dim: #6f6862;
   --accent: #8b6f47; --accent-soft: #f0ebe3; --ok: #3f7d58; --danger: #a13c32;
@@ -84,8 +77,7 @@ main { flex: 1; overflow: auto; display: flex; justify-content: center; gap: 8px
 .work summary::-webkit-details-marker { display: none; }
 .work summary::before { content: "▸ "; }
 .work[open] summary::before { content: "▾ "; }
-/* A long search runs to thirty calls and would push the answer off the screen.
-   The log keeps its height and scrolls inside itself instead. */
+/* Keep long tool traces inside the turn. */
 .work .steps { max-height: 168px; overflow-y: auto; overscroll-behavior: contain; }
 .work[open] .steps { border-bottom: 1px solid var(--line); }
 .work .steps::-webkit-scrollbar { width: 6px; }
@@ -104,18 +96,7 @@ main { flex: 1; overflow: auto; display: flex; justify-content: center; gap: 8px
 @keyframes pulse { 0%, 100% { opacity: .25 } 50% { opacity: 1 } }
 .err { color: var(--danger); }
 
-/*
-  The stacks. The vault drawn as what it is called: shelves of books, one spine per
-  document, lit by the events the agent emits while it works.
-
-  A list was the obvious shape and the wrong one -- seventy-five rows scroll, and a
-  highlight below the fold is not a highlight. Shelves hold the whole vault at one size,
-  and they carry the metaphor the rest of the product already uses: a librarian, a shelf
-  note, a document filed where a person would look for it.
-
-  Nothing moves on its own. A book lights when a search lands on it and slides out when
-  the agent reads it, so a still shelf means the agent is thinking rather than looking.
-*/
+/* Shelves visualize document search and read events. */
 #map {
   width: 380px; flex: none; align-self: flex-start; position: sticky; top: 0;
   padding: 16px 18px; border-left: 1px solid var(--line); min-height: 100%;
@@ -368,7 +349,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 
 <script>
 const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[c]));
 let conversation = null, busy = false;
 
 const TOOLS = {
@@ -376,15 +359,7 @@ const TOOLS = {
   grep: "본문 검색", read: "문서 읽기",
 };
 
-/*
-  The stacks: one shelf per top folder, one spine per document, lit by real tool calls.
-
-  The number of books on a shelf is the real number of documents under that folder. Which
-  spine stands for which document is not known until the agent touches one -- there is no
-  endpoint that lists every file, and asking for seventy-five folder listings to draw a
-  picture would be a poor trade. A spine is claimed by the first path that lands on it and
-  keeps it for the rest of the conversation.
-*/
+/* One shelf per top-level folder, updated from tool events. */
 const vault = { shelves: new Map(), spines: new Map(), racks: new Map(), seen: new Set(), built: false };
 
 const parent = (path) => path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
@@ -398,8 +373,7 @@ async function buildMap() {
   try { all = await fetch("/api/tree").then((r) => r.json()); } catch { return; }
   all = all.filter((f) => !f.path.startsWith("_inbox"));
   const folders = all.filter((f) => f.depth >= 1);
-  // Documents filed at the root are on a shelf too -- 43 of the 300 here. Leaving them
-  // off would have the stacks quietly disagree with the count in the header.
+  // Include documents filed at the root in the displayed total.
   const loose = all.find((f) => f.depth === 0);
   const tops = folders.filter((f) => f.depth === 1);
   if (loose && loose.files) tops.push({ path: "", name: "그 밖", files: loose.files, depth: 1 });
@@ -430,10 +404,7 @@ async function buildMap() {
     stacks.append(shelf);
     vault.shelves.set(t.path, shelf);
 
-    // The shelf is divided the way the folder is: the documents filed directly under
-    // it first, then a block for each sub-folder, each as wide as it holds. A book
-    // then stands where its folder stands, so two documents from the same sub-folder
-    // light up next to each other and a different sub-folder lights somewhere else.
+    // Allocate one block per child folder.
     const kids = folders.filter((f) => f.depth === 2 && rootOf(f.path) === t.path);
     const blocks = new Map();
     let at = 0;
@@ -455,14 +426,7 @@ function digest(text) {
   return Math.abs(n);
 }
 
-/**
- * The spine standing for this document -- claimed from its shelf the first time.
- *
- * Handing out the leftmost free book put every search at the front of the shelf: the
- * same dozen spines lit no matter which folder the answer came from, and the other
- * two hundred never moved. A document now goes to its own folder's block and, within
- * it, to the place its name hashes to, so where a book lights says something.
- */
+/** Assign a stable spine within the document's folder block. */
 function spine(path) {
   if (vault.spines.has(path)) return vault.spines.get(path);
   const rack = vault.racks.get(rootOf(path));
@@ -470,8 +434,7 @@ function spine(path) {
   const block = rack.blocks.get(parent(path)) ?? { from: 0, size: rack.books.length };
   const size = block.size || rack.books.length;
   const wanted = block.from + (digest(path) % size);
-  // Taken already: the next free place, first inside the block and then anywhere. Two
-  // documents wanting one spot is ordinary -- the count is real, the assignment is not.
+  // Resolve collisions inside the block before using the rest of the shelf.
   let book = null;
   for (let i = 0; i < rack.books.length && !book; i++) {
     const at = i < size ? block.from + ((wanted - block.from + i) % size) : (wanted + i) % rack.books.length;
@@ -531,8 +494,7 @@ function follow(event) {
 function landed(preview) {
   const hits = String(preview || "")
     .split("\n")
-    // A path, not any line that happens to end in a dot-something: grep prints the
-    // document path on its own line, and a folder is always in front of it.
+    // Grep results put document paths on their own lines.
     .filter((line) => line && !line.startsWith(" ") && line.includes("/") && isFile(line.trim()))
     .map((line) => line.trim());
   for (const path of hits) light(path, "hit");
@@ -553,14 +515,11 @@ function say(what) {
   return `<b>${esc(TOOLS[what.tool] || what.tool)}</b>  <span class="mono">${esc(line)}</span>`;
 }
 
-// Enough Markdown for an answer, written out rather than pulled in: a CDN is not an
-// option here and the shapes a reply actually uses are few. Escaped first, always.
+// Render the supported Markdown subset after escaping input.
 function markdown(text) {
   const rows = [];
   let list = null, table = null, ruled = false;
-  // Half-typed emphasis is still emphasis. While a token stream is mid-word the
-  // closing ** has not arrived, and showing the asterisks until it does is the
-  // stutter this whole function exists to avoid.
+  // Close partial inline markup while streaming.
   const closed = (s) => {
     let out = s;
     if ((out.match(/\*\*/g) || []).length % 2) out += "**";
@@ -575,9 +534,7 @@ function markdown(text) {
   const shut = () => {
     if (list) { rows.push(`<ul>${list.join("")}</ul>`); list = null; }
     if (table) {
-      // A header row alone is not yet a table -- the |---|---| under it is what says
-      // so. Until that arrives it is still a line of text, and drawing a one-cell box
-      // in the meantime would flash a border on screen for a frame or two.
+      // Require a separator row before rendering a table.
       if (!ruled) {
         for (const r of table) rows.push(`<p>${inline("| " + r.join(" | "))}</p>`);
       } else {
@@ -666,19 +623,7 @@ async function ask(question) {
   turn.scrollIntoView({ block: "end", behavior: "smooth" });
 
   let steps = 0, written = "";
-  /*
-    Rendered as it lands, all of it, once per frame.
-
-    Waiting for a block to be closed by a blank line worked for prose and failed for a
-    table, which is one block from its header to its last row: the whole thing stayed
-    as pipes and dashes until the final row landed, then snapped into a table. So parse
-    everything every time and let the parser finish what the model has not -- a row
-    without its closing pipe is a row, an unclosed ** is bold. This is what the parser
-    already did at the end of an answer; it just was not being asked mid-answer.
-
-    Whole-buffer parsing costs a pass over a few kilobytes, capped at one per frame,
-    and the deltas arrive far slower than a screen refreshes.
-  */
+  // Render the accumulated stream at most once per animation frame.
   let painting = false;
   const draw = () => {
     painting = false;
@@ -722,8 +667,7 @@ async function ask(question) {
         } else if (event.type === "tool_call") {
           steps++;
           follow(event);
-          // Prose before a tool call is the model saying what it is about to do. It
-          // belongs with the step it explains, not above the answer it is not.
+          // Attach pre-tool prose to the tool trace.
           if (written.trim()) {
             note(fresh("step said", esc(written.trim())));
             clearAnswer();
@@ -736,7 +680,6 @@ async function ask(question) {
         } else if (event.type === "tool_error") {
           note(fresh("step err", `${esc(event.tool)} 실패`));
         } else if (event.type === "compact") {
-          // Say it plainly: the agent dropped older results to keep looking.
           note(fresh("step said", "앞서 본 내용을 정리하고 계속 찾는 중"));
         } else if (event.type === "stop" && event.reason === "budget") {
           note(fresh("step said", "찾을 수 있는 만큼 찾았습니다. 지금까지 찾은 것으로 답합니다"));
@@ -790,13 +733,7 @@ $("reset").addEventListener("click", async () => {
   location.reload();
 });
 
-/* ---------------- which model answers ----------------
-
-   The vault settles what files documents. This settles what answers questions, and it
-   is a whole configuration rather than a name: another provider, another server,
-   another key. They are different jobs and nothing about one is evidence about the
-   other -- a local model can file a vault a hosted one answers about.
-*/
+/* ---------------- answering model ---------------- */
 
 let config = null;
 const SAME = "__same__";   // "wherever the filing model is", and the default
@@ -834,8 +771,7 @@ function headerRow(name = "", value = "") {
     row.remove();
     if (!$("m-headers-rows").children.length) $("m-headers-rows").append(headerRow());
   });
-  // A whole header line pasted into the name box splits itself: that is what is on the
-  // clipboard when someone comes from a browser's network tab.
+  // Split a pasted header line into name and value.
   row.querySelector(".h-name").addEventListener("paste", (e) => {
     const text = (e.clipboardData || window.clipboardData).getData("text");
     const at = text.indexOf(":");

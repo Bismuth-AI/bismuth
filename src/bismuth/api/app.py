@@ -1,14 +1,13 @@
-"""The HTTP API and the window onto a vault. Localhost, unauthenticated -- a local tool for local documents."""
+"""Local HTTP API for a Bismuth vault."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import mimetypes
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, cast
@@ -18,6 +17,7 @@ import anyio
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from bismuth import __version__
 from bismuth.adapters.llm import (
@@ -93,8 +93,7 @@ def _diagnostic_settings(settings: Settings) -> dict[str, Any]:
         "model": settings.model,
         "api_mode": settings.api_mode,
         "reasoning_effort": settings.reasoning_effort,
-        # Both sides always, resolved: a manifest naming one endpoint while two were in
-        # use makes every later conclusion about either of them unverifiable.
+        # Record both workloads when they use different endpoints.
         "chat_model": answering.model,
         "chat_endpoint": _host_of(answering.api_base),
         "chat_api_mode": settings.chat_api_mode,
@@ -112,15 +111,7 @@ def _diagnostic_settings(settings: Settings) -> dict[str, Any]:
 
 
 def _preload(engine: Bismuth) -> None:
-    """Pull every deferred import in before the server accepts a request.
-
-    Two things import late: LiteLLM, to beat python-dotenv's upward ``.env`` scan, and
-    the document parsers, which are an optional extra. Both deferrals are about *when*,
-    not *whether* -- a server that pays a multi-second import inside the first upload,
-    or discovers a missing parser there, reported ready before it was.
-
-    A missing optional parser is logged, not fatal: a minimal install is supported.
-    """
+    """Load deferred adapters before accepting requests."""
     litellm_adapter.preload()
     if unavailable := engine.parsers.warm():
         logger.warning(
@@ -141,18 +132,19 @@ Engine = Annotated[Bismuth, Depends(get_engine)]
 
 
 ACCEPTED_UPLOADS = frozenset({".pdf"})
-"""What an upload may be.
+"""Formats supported by the complete web upload flow."""
 
-Deliberately narrower than what the parsers can read. Every format here has been
-followed end to end -- parsed, catalogued, placed, and read back by the librarian -- and
-only PDF has been so far. A file that merely parses is not yet a file whose card and
-placement anyone has checked. Widen this one set as each format is verified; the parsers
-behind the others are already registered and waiting.
-"""
+MAX_UPLOAD_FILES = 500
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_UPLOAD_TOTAL_BYTES = 500 * 1024 * 1024
 
 
 def _accept(files: list[UploadFile], accepted: frozenset[str]) -> None:
-    """Refuse anything not on the list, before a byte of it is written anywhere."""
+    """Validate upload metadata before staging any file."""
+    if not files:
+        raise HTTPException(400, "올릴 파일이 없습니다.")
+    if len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(413, f"한 번에 {MAX_UPLOAD_FILES}개까지 올릴 수 있습니다.")
     refused = sorted(
         {
             Path(f.filename or "").suffix.lower() or "(확장자 없음)"
@@ -161,7 +153,44 @@ def _accept(files: list[UploadFile], accepted: frozenset[str]) -> None:
         }
     )
     if refused:
-        raise HTTPException(400, f"지금은 PDF만 받습니다. 받지 못한 형식: {', '.join(refused)}")
+        allowed = ", ".join(sorted(accepted))
+        raise HTTPException(
+            400, f"지원하지 않는 형식입니다: {', '.join(refused)} (허용: {allowed})"
+        )
+    known_sizes = [file.size for file in files if file.size is not None]
+    if any(size > MAX_UPLOAD_BYTES for size in known_sizes):
+        raise HTTPException(413, "파일 하나의 최대 크기는 50MB입니다.")
+    if len(known_sizes) == len(files) and sum(known_sizes) > MAX_UPLOAD_TOTAL_BYTES:
+        raise HTTPException(413, "한 번에 올릴 수 있는 전체 크기는 500MB입니다.")
+
+
+async def _read_upload(upload: UploadFile) -> bytes:
+    data = await upload.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "파일 하나의 최대 크기는 50MB입니다.")
+    return data
+
+
+async def _validate_upload_contents(files: list[UploadFile]) -> None:
+    """Validate file signatures before staging any part of a request."""
+    for upload in files:
+        header = await upload.read(1024)
+        await upload.seek(0)
+        if Path(upload.filename or "").suffix.lower() == ".pdf" and b"%PDF-" not in header:
+            name = Path(upload.filename or "").name
+            raise HTTPException(400, f"올바른 PDF 파일이 아닙니다: {name}")
+
+
+def _is_local_origin(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+        return parsed.scheme in {"http", "https"} and parsed.hostname in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }
+    except ValueError:
+        return False
 
 
 def create_app(
@@ -175,12 +204,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        # Logging is set up here and not in create_app because uvicorn configures its
-        # own with dictConfig, which closes every handler that already existed. Ours
-        # stayed attached to their loggers and stayed enabled, so nothing raised and
-        # nothing was written: a server that ingested thirty-three documents left two
-        # lines in bismuth.log and empty trace and llm files. Startup runs after that,
-        # so what is opened here survives.
+        # Configure after Uvicorn so its logging setup cannot replace these handlers.
         configure_logging(verbose=verbose, continue_active_run=True)
         update_run_manifest(**_diagnostic_settings(settings))
         _preload(engine)
@@ -198,6 +222,10 @@ def create_app(
             finish_run_manifest()
 
     app = FastAPI(title="Bismuth", version=__version__, lifespan=lifespan)
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"],
+    )
     app.state.engine = engine
     app.state.settings = settings
     app.state.progress = ProgressBus()
@@ -206,11 +234,35 @@ def create_app(
     app.state.batch_tasks = set()
     app.include_router(diagnostics.router)
 
+    @app.middleware("http")
+    async def local_origin_only(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        origin = request.headers.get("origin")
+        if (
+            request.method not in {"GET", "HEAD", "OPTIONS"}
+            and origin
+            and not _is_local_origin(origin)
+        ):
+            return JSONResponse(
+                status_code=403, content={"detail": "External origins are not allowed."}
+            )
+        response = await call_next(request)
+        response.headers.setdefault("x-content-type-options", "nosniff")
+        response.headers.setdefault("x-frame-options", "DENY")
+        response.headers.setdefault("referrer-policy", "no-referrer")
+        response.headers.setdefault(
+            "content-security-policy",
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        )
+        return response
+
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception) -> JSONResponse:
-        """Return the real error instead of a bare 500 -- no attacker on localhost to hide it from."""
         logger.exception("unhandled error")
-        return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"})
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
     @app.get("/api/setup", response_model=SetupStateOut)
     def setup_state() -> SetupStateOut:
@@ -273,10 +325,7 @@ def create_app(
         if chosen.needs_key and not key:
             raise HTTPException(400, f"{chosen.label} 에는 키가 필요합니다.")
 
-        # Asked of the endpoint, once, rather than of LiteLLM's table of known models:
-        # a self-hosted server is always absent from that table, so every structured
-        # call fell back to describing the schema in the prompt and repairing what came
-        # back. Only for the compatible option; the hosted two are in the table.
+        # Probe custom endpoints because they are absent from LiteLLM's model catalog.
         native: bool | None = None
         if chosen.id == "custom":
             native = await anyio.to_thread.run_sync(
@@ -305,31 +354,20 @@ def create_app(
         if not answers.is_configured:
             raise HTTPException(400, "모델을 골라 주세요.")
 
-        # Write first, then re-read. Constructing Settings from these answers would
-        # deep-merge them onto the config file instead of replacing it, and the two dict
-        # fields would keep the previous endpoint's headers and body -- see UserConfig.
+        # Re-read the saved file so replaced dictionaries stay replaced.
         save_user_config(answers)
         updated = Settings()
         app.state.settings = updated
-        # Settings can change mid-run; a manifest that still names the old model makes
-        # every later conclusion about it unverifiable.
         update_run_manifest(**_diagnostic_settings(updated))
         app.state.engine = build(updated)
-        # The wizard swaps the engine in a live process; the replacement has to be as
-        # warm as the one created at startup, or the first upload after setup pays for it.
+        # Warm the replacement engine before returning control to the UI.
         _preload(app.state.engine)
         logger.info("configuration updated: %s", updated.redacted())
         return setup_state()
 
     @app.post("/api/setup/chat", response_model=SetupStateOut)
     def setup_chat(body: ChatSetupIn) -> SetupStateOut:
-        """Configure the answering side, without walking the vault's wizard.
-
-        Asked from 서고에 묻기, which owns this decision and nothing else about the
-        configuration. It sends only its own half; everything the vault settled --
-        the folder, the filing model, that model's server and key -- is read from
-        what is already saved rather than posted back by a page that does not own it.
-        """
+        """Configure the answering model without changing filing settings."""
         current = app.state.settings
         if not current.is_configured:
             raise HTTPException(400, "먼저 볼트 설정을 마쳐 주세요.")
@@ -420,7 +458,7 @@ def create_app(
             placed=placed,
             unplaced=inbox_count,
             runs_locally=app.state.settings.runs_locally,
-            supported_formats=sorted(engine.parsers.supported_extensions()),
+            supported_formats=sorted(accepted_uploads & engine.parsers.supported_extensions()),
             spend=engine.ledger.total(),
         )
 
@@ -471,18 +509,27 @@ def create_app(
             data = engine.vault.read_bytes(rel)
         except BismuthError as exc:
             raise HTTPException(404, str(exc)) from exc
-        media = mimetypes.guess_type(rel.name)[0] or "application/octet-stream"
-        disposition = f"inline; filename*=UTF-8''{quote(rel.name)}"
-        return Response(data, media_type=media, headers={"content-disposition": disposition})
+        is_pdf = rel.suffix.lower() == ".pdf"
+        media = "application/pdf" if is_pdf else "application/octet-stream"
+        disposition = f"{'inline' if is_pdf else 'attachment'}; filename*=UTF-8''{quote(rel.name)}"
+        return Response(
+            data,
+            media_type=media,
+            headers={
+                "content-disposition": disposition,
+                "x-content-type-options": "nosniff",
+            },
+        )
 
     @app.post("/api/documents", response_model=list[IngestOut])
     async def upload(files: list[UploadFile], engine: Engine) -> list[IngestOut]:
         """Accept files and file them. Each is journalled into the inbox before anything clever."""
-        _accept(files, accepted_uploads)
+        _accept(files, accepted_uploads & engine.parsers.supported_extensions())
+        await _validate_upload_contents(files)
         results: list[IngestOut] = []
         async with app.state.ingest_lock:
             for upload_file in files:
-                data = await upload_file.read()
+                data = await _read_upload(upload_file)
                 name = Path(upload_file.filename or "untitled").name
                 rel = engine.ingest.stage(data, name)
                 results.append(await _process(engine, rel))
@@ -507,13 +554,7 @@ def create_app(
         try:
             async with app.state.ingest_lock:
                 batch.status = "running"
-                # Reading and carding is 69% of a batch's model time and depends on nothing
-                # but the document, so it runs ahead while filing stays in order behind it.
-                # Filing is where the order carries meaning: the tree a document lands in is
-                # the one the documents before it built. Measured on 300 documents through
-                # this endpoint, 54 minutes with the model busy 111% of the wall clock --
-                # essentially serial, while the same corpus through the tuning harness took
-                # 20 with the same code doing the same work.
+                # Prepare concurrently, then file in input order because each result changes the tree.
                 prepared: asyncio.Queue[tuple[PurePosixPath, Prepared | Exception]] = asyncio.Queue(
                     maxsize=engine.settings.ingest_read_ahead
                 )
@@ -558,6 +599,7 @@ def create_app(
                         logger.exception("batch %s failed while filing %d", batch_id, len(taken))
                         for rel, _, _ in taken:
                             report(Progress(stage=Stage.FAILED, filename=rel.name, note=str(exc)))
+                        batch.completed += len(taken)
                         batch.failed += len(taken)
                         return
                     batch.completed += len(taken)
@@ -573,7 +615,12 @@ def create_app(
                     rel, outcome = await prepared.get()
                     batch.current = rel.name
                     if isinstance(outcome, Exception):
-                        logger.exception("batch %s failed while reading %s", batch_id, rel)
+                        logger.error(
+                            "batch %s failed while reading %s",
+                            batch_id,
+                            rel,
+                            exc_info=(type(outcome), outcome, outcome.__traceback__),
+                        )
                         report(Progress(stage=Stage.FAILED, filename=rel.name, note=str(outcome)))
                         batch.completed += 1
                         batch.failed += 1
@@ -624,13 +671,12 @@ def create_app(
     @app.post("/api/batches", response_model=BatchOut, status_code=202)
     async def create_batch(files: list[UploadFile], engine: Engine) -> BatchOut:
         """Stage a whole selection, then let the server finish it after a page refresh."""
-        if not files:
-            raise HTTPException(400, "올릴 파일이 없습니다.")
-        _accept(files, accepted_uploads)
+        _accept(files, accepted_uploads & engine.parsers.supported_extensions())
+        await _validate_upload_contents(files)
         staged: list[PurePosixPath] = []
         async with app.state.ingest_lock:
             for upload_file in files:
-                data = await upload_file.read()
+                data = await _read_upload(upload_file)
                 name = Path(upload_file.filename or "untitled").name
                 staged.append(engine.ingest.stage(data, name))
 
@@ -651,7 +697,7 @@ def create_app(
 
     @app.get("/api/batches", response_model=list[BatchOut])
     def list_batches() -> list[BatchOut]:
-        """Active and recent work, used to rebuild progress cards after a reload."""
+        """Return active and recent batches."""
         cutoff = time.time() - 3600
         expired = [
             batch_id
@@ -701,12 +747,7 @@ def create_app(
         return _result_of(result, spend=_drain(engine))
 
     def _drain(engine: Bismuth) -> Spend:
-        """Collect and reset what the models have spent. Documents are processed one at a
-        time, so draining around one is what attributes the bill to it.
-
-        Draining is also what keeps the adapters' usage lists from growing for the life of
-        the process; before anything read them, nothing ever emptied them.
-        """
+        """Collect model usage and attribute it to the current operation."""
         spend = Spend.of(engine.llm.drain_usage())
         chat_drain = getattr(engine.chat, "drain_usage", None)
         if chat_drain is not None:  # agentkit's ChatModel protocol does not require it
@@ -824,12 +865,7 @@ def create_app(
 
     @app.post("/api/refile-all", response_model=BatchOut, status_code=202)
     async def refile_all(engine: Engine) -> BatchOut:
-        """File the whole collection again from the cards already on disk.
-
-        No document is read: the sidecars carry what the filing question is shown, so this
-        costs one call per ten documents plus the reviews, and is the loop for judging a
-        change to the tree-building itself.
-        """
+        """File the collection again from existing sidecars."""
         pinned = replay_service.read_pinned(engine.vault.root)
         if not pinned:
             raise HTTPException(400, "다시 배치할 문서가 없습니다. 사이드카가 있어야 합니다.")
@@ -859,10 +895,7 @@ def create_app(
         )
         try:
             async with app.state.ingest_lock:
-                # Into the inbox, not the root: a document at the root is already part of
-                # the collection, so three hundred of them there would have the first
-                # review see the whole corpus at once. Filing ten at a time is the thing
-                # being measured, and this makes it start from the same place an upload does.
+                # Refiling starts from the inbox, matching the normal upload path.
                 emptied = replay_service.emptying(engine.vault, into=INBOX)
                 if emptied.operations:
                     engine.transactor.execute(
@@ -873,8 +906,7 @@ def create_app(
                         )
                     )
                 engine.simple.forget_reviews()
-                # Read again, and only now: emptying moved every document, so the paths
-                # gathered before it point at places that no longer hold anything.
+                # Reload paths after moving documents into the inbox.
                 flat = replay_service.read_pinned(engine.vault.root, under=INBOX.parts[0])
                 batch.total = len(flat)
                 taken: list[tuple[PurePosixPath, Any, Any]] = []
@@ -926,12 +958,7 @@ def create_app(
 
     @app.post("/api/chat")
     async def chat(body: ChatIn, engine: Engine) -> StreamingResponse:
-        """Answer one question, streaming what the agent does on the way to the answer.
-
-        Streamed rather than returned because the interesting part is the search: which
-        folders it opened and what it grepped for is how a person judges whether to trust
-        the answer, and it arrives seconds before the answer does.
-        """
+        """Answer one question and stream its search activity."""
         question = body.message.strip()
         if not question:
             raise HTTPException(400, "질문이 비어 있습니다.")
@@ -948,8 +975,6 @@ def create_app(
                         "arguments": event.data.get("arguments", {}),
                         "reason": event.data.get("reason", ""),
                         "freed": event.data.get("freed", 0),
-                        # The screen draws the search on a map of the vault, and a result
-                        # is what says which folders it actually landed on.
                         "preview": event.data.get("preview", ""),
                     },
                 )
@@ -961,8 +986,7 @@ def create_app(
             turn_usage: list[Usage] = []
             capture = CURRENT_USAGE.set(turn_usage)
             try:
-                # Context is copied into the task at creation. Resetting it here keeps
-                # unrelated work in this request from joining the answer's bill.
+                # Isolate usage accounting for this answer task.
                 task = asyncio.create_task(
                     engine.conversation.ask(
                         question,
@@ -978,10 +1002,11 @@ def create_app(
                 yield f"data: {json.dumps(step, ensure_ascii=False)}\n\n"
             try:
                 conversation, answer = await task
-            except Exception as exc:  # a failed answer is a message, not a broken stream
+            except Exception as exc:
                 _drain(engine)
                 logger.exception("chat failed")
-                payload = {"type": "error", "detail": f"{type(exc).__name__}: {exc}"}
+                detail = str(exc) if isinstance(exc, BismuthError) else "Chat request failed."
+                payload = {"type": "error", "detail": detail}
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 return
             spend = Spend.of(turn_usage)
@@ -1009,16 +1034,6 @@ def create_app(
     @app.get("/chat", include_in_schema=False)
     def chat_page() -> FileResponse:
         return FileResponse(STATIC / "chat.html", headers={"Cache-Control": "no-store"})
-
-    @app.get("/demo", include_in_schema=False)
-    def demo_page() -> FileResponse:
-        """Deterministic, backend-free product demo for screen recording."""
-        return FileResponse(STATIC / "demo.html", headers={"Cache-Control": "no-store"})
-
-    @app.get("/demo/chat", include_in_schema=False)
-    def chat_demo_page() -> FileResponse:
-        """Deterministic Ask-the-Library demo for screen recording."""
-        return FileResponse(STATIC / "chat-demo.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/journal", response_model=list[dict[str, Any]])
     def journal(engine: Engine, limit: int = 30) -> list[dict[str, Any]]:

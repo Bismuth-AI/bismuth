@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.api.app import create_app
+from bismuth.cli.main import _is_loopback_host
 from bismuth.config import Settings
 from bismuth.container import build
 from bismuth.ports.llm import CURRENT_USAGE, Usage
@@ -27,10 +28,21 @@ class TestIndex:
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store, max-age=0"
         assert response.headers["pragma"] == "no-cache"
+        assert response.headers["x-frame-options"] == "DENY"
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
 
     def test_batch_success_excludes_duplicates_inbox_and_failures(self, client: TestClient) -> None:
         page = client.get("/").text
         assert "batch.completed - batch.failed - batch.duplicate - batch.inbox" in page
+
+    def test_demo_routes_are_not_part_of_the_product(self, client: TestClient) -> None:
+        assert client.get("/demo").status_code == 404
+        assert client.get("/demo/chat").status_code == 404
+
+    def test_static_html_escapes_attribute_quotes(self, client: TestClient) -> None:
+        assert "/[&<>\"']/g" in client.get("/chat").text
+        assert "/[&<>\"']/g" in client.get("/trace").text
 
 
 class TestStatus:
@@ -43,6 +55,10 @@ class TestStatus:
         # 아폴로 and 아폴로/2023 are seeded so placement has somewhere to choose.
         assert body["folders"] == 2
         assert "runs_locally" in body
+
+    def test_status_reports_web_upload_formats(self, settings: Settings) -> None:
+        with TestClient(create_app(settings)) as strict:
+            assert strict.get("/api/status").json()["supported_formats"] == [".pdf"]
 
     def test_status_counts_documents_waiting_at_root(self, client: TestClient) -> None:
         vault = client.app.state.engine.vault  # type: ignore[attr-defined]
@@ -64,6 +80,9 @@ class TestOpenFile:
         r = client.get("/api/file", params={"path": "아폴로/2023/contract.txt"})
         assert r.status_code == 200
         assert "아폴로 계약서 2023 고유내용" in r.content.decode("utf-8")
+        assert r.headers["content-disposition"].startswith("attachment;")
+        assert r.headers["content-type"].startswith("application/octet-stream")
+        assert r.headers["x-content-type-options"] == "nosniff"
 
     def test_missing_file_is_404(self, client: TestClient) -> None:
         assert client.get("/api/file", params={"path": "아폴로/2023/nope.txt"}).status_code == 404
@@ -152,18 +171,106 @@ class TestAcceptedUploads:
 
         assert not list((Path(engine.vault.root) / "_inbox").glob("*"))
 
-    def test_a_pdf_gets_past_the_gate(self, strict: TestClient) -> None:
+    def test_a_file_renamed_to_pdf_is_refused(self, strict: TestClient) -> None:
         r = strict.post(
             "/api/documents", files={"files": ("paper.pdf", b"not really a pdf", "application/pdf")}
         )
 
-        # The gate is about the name; what the bytes turn out to be is the parser's business.
-        assert r.status_code == 200
-        assert r.json()[0]["ok"] is False
+        assert r.status_code == 400
+        assert "올바른 PDF" in r.json()["detail"]
+
+    def test_an_invalid_pdf_batch_stages_nothing(self, strict: TestClient) -> None:
+        engine = strict.app.state.engine  # type: ignore[attr-defined]
+
+        response = strict.post(
+            "/api/batches",
+            files=[
+                ("files", ("valid.pdf", b"%PDF-1.7\n", "application/pdf")),
+                ("files", ("invalid.pdf", b"plain text", "application/pdf")),
+            ],
+        )
+
+        assert response.status_code == 400
+        assert not list((Path(engine.vault.root) / "_inbox").glob("*"))
+
+    def test_an_oversized_file_is_refused(
+        self, strict: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("bismuth.api.app.MAX_UPLOAD_BYTES", 8)
+
+        response = strict.post(
+            "/api/documents",
+            files={"files": ("large.pdf", b"%PDF-1.7\nmore", "application/pdf")},
+        )
+
+        assert response.status_code == 413
+
+    def test_too_many_files_are_refused(
+        self, strict: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("bismuth.api.app.MAX_UPLOAD_FILES", 1)
+
+        response = strict.post(
+            "/api/batches",
+            files=[
+                ("files", ("one.pdf", b"%PDF-1.7\n", "application/pdf")),
+                ("files", ("two.pdf", b"%PDF-1.7\n", "application/pdf")),
+            ],
+        )
+
+        assert response.status_code == 413
+
+    def test_oversized_batch_is_refused_before_staging(
+        self, strict: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine = strict.app.state.engine  # type: ignore[attr-defined]
+        monkeypatch.setattr("bismuth.api.app.MAX_UPLOAD_TOTAL_BYTES", 12)
+
+        response = strict.post(
+            "/api/batches",
+            files=[
+                ("files", ("one.pdf", b"%PDF-1.7\n", "application/pdf")),
+                ("files", ("two.pdf", b"%PDF-1.7\n", "application/pdf")),
+            ],
+        )
+
+        assert response.status_code == 413
+        assert not list((Path(engine.vault.root) / "_inbox").glob("*"))
+
+
+class TestLocalSecurityBoundary:
+    def test_rejects_untrusted_hosts(self, client: TestClient) -> None:
+        assert client.get("/api/status", headers={"host": "example.test"}).status_code == 400
+
+    def test_rejects_external_write_origins(self, client: TestClient) -> None:
+        response = client.post("/api/scan", headers={"origin": "https://example.test"})
+
+        assert response.status_code == 403
+
+    def test_hides_unhandled_exception_details(self, settings: Settings) -> None:
+        app = create_app(settings)
+
+        @app.get("/boom")
+        def boom() -> None:
+            raise RuntimeError("private detail")
+
+        with TestClient(app, raise_server_exceptions=False) as local:
+            response = local.get("/boom")
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Internal server error"}
+
+    @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "::1"])
+    def test_cli_accepts_loopback_hosts(self, host: str) -> None:
+        assert _is_loopback_host(host)
+
+    def test_cli_rejects_external_hosts(self) -> None:
+        assert not _is_loopback_host("0.0.0.0")
+        assert not _is_loopback_host("192.168.1.10")
 
 
 class TestAnsweringSide:
-    """서고에 묻기 owns which model answers -- provider, server and key included."""
+    """Chat settings own the answering provider, model, and credentials."""
 
     def _configured(self, client: TestClient) -> None:
         client.post(
@@ -349,6 +456,33 @@ class TestBatchUpload:
         # A newly loaded page discovers the same server-owned batch.
         assert batch["id"] in {item["id"] for item in client.get("/api/batches").json()}
 
+    def test_filing_failures_count_as_completed(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine = client.app.state.engine  # type: ignore[attr-defined]
+
+        async def fail_filing(*_: object) -> None:
+            raise RuntimeError("filing failed")
+
+        monkeypatch.setattr(engine.simple, "file", fail_filing)
+        submitted = client.post(
+            "/api/batches",
+            files=[
+                ("files", ("one.txt", b"one", "text/plain")),
+                ("files", ("two.txt", b"two", "text/plain")),
+            ],
+        ).json()
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            batch = client.get(f"/api/batches/{submitted['id']}").json()
+            if batch["status"] == "done":
+                break
+            time.sleep(0.01)
+
+        assert batch["completed"] == 2
+        assert batch["failed"] == 2
+
 
 class TestUndo:
     def test_a_filed_document_can_be_put_back(self, client: TestClient) -> None:
@@ -492,14 +626,7 @@ class TestBatchReadsAheadButFilesInOrder:
 
 
 class TestTheWizardDoesNotCarryAnEndpointForward:
-    """POST /api/setup, the path a real provider switch actually took.
-
-    A custom endpoint was configured with a gateway Cookie and a qwen-only
-    ``chat_template_kwargs``; the provider was then changed to OpenAI. Both survived and
-    were sent to api.openai.com, which answered 400 for the body and accepted -- and kept
-    -- the Cookie. Exercised through HTTP because the defect was in what the endpoint
-    persisted, not in what the browser sent: the browser already sent empty ones.
-    """
+    """Provider changes clear endpoint-specific headers and body values."""
 
     def test_changing_provider_clears_the_previous_headers_and_body(
         self,
@@ -530,7 +657,7 @@ class TestTheWizardDoesNotCarryAnEndpointForward:
         assert custom.status_code == 200
         assert custom.json()["api_headers"] == {"Cookie": "gateway-session"}
 
-        # What the browser sends for a hosted provider: no endpoint, no headers, no body.
+        # Hosted providers do not inherit custom endpoint options.
         hosted = client.post(
             "/api/setup",
             json={

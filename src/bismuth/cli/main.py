@@ -137,7 +137,6 @@ def doctor(vault: VaultOption = None) -> None:
     console.print(table)
 
     if ".hwpx" in formats:
-        # See docs/licensing.md for why we read .hwpx ourselves and not the AGPL .hwp library.
         console.print(
             "\n[dim]참고: 한글 문서는 .hwpx 로 읽습니다. 구형 바이너리 .hwp 는 "
             "한글에서 .hwpx 로 다시 저장한 뒤 넣어 주세요.[/]"
@@ -428,7 +427,13 @@ def serve(
 
     bound_host = host or settings.host
     bound_port = port or settings.port
-    url = f"http://{bound_host}:{bound_port}"
+    if not _is_loopback_host(bound_host):
+        error_console.print("Bismuth 웹 서버는 인증이 없으므로 localhost에서만 실행할 수 있습니다.")
+        raise typer.Exit(2)
+    url_host = (
+        f"[{bound_host}]" if ":" in bound_host and not bound_host.startswith("[") else bound_host
+    )
+    url = f"http://{url_host}:{bound_port}"
 
     console.print(f"\n  [green]Bismuth[/] → [cyan]{url}[/]")
     if settings.is_configured:
@@ -448,26 +453,18 @@ def serve(
     )
 
 
+def _is_loopback_host(host: str) -> bool:
+    """Return whether a server host is restricted to this machine."""
+    return host.strip().strip("[]").casefold() in {"localhost", "127.0.0.1", "::1"}
+
+
 def _selector_loop() -> AbstractEventLoop:
     """The loop uvicorn should run on. Named by import string in ``_loop_choice``."""
     return SelectorEventLoop()
 
 
 def _loop_choice() -> dict[str, Any]:
-    """Windows only: read the network in small pieces so the answer types itself.
-
-    The answer was arriving in two or three lumps of several hundred tokens each, and
-    the provider was not the cause -- measured over the same request at the same
-    minute, the proactor loop saw the stream arrive 1 time where the selector loop saw
-    it arrive 114 times. The proactor issues large overlapped reads, so a stream the
-    provider flushes token by token reaches us already piled up, and nothing
-    downstream can unpile it. Uvicorn picks the proactor on Windows and ignores the
-    event loop policy, so the choice has to be handed to it here.
-
-    The cost is the selector's 512-socket ceiling and no asyncio subprocesses; neither
-    is anywhere near this program, which serves one person and starts none. Elsewhere
-    the default loop is already fine and this passes nothing.
-    """
+    """Use the selector loop on Windows for incremental streaming."""
     if sys.platform != "win32":
         return {}
     return {"loop": "bismuth.cli.main:_selector_loop"}

@@ -1,35 +1,39 @@
-"""What went to the model, and what came back.
-
-The run directory already holds all of it -- one line per call in ``llm.jsonl``, the whole
-request and reply in ``calls/``. Nothing here computes anything new; it indexes those files
-so a page can ask for one call without opening nine hundred, and joins each call to the
-document it was asked about, which only the trace log knows.
-"""
+"""Read model-call diagnostics from run logs."""
 
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from bismuth.logging_setup import LOG_DIR, active_run_dir
 
 router = APIRouter(prefix="/api/runs", tags=["diagnostics"])
 
 SAFE = re.compile(r"^[A-Za-z0-9_.-]+$")
-"""Run and call ids come from the URL, so they are checked before they touch a path."""
 
 PREVIEW = 240
 
-_INDEX: dict[str, tuple[float, dict[str, Any]]] = {}
-"""One parsed run per id, dropped when its log grows. A finished run is parsed once."""
+INDEX_LIMIT = 32
+_INDEX: dict[str, tuple[tuple[tuple[int, int], ...], dict[str, Any]]] = {}
+
+
+def _stamp(*paths: Path) -> tuple[tuple[int, int], ...]:
+    result = []
+    for path in paths:
+        try:
+            stat = path.stat()
+            result.append((stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            result.append((0, 0))
+    return tuple(result)
 
 
 def runs_root() -> Path:
-    """Where run directories live: beside the one this process is writing, if any."""
+    """Return the directory containing run logs."""
     active = active_run_dir()
     return active.parent if active is not None else (LOG_DIR / "runs").resolve()
 
@@ -71,7 +75,9 @@ def _indexed(run_id: str) -> dict[str, Any]:
     """Calls and events for one run, re-read only when its log has grown."""
     run = _run_dir(run_id)
     llm = run / "llm.jsonl"
-    stamp = llm.stat().st_mtime_ns + llm.stat().st_size if llm.is_file() else 0.0
+    timeline = run / "timeline.jsonl"
+    manifest = run / "manifest.json"
+    stamp = _stamp(llm, timeline, manifest)
     cached = _INDEX.get(run_id)
     if cached is not None and cached[0] == stamp:
         return cached[1]
@@ -79,19 +85,21 @@ def _indexed(run_id: str) -> dict[str, Any]:
     calls = [d for d in _lines(llm) if d.get("call_id")]
     documents: dict[str, str] = {}
     events = []
-    for event in _lines(run / "timeline.jsonl"):
+    for event in _lines(timeline):
         if event.get("event") == "llm.call":
             continue  # the same calls, said twice
         if (name := event.get("filename")) and (doc := event.get("document_id")):
             documents.setdefault(str(doc), str(name))
         events.append(event)
     built = {
-        "manifest": _read(run / "manifest.json"),
+        "manifest": _read(manifest),
         "calls": calls,
         "events": events,
         "documents": documents,
     }
     _INDEX[run_id] = (stamp, built)
+    while len(_INDEX) > INDEX_LIMIT:
+        _INDEX.pop(next(iter(_INDEX)))
     return built
 
 
@@ -120,22 +128,22 @@ def _summary(run_id: str) -> dict[str, Any]:
 
 
 @router.get("")
-def runs(limit: int = 25) -> list[dict[str, Any]]:
+def runs(limit: Annotated[int, Query(ge=1, le=100)] = 25) -> list[dict[str, Any]]:
     """Every run this vault has recorded, newest first."""
     root = runs_root()
     if not root.is_dir():
         return []
-    found = sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True)
+    found = sorted(
+        (p for p in root.iterdir() if p.is_dir() and SAFE.fullmatch(p.name)),
+        key=lambda p: p.name,
+        reverse=True,
+    )
     return [_summary(path.name) for path in found[:limit]]
 
 
 @router.get("/{run_id}/calls")
 def calls(run_id: str) -> dict[str, Any]:
-    """One row per call: enough to draw the list, not enough to be slow.
-
-    The prompt and the reply are deliberately absent -- they are the whole payload, and
-    the list exists to choose which one to open.
-    """
+    """Return call metadata without prompt and response payloads."""
     built = _indexed(run_id)
     rows = []
     for call in built["calls"]:
@@ -172,13 +180,13 @@ def events(run_id: str, event: str = "", document_id: str = "") -> list[dict[str
 
 
 @router.get("/{run_id}/search")
-def search(run_id: str, q: str, where: str = "all", limit: int = 300) -> dict[str, Any]:
-    """Find the calls whose prompt or reply contains ``q``.
-
-    Grep, not an index: the files are on local disk and a run is a thousand of them, so
-    scanning costs less than keeping every prompt in memory between two searches. The
-    text is stored unescaped, so a miss is decided without parsing the JSON at all.
-    """
+def search(
+    run_id: str,
+    q: str,
+    where: str = "all",
+    limit: Annotated[int, Query(ge=1, le=1000)] = 300,
+) -> dict[str, Any]:
+    """Find calls whose prompt or response contains ``q``."""
     run = _run_dir(run_id)
     needle = q.strip().lower()
     if not needle:
@@ -231,7 +239,6 @@ def search(run_id: str, q: str, where: str = "all", limit: int = 300) -> dict[st
 
 
 SNIPPET = 90
-"""Characters of context each side of a match. Enough to see the line it sits in."""
 
 
 def _snippets(fields: list[str], needle: str, *, most: int = 3) -> list[str]:

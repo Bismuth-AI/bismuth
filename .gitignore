@@ -51,6 +51,8 @@ Thumbs.db
 
 # Locally rendered product-demo videos and posters
 /artifacts/
+/src/bismuth/api/static/demo.html
+/src/bismuth/api/static/chat-demo.html
 
 # Local agent handoff and one-off experiment process artifacts
 /NEXT_AGENT_HANDOFF.md

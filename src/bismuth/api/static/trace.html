@@ -8,13 +8,7 @@
 <link rel="icon" href="/favicon.png" type="image/png" sizes="180x180">
 <link rel="apple-touch-icon" href="/favicon.png">
 <style>
-/*
-  One file, no build step, no CDN -- the same rule as index.html.
-
-  The layout is a transcript reader, not a graph: the question being asked is always
-  "what did this document (or this step) send, and what came back", and a box-and-arrow
-  picture answers that worse than two panes of text do.
-*/
+/* Self-contained model-call inspector with no external assets. */
 :root {
   --bg: #fbfaf9; --panel: #fff; --line: #e7e3df; --ink: #1c1a19; --dim: #6f6862;
   --accent: #8b6f47; --accent-soft: #f0ebe3; --ok: #3f7d58; --warn: #a8761f; --danger: #a13c32;
@@ -124,7 +118,9 @@ mark { background: var(--warn); color: #1c1a19; border-radius: 3px; }
 const $ = (s) => document.querySelector(s);
 const state = { run: null, calls: [], events: [], stages: new Set(), grouped: false, q: "", picked: null, found: null, term: "" };
 
-const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[c]));
 const ms = (n) => (n == null ? "" : n >= 1000 ? (n / 1000).toFixed(1) + "s" : n + "ms");
 const clock = (t) => (t ? new Date(t).toLocaleTimeString("ko-KR", { hour12: false }) : "");
 
@@ -137,10 +133,9 @@ async function get(url) {
 async function loadRuns() {
   const runs = await get("/api/runs");
   $("#run").innerHTML = runs
-    .map((r) => `<option value="${r.run_id}">${r.run_id.slice(0, 15)} · ${r.calls}콜${r.active ? " · 진행중" : ""}</option>`)
+    .map((r) => `<option value="${esc(r.run_id)}">${esc(r.run_id.slice(0, 15))} · ${r.calls}콜${r.active ? " · 진행중" : ""}</option>`)
     .join("");
-  // A server start writes a run directory before it has anything to show, and two of them
-  // when the CLI configures logging twice. Open the newest run that actually called out.
+  // Prefer the newest run containing model calls.
   const worth = runs.find((r) => r.calls > 0) || runs[0];
   if (worth) {
     $("#run").value = worth.run_id;
@@ -152,8 +147,7 @@ async function loadRun(runId) {
   const data = await get(`/api/runs/${runId}/calls`);
   state.run = data.run;
   state.calls = data.calls;
-  // Events are the consequences -- what the pipeline did with the reply. Shown inline so a
-  // document's row of calls reads as one story instead of a list of requests.
+  // Join calls with their pipeline events.
   state.events = await get(`/api/runs/${runId}/events?event=card.done,simple.filed,simple.reviewed,simple.refiled,simple.refile_refused,simple.review_applied,document.read`);
   state.stages = new Set(Object.keys(state.run.stages));
   state.picked = null;
@@ -280,8 +274,7 @@ function markPicked() {
 
 function pane(kind, title, body, folded) {
   if (!body) return "";
-  // A pane holding the searched-for text opens even when it would normally be folded --
-  // the system prompt is folded by default, and that is exactly where a match may be.
+  // Open folded panes when they contain the search term.
   const term = state.term;
   const hit = term && body.toLowerCase().includes(term.toLowerCase());
   const marked = hit ? every(body, term) : esc(body);

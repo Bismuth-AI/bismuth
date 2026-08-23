@@ -240,8 +240,7 @@ h2 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.01em; }
 .more[open] > summary::before { content: "▾ "; }
 .field { margin: 16px 0; }
 .field > label { display: block; font-weight: 550; margin-bottom: 6px; font-size: 14px; }
-/* Three providers stacked as full-width cards were 252px of a 741px dialog for a
-   choice made once. Side by side they are one row. */
+/* Keep provider choices compact. */
 .choices { display: flex; flex-wrap: wrap; gap: 8px; }
 .choice { flex: 1 1 150px; display: flex; align-items: center; gap: 8px; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; font-size: 13.5px; }
 .choice:hover { border-color: var(--accent); }
@@ -401,9 +400,7 @@ document.documentElement.dataset.uiVersion = UI_VERSION;
 let state = {}, tree = [], selected = ROOT, expanded = new Set();
 let rootInfo = null;   // the root's own entry: its loose documents are the common early case
 let sel = new Set(), selAnchor = null, viewDocs = [], moveTargets = [];
-// Folders select separately from documents, and the two are mutually exclusive: the
-// action bar offers 이동 for documents only, and a mixed selection would have to grey
-// half of itself out. Picking one kind clears the other.
+// Folder and document selections are mutually exclusive.
 let fsel = new Set(), fselAnchor = null;
 
 /* ---------------- explorer ---------------- */
@@ -495,8 +492,7 @@ function bindTreeClicks(el) {
       if (path !== "_inbox" && path !== ROOT && e.shiftKey && fselAnchor) {
         sel.clear();
         const i = visible.indexOf(fselAnchor), j = visible.indexOf(path);
-        // Replaces rather than adds: shift+click means "the range", so dragging the far
-        // end back has to shrink the selection, not leave the earlier reach behind.
+        // Shift-click replaces the current range.
         fsel.clear();
         if (i >= 0 && j >= 0) for (let k = Math.min(i, j); k <= Math.max(i, j); k++) fsel.add(visible[k]);
         else fsel.add(path);
@@ -504,12 +500,9 @@ function bindTreeClicks(el) {
       }
 
       sel.clear(); fsel.clear();
-      // A plain click is the anchor a later shift+click extends from -- the usual way in
-      // is click-then-shift-click, and leaving the anchor null made that do nothing.
+      // A plain click anchors the next shift-click range.
       fselAnchor = path === "_inbox" || path === ROOT ? null : path;
-      // Clicking the folder you are already in folds it, the way an editor's tree does:
-      // the way out is the same click as the way in. Folding only where you already are
-      // keeps a click on some other open folder a move into it, not a fold of it.
+      // Clicking the current folder toggles its expansion.
       if (childrenOf(path).length) {
         if (selected === path && expanded.has(path)) expanded.delete(path);
         else expanded.add(path);
@@ -816,10 +809,7 @@ let batchPollRunning = false;
 
 function keepExplorerLive() {
   if (liveSyncTimer !== null) return;
-  // SSE completion is the primary invalidation signal. This poll is deliberately a
-  // fallback: proxies, suspended tabs and reconnect boundaries can lose one transient
-  // progress event even though later events continue to arrive. While any job card is
-  // alive, periodically reconcile against the authoritative filesystem APIs.
+  // Reconcile active jobs when an SSE update is missed.
   liveSyncTimer = setInterval(() => {
     if (!jobs.size && !compactJobs.size) {
       clearInterval(liveSyncTimer);
@@ -837,7 +827,7 @@ function jobCard(filename) {
     <div class="bar wait"><i></i></div><ul class="steps"></ul><div class="tail"></div>`;
   el.querySelector(".fn").textContent = filename;
   const more = document.createElement("span");
-  return { el, lines: new Map(), found: new Set(), chips: null, more, measured: false };
+  return { el, lines: new Map(), found: new Set(), chips: null, more, hasFraction: false };
 }
 
 function ensureJob(filename, container) {
@@ -868,7 +858,7 @@ function renderStep(p) {
 
   let li = lines.get(p.stage);
   if (!li) {
-    // The "uploading" placeholder is a guess; the first real step replaces it.
+    // Replace the placeholder with the first reported step.
     if (!lines.size) el.querySelector(".steps").innerHTML = "";
     li = document.createElement("li");
     li.innerHTML = `<span class="mark">◦</span><span class="what"></span>`;
@@ -885,7 +875,7 @@ function renderStep(p) {
     node.querySelector(".mark").textContent = done ? "✓" : "▸";
   }
 
-  // Facts accumulate across the reading steps; they are the proof it is really reading.
+  // Accumulate facts across reading steps.
   if (p.found?.length) {
     if (!job.chips) {
       job.chips = document.createElement("div");
@@ -916,8 +906,8 @@ function renderStep(p) {
   }
   if (p.stage === "failed") { bar.className = "bar fail"; li.className = "fail"; li.querySelector(".mark").textContent = "✕"; }
   else if (p.terminal) { bar.className = "bar done"; li.querySelector(".mark").textContent = "✓"; li.className = "past"; }
-  else if (p.fraction != null) { job.measured = true; bar.className = "bar"; fill.style.width = `${Math.round(p.fraction * 100)}%`; }
-  else if (job.measured) { bar.className = "bar"; }   // past the measurable part: hold the fill, don't rewind
+  else if (p.fraction != null) { job.hasFraction = true; bar.className = "bar"; fill.style.width = `${Math.round(p.fraction * 100)}%`; }
+  else if (job.hasFraction) { bar.className = "bar"; }
   else { bar.className = "bar wait"; fill.style.width = ""; }
 }
 
@@ -1054,9 +1044,7 @@ async function syncBatches() {
   }
 }
 
-// Completion events and upload responses can arrive together. Share one refresh promise
-// so every caller can await the authoritative status/tree reconciliation instead of
-// merely asking a refresh that may still be in flight.
+// Share one refresh while completion events and responses overlap.
 let liveRefreshPromise = null;
 let liveRefreshQueued = false;
 
@@ -1070,9 +1058,7 @@ function refreshAfterDocument() {
         const before = new Set(tree.map((f) => f.path));
         await refresh();
         const added = tree.filter((f) => !before.has(f.path));
-        // A newly created nested folder would otherwise remain hidden behind a collapsed
-        // parent, which defeats the point of refreshing live. Preserve every existing
-        // expansion and only open the ancestors required to reveal new folders.
+        // Reveal new nested folders without closing existing expansions.
         for (const folder of added) openAncestors(folder.path);
         if (added.length) renderTree();
       } while (liveRefreshQueued);
@@ -1123,8 +1109,7 @@ watchProgress();
 
 function money(usd) {
   if (usd == null) return "";
-  // One document costs a fraction of a cent, so rounding to cents would print "$0.00"
-  // for real spending and overstate a running total ($0.0168 shown as $0.02).
+  // Preserve precision for sub-cent costs.
   if (usd < 0.01) return `$${usd.toFixed(4)}`;
   if (usd < 1) return `$${usd.toFixed(3)}`;
   return `$${usd.toFixed(2)}`;
@@ -1295,9 +1280,7 @@ function onProvider() {
   setupStep(false); $("s-error").classList.add("hidden");
   if (!p) return;
   $("s-hint").textContent = p.hint || "";
-  // Shown for every provider. "A key is not required" is not "a key cannot be given":
-  // plenty of OpenAI-compatible servers are started with one, and hiding the field left
-  // no way to supply it but to hand-write an Authorization header.
+  // Custom endpoints may accept an optional key.
   $("s-key-field").classList.remove("hidden");
   $("s-key-label").textContent = p.needs_key
     ? (p.key_label || "API 키")
@@ -1307,10 +1290,7 @@ function onProvider() {
     : (p.needs_key ? "여기에 붙여넣으세요" : "키를 요구하는 엔드포인트라면 여기에. 아니면 비워 두세요");
   $("s-base-field").classList.toggle("hidden", !p.needs_api_base);
   if (p.needs_api_base) $("s-base").value = setup.api_base || p.default_api_base || "";
-  // Only the OpenAI-compatible option sits behind arbitrary gateways; the hosted two
-  // authenticate the way they document.
-  // Headers and a request body are only ever needed by the compatible option; the
-  // hosted two authenticate the way they document.
+  // Advanced headers and body values apply to custom endpoints.
   $("s-advanced").classList.toggle("hidden", p.id !== "custom");
   renderHeaders(setup.api_headers);
   $("s-body").value = Object.keys(setup.api_body || {}).length
@@ -1367,8 +1347,7 @@ function headerRow(name = "", value = "") {
     row.remove();
     if (!$("s-headers-rows").children.length) $("s-headers-rows").append(headerRow());
   });
-  // Pasting a whole header line into the name box splits it, because that is what
-  // people have on the clipboard when they come from the network tab.
+  // Split a pasted header line into name and value.
   row.querySelector(".h-name").addEventListener("paste", (e) => {
     const text = (e.clipboardData || window.clipboardData).getData("text");
     const at = text.indexOf(":");
@@ -1435,13 +1414,11 @@ $("s-check").addEventListener("click", async () => {
     const r = await api("/setup/check", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(setupBody(p)) });
     if (!r.ok) { showErr(r.error); return; }
     $("s-model-list").innerHTML = r.models.map((m) => `<option value="${esc(m)}">`).join("");
-    // The saved names belong to the saved provider; offering gpt-5.4-nano for a local
-    // endpoint is a name that will simply 404 on the first upload.
+    // Reuse a saved model only for its provider.
     const saved = p.id === setup.provider_id;
     $("s-model").value = (saved && setup.model) || r.suggested_model || "";
     explainRuntime();
-    // A missing catalogue is not a missing endpoint. Plenty of OpenAI-compatible servers
-    // never expose /models, or gate it differently from the thing we actually call.
+    // A missing model catalog does not prove the endpoint is unavailable.
     $("s-models-count").textContent = r.models.length
       ? `쓸 수 있는 모델 ${r.models.length}개. 무난한 모델을 골라 뒀으니 원하면 바꾸세요.`
       : `모델 목록을 받지 못했습니다${r.error ? ` (${r.error})` : ""} — 쓸 모델 이름을 직접 적어 주세요.`;
@@ -1460,7 +1437,7 @@ $("s-save").addEventListener("click", async () => {
   } catch (err) { showErr(err.message); } finally { btn.disabled = false; }
 });
 
-// Arrived from 서고에 묻기, which has no wizard of its own.
+// Open setup when linked from the chat page.
 if (location.search.includes("setup")) {
   history.replaceState(null, "", location.pathname);
   setTimeout(() => openSetup(true), 0);
