@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from bismuth.adapters.llm import body as llm_body
 from bismuth.adapters.llm import litellm_adapter
 from bismuth.adapters.llm import wire as llm_wire
-from bismuth.adapters.llm.chat import LiteLLMChatModel
+from bismuth.adapters.llm.chat import LiteLLMChatModel, _context_overflow
 from bismuth.adapters.llm.litellm_adapter import (
     _CHOICE_MAX_TOKENS,
     _MAX_CHOICE_MAX_TOKENS,
@@ -193,7 +193,7 @@ class TestChatUsage:
     async def test_one_answer_can_capture_its_calls_without_draining_the_ledger(
         self, stub: Any
     ) -> None:
-        stub(["답변"])
+        stub(["answer"])
         model = LiteLLMChatModel(model="openai/model")
         captured = []
         token = CURRENT_USAGE.set(captured)
@@ -296,7 +296,7 @@ class TestStructured:
         records: list[dict[str, Any]] = []
         monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
 
-        with pytest.raises(ModelRequestError, match="제한시간"):
+        with pytest.raises(ModelRequestError, match="exceeded"):
             await adapter().structured(Prompt(system="s", user="u"), schema=Answer)
 
         attempt = records[-1]["attempts"][0]
@@ -342,6 +342,38 @@ class TestExplicitKey:
         written = json.dumps(records[-1], default=str)
         assert "sk-ours" not in written
         assert "session=secret" not in written
+
+
+class TestTransportRetry:
+    async def test_non_retryable_text_error_is_sent_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class RejectsRequest(StubLiteLLM):
+            async def acompletion(self, **kwargs: Any) -> FakeStream:
+                self.calls.append(kwargs)
+                error = RuntimeError("authentication failed")
+                error.status_code = 401  # type: ignore[attr-defined]
+                raise error
+
+        fake = RejectsRequest([])
+        monkeypatch.setattr(llm_wire, "_litellm", fake)
+
+        with pytest.raises(ModelRequestError, match="authentication failed"):
+            await adapter().text(Prompt(system="s", user="u"), max_tokens=64)
+        assert len(fake.calls) == 1
+
+
+def test_context_overflow_recognises_provider_exception_names() -> None:
+    context_error = type("ContextLengthError", (RuntimeError,), {})("input exceeds context")
+    assert _context_overflow(context_error) == (True, 0)
+
+
+def test_context_overflow_reads_provider_limit() -> None:
+    overflow, limit = _context_overflow(
+        RuntimeError("The context window supports 8192 tokens; input exceeds the limit")
+    )
+    assert overflow
+    assert limit == 8192
 
 
 class TestRecordedParameters:
@@ -391,6 +423,19 @@ class TestRecordedParameters:
         assert all("request_parameters" in attempt for attempt in attempts)
         # The repair turn is a different input, and the log has to show which.
         assert attempts[1]["messages"] != attempts[0]["messages"]
+
+    async def test_unknown_extra_body_values_are_not_logged(
+        self, stub: Any, monkeypatch: Any
+    ) -> None:
+        stub(['{"name": "a", "year": 1}'])
+        records: list[dict[str, Any]] = []
+        monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
+
+        await adapter(body={"gateway_token": "secret-value"}).structured(
+            Prompt(system="s", user="u"), schema=Answer
+        )
+
+        assert "secret-value" not in json.dumps(records[-1])
 
 
 class TestClientCleanup:
@@ -489,8 +534,6 @@ class TestRepair:
 
         assert result.year == 2023
         assert [call["max_tokens"] for call in fake.calls] == [2048, 4096]
-        # The retry says what went wrong. Doubling the budget in silence is fuel when the
-        # cause is a model enumerating: one card filled 2048, 4096 and 8192 in turn.
         assert len(fake.calls[1]["messages"]) == 3
         assert "ran past the generation limit" in fake.calls[1]["messages"][-1]["content"]
 
@@ -663,7 +706,7 @@ class TestAbsoluteDeadline:
         records: list[dict[str, Any]] = []
         monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
 
-        with pytest.raises(ModelRequestError, match="제한시간"):
+        with pytest.raises(ModelRequestError, match="exceeded"):
             await adapter(timeout=1.0, absolute_timeout=0.01).structured(
                 Prompt(system="s", user="u"), schema=Answer
             )
@@ -673,14 +716,7 @@ class TestAbsoluteDeadline:
 
 
 class RefusesOneParameter(StubLiteLLM):
-    """An endpoint that answers 400 for a sampling parameter by name, then works.
-
-    Shaped like the real thing: OpenAI reports the offending parameter in ``param`` and
-    the reason in ``code``, and LiteLLM passes both through on BadRequestError. Measured
-    against gpt-5.6-luna, which refused ``temperature: 0`` with ``unsupported_value``
-    while litellm.get_supported_openai_params listed temperature as supported -- so
-    drop_params had no reason to remove it and every call failed.
-    """
+    """Refuse one named request parameter, then accept the request."""
 
     def __init__(self, replies: list[str], *, refuses: str) -> None:
         super().__init__(replies)
@@ -754,13 +790,7 @@ class TestAParameterTheEndpointRefuses:
 
 
 class SpendsTheBudgetOnThinking(StubLiteLLM):
-    """A reasoning model at default effort: the cap is gone and the reply is empty.
-
-    Its thinking is billed against ``max_tokens`` and never streamed, so the stream ends
-    with ``finish_reason: length`` and no content. Measured on gpt-5-nano: a placement
-    choice came back ``out_tokens: 32``, ``finish_reason: length``, reply ``''`` -- twice,
-    so the document failed -- and a card spent 2048 and then 4096 tokens the same way.
-    """
+    """Spend the output budget without emitting visible content."""
 
     def __init__(self, replies: list[str], *, answers_above: int) -> None:
         super().__init__(replies)
@@ -834,15 +864,6 @@ class TestReasoningIsNotWhatWasAsked:
     async def test_a_spent_budget_does_not_spend_the_clean_retry(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The damage this did, and why the two recoveries had to stop sharing a slot.
-
-        The stripped retry prompt exists for a model that answered with the wrong kind of
-        thing; it drops the task and keeps only the literals. A spent budget means the real
-        question was never answered at all, so falling back to a smaller version of it asks
-        a worse question. Measured over one run of 61 documents: 869 of 931 choices, 93%,
-        spent the first budget and were then decided by the stripped prompt -- 567
-        characters of task replaced by 117 of formatting rules. One folder was created.
-        """
         fake = SpendsTheBudgetOnThinking(["F003"], answers_above=_CHOICE_MAX_TOKENS)
         monkeypatch.setattr(llm_wire, "_litellm", fake)
         records: list[dict[str, Any]] = []

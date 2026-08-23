@@ -33,8 +33,6 @@ def _http_error(code: int, body: bytes) -> urllib.error.HTTPError:
 
 class TestTheMessage:
     def test_the_servers_own_words_survive(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A gateway saying INVALIDCOOKIE is telling you it wants a cookie. Reporting
-        that as "키가 거부되었습니다" sends you to check a key that was never the problem."""
         monkeypatch.setattr(
             catalog, "_get", lambda *_: (_ for _ in ()).throw(_http_error(401, b"INVALIDCOOKIE"))
         )
@@ -57,16 +55,13 @@ class TestCompatibleEndpoint:
     def test_a_missing_catalogue_does_not_block_setup(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Measured: a proxy served /chat/completions perfectly well and answered
-        /models with 401, and setup refused to continue -- over a listing that nothing
-        in the pipeline needs."""
         monkeypatch.setattr(
             catalog, "_get", lambda *_: (_ for _ in ()).throw(_http_error(401, b"INVALIDCOOKIE"))
         )
 
         check = catalog.list_models("custom", api_base="https://gateway/v1")
 
-        assert check.ok  # the model name gets typed instead
+        assert check.ok
         assert check.models == ()
         assert "INVALIDCOOKIE" in check.error
 
@@ -103,7 +98,6 @@ class TestCompatibleEndpoint:
     def test_no_credential_means_no_authorization_header(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """It used to send `Bearer not-needed`, which some gateways reject outright."""
         seen: dict[str, Any] = {}
         monkeypatch.setattr(
             catalog, "_get", lambda url, headers: seen.update(headers) or {"data": []}
@@ -205,8 +199,6 @@ class TestRequestBody:
         assert kwargs == {"model": "m", "temperature": 0.0}
 
     def test_the_adapter_sends_it(self) -> None:
-        """The whole point: a qwen model with thinking left on took 93 seconds a
-        document instead of 6."""
         adapter = LiteLLMAdapter(
             model="openai/qwen3.6-35b",
             body={"chat_template_kwargs": {"enable_thinking": False}, "top_p": 0.8},
@@ -219,16 +211,12 @@ class TestRequestBody:
 
 
 class TestSchemaSupport:
-    """LiteLLM answers "does this model take a json_schema?" from a table of models it
-    knows, so a self-hosted endpoint is always no -- and every structured call then
-    falls back to describing the schema in the prompt and repairing the reply."""
-
     def test_an_endpoint_that_takes_a_schema(self, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: dict[str, Any] = {}
 
         def fake_post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
             seen.update(url=url, headers=headers, payload=payload)
-            return {"choices": []}
+            return {"choices": [{"message": {"content": '{"ok":"yes"}'}}]}
 
         monkeypatch.setattr(catalog, "_post", fake_post)
 
@@ -243,6 +231,17 @@ class TestSchemaSupport:
         # Both credentials: the gateway wants the cookie, the model server the bearer.
         assert seen["headers"]["Authorization"] == "Bearer sk-x"
         assert seen["headers"]["Cookie"] == "c"
+
+    def test_an_endpoint_that_ignores_the_schema_is_not_supported(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            catalog,
+            "_post",
+            lambda *_: {"choices": [{"message": {"content": "ok"}}]},
+        )
+
+        assert not catalog.supports_response_schema(api_base="https://g/v1", model="m")
 
     def test_an_endpoint_that_refuses_is_a_no_not_a_crash(
         self, monkeypatch: pytest.MonkeyPatch

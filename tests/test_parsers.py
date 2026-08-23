@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from bismuth.adapters.parsers import CsvParser, HwpxParser, PlainTextParser, build_registry
+from bismuth.adapters.parsers.office import _sheets
 from bismuth.domain.errors import ParserUnavailableError
 
 HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -27,7 +28,7 @@ def paragraph(*runs: str) -> str:
 
 
 class TestHwpx:
-    """HWPX (한글) parsing; written on the standard library, not the AGPL-licensed alternative."""
+    """HWPX parsing."""
 
     def test_reads_korean_paragraphs(self, tmp_path: Path) -> None:
         path = make_hwpx(
@@ -82,7 +83,9 @@ class TestHwpx:
                 f'<hp:sec xmlns:hp="{HP}">{paragraph("좋은 내용")}</hp:sec>',
             )
             archive.writestr("Contents/section1.xml", "<hp:sec><<<not xml")
-        assert "좋은 내용" in HwpxParser().parse(path, max_chars=10_000).text
+        extraction = HwpxParser().parse(path, max_chars=10_000)
+        assert "좋은 내용" in extraction.text
+        assert extraction.truncated
 
     def test_legacy_hwp_says_what_to_do_about_it(self, tmp_path: Path) -> None:
         path = tmp_path / "old.hwp"
@@ -120,6 +123,22 @@ class TestCsv:
         text = CsvParser().parse(path, max_chars=1000).text
         assert "| project | amount |" in text
         assert "| Apollo | 120000 |" in text
+
+
+def test_spreadsheet_rows_are_not_silently_capped() -> None:
+    class Sheet:
+        title = "Data"
+
+        def iter_rows(self, *, values_only: bool):  # type: ignore[no-untyped-def]
+            assert values_only
+            return ((f"row-{index}",) for index in range(250))
+
+    class Workbook:
+        def __init__(self) -> None:
+            self.worksheets = [Sheet()]
+
+    section = next(_sheets(Workbook()))
+    assert "row-249" in section.text
 
 
 class TestRegistry:
