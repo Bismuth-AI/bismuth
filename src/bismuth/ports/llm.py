@@ -60,6 +60,15 @@ class Usage(BaseModel):
     )
 
 
+CURRENT_USAGE: ContextVar[list[Usage] | None] = ContextVar("current_usage", default=None)
+"""Optional per-task collector for calls reported as one piece of work.
+
+Adapters still retain every usage for the vault ledger. The collector is a second,
+task-local view used when a streamed answer needs its own bill without draining calls
+made concurrently by another tab or an ingest batch.
+"""
+
+
 class Spend(BaseModel):
     """What a piece of work cost, summed from the calls it took."""
 

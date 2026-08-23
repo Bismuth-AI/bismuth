@@ -10,6 +10,9 @@ the prompt; agentkit runs the loop.
 
 from __future__ import annotations
 
+import bisect
+import difflib
+import itertools
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -99,7 +102,65 @@ _TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
-_GREP_MATCH_LIMIT = 100
+_GREP_FILE_LIMIT = 20
+"""How many documents one grep names. Sized so the whole result fits in a tool result
+without being clipped -- a result cut in the middle loses hits silently, while a tool
+that stops on its own boundary can say what it left out."""
+_GREP_HITS_PER_FILE = 5
+_GREP_HITS_ALONE = 60
+"""Hits shown when the search is aimed at one document rather than a folder. Asking about
+one file is asking what is in it, and a sample cannot answer that."""
+_GREP_LINE_CHARS = 200
+
+
+_WHITESPACE = re.compile(r"\s+")
+
+
+def _unwrapped(pattern: str) -> re.Pattern[str] | None:
+    """The same pattern, to be matched against text with every space taken out.
+
+    A sidecar is text pulled out of a PDF, so it is hard-wrapped at whatever width the
+    page had, and a phrase lands on two lines often enough to matter: 방문판매법 시행령
+    holds `연 100분` / `의 15를 말한다`, which a line-at-a-time search cannot see. Over
+    this corpus a whitespace-blind pass finds documents the line-based one misses for
+    one search phrase in three.
+
+    Returns None when removing the whitespace would change what the pattern means --
+    ``^`` and ``$`` are per-line, and there are no lines left to anchor to.
+    """
+    if "^" in pattern or "$" in pattern:
+        return None
+    try:
+        return re.compile(_WHITESPACE.sub("", pattern))
+    except re.error:
+        return None
+
+
+def _flatten(lines: list[str]) -> tuple[str, list[int]]:
+    """All the non-space characters, and where each line ends in that string."""
+    packed = ["".join(line.split()) for line in lines]
+    return "".join(packed), list(itertools.accumulate(len(p) for p in packed))
+
+
+def _matching_lines(
+    text: str, pattern: re.Pattern[str], wrapped: re.Pattern[str] | None
+) -> list[str]:
+    """Lines that match, including where the match is split across a line ending."""
+    lines = text.splitlines()
+    hit: dict[int, str] = {}
+    for number, line in enumerate(lines, start=1):
+        if pattern.search(line):
+            hit[number] = line
+    # Most documents hold no match at all, so ask the cheap question first: strip the
+    # whole text in one pass and look. Only a document that answers yes pays for the
+    # line map that turns a position back into a line number.
+    if wrapped is not None and wrapped.search(_WHITESPACE.sub("", text)):
+        packed, ends = _flatten(lines)
+        for match in wrapped.finditer(packed):
+            number = bisect.bisect_right(ends, match.start()) + 1
+            if number <= len(lines):
+                hit.setdefault(number, lines[number - 1])
+    return [f"  {number}: {hit[number].strip()[:_GREP_LINE_CHARS]}" for number in sorted(hit)]
 
 
 class _LsArgs(BaseModel):
@@ -118,7 +179,10 @@ class _ReadArgs(BaseModel):
 
 class _GrepArgs(BaseModel):
     pattern: str = Field(description="Regular expression to search for.")
-    path: str = Field(default="", description="Folder to search under, or empty for the root.")
+    path: str = Field(
+        default="",
+        description="Folder or a single file to search under; empty searches the whole vault.",
+    )
 
 
 class _NoteArgs(BaseModel):
@@ -141,10 +205,27 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
     def _folder(path: str) -> PurePosixPath:
         return PurePosixPath(path) if path not in ("", "/") else PurePosixPath()
 
+    def _missing(path: str) -> str:
+        """Say a folder is not there, and name the ones it might have been meant for.
+
+        A bare refusal leaves the caller guessing, and guessing again costs another
+        turn. Names are matched on the last segment too, since a path is usually wrong
+        in its parent rather than in the folder actually wanted.
+        """
+        wanted = PurePosixPath(path).name or path
+        known = [str(f) for f in vault.iter_folders() if f.parts and f.parts[0] != INBOX.parts[0]]
+        near = [k for k in known if PurePosixPath(k).name == wanted]
+        near += [
+            k for k in difflib.get_close_matches(path, known, n=3, cutoff=0.5) if k not in near
+        ]
+        if not near:
+            return f"No such folder: {path or '/'}. Use `tree` to see the real paths."
+        return f"No such folder: {path or '/'}. Did you mean: " + ", ".join(near[:3])
+
     async def _ls(args: _LsArgs) -> str:
         folder = _folder(args.path)
         if not vault.is_dir(folder):
-            return f"No such folder: {args.path or '/'}"
+            return _missing(args.path)
         depth = len(folder.parts)
         subfolders = [
             f.name
@@ -164,6 +245,14 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
         return "\n".join(lines) or "(empty)"
 
     async def _tree(args: _TreeArgs) -> str:
+        """The shape of the vault, one folder per line, each line a usable path.
+
+        Indentation alone used to carry the nesting, so a caller wanting to look inside
+        a folder had to rebuild its path by counting spaces up the whole listing. That
+        is a step at which to be wrong, and it was: an agent asked for
+        ``산업 진흥/1인 창조기업`` when the folder was under ``창업 지원``, got a bare
+        "no such folder", and spent its entire budget without ever opening a document.
+        """
         base = _folder(args.path)
         rows: list[str] = []
         for folder in vault.iter_folders():
@@ -171,8 +260,7 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
                 continue
             if base.parts and folder.parts[: len(base.parts)] != base.parts:
                 continue
-            indent = "  " * (len(folder.parts) - 1)
-            rows.append(f"{indent}{folder.name}/  ({vault.count_files(folder)})")
+            rows.append(f"{folder}/  ({vault.count_files(folder)})")
         return "\n".join(rows) or "(no folders yet)"
 
     async def _read(args: _ReadArgs) -> str:
@@ -197,10 +285,18 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
         except re.error as exc:
             return f"Invalid regex: {exc}"
         base = _folder(args.path)
-        if not vault.is_dir(base):
-            return f"No such folder: {args.path or '/'}"
-        hits: list[str] = []
-        for file in vault.iter_files(base, recursive=True):
+        if vault.is_dir(base):
+            files = list(vault.iter_files(base, recursive=True))
+            per_file = _GREP_HITS_PER_FILE
+        elif vault.exists(base):
+            # One document: the caller wants every place inside it, not a sample --
+            # comparing what a file contains is impossible from five lines and a count.
+            files, per_file = [base], _GREP_HITS_ALONE
+        else:
+            return _missing(args.path)
+        wrapped = _unwrapped(args.pattern)
+        found: list[tuple[PurePosixPath, list[str]]] = []
+        for file in files:
             sidecar = file.parent / sidecar_name(file.name)
             target = (
                 sidecar
@@ -209,17 +305,33 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
             )
             if target is None:
                 continue
-            for lineno, line in enumerate(vault.read_text(target).splitlines(), start=1):
-                if pattern.search(line):
-                    hits.append(f"{file}:{lineno}: {line.strip()[:200]}")
-                    if len(hits) >= _GREP_MATCH_LIMIT:
-                        return "\n".join(hits) + f"\n… (stopped at {_GREP_MATCH_LIMIT} matches)"
-        return "\n".join(hits) or "(no matches)"
+            lines = _matching_lines(vault.read_text(target), pattern, wrapped)
+            if lines:
+                found.append((file, lines))
+            if len(found) > _GREP_FILE_LIMIT:
+                break
+        if not found:
+            return "(no matches)"
+
+        # Grouped by file, because a hit is a pointer to a place -- repeating the path
+        # for every line spends the result's whole budget saying the same thing, and
+        # what the reader needs first is which documents to look in.
+        rows: list[str] = []
+        for file, lines in found[:_GREP_FILE_LIMIT]:
+            rows.append(str(file))
+            rows.extend(lines[:per_file])
+            if len(lines) > per_file:
+                rows.append(f"  … 이 문서에서 {len(lines)} 곳")
+        if len(found) > _GREP_FILE_LIMIT:
+            rows.append("… 다른 문서에도 더 있다. 폴더나 표현을 좁혀서 다시 찾아라.")
+        return "\n".join(rows)
 
     async def _read_note(args: _NoteArgs) -> str:
         folder = _folder(args.folder)
         note = folder / CHARTER_FILENAME
         if not vault.exists(note):
+            if not vault.is_dir(folder):
+                return _missing(args.folder)
             return f"{args.folder or '/'} has no folder note."
         return vault.read_text(note)
 
@@ -244,7 +356,10 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
         ),
         FunctionTool(
             name="grep",
-            description="Regex-search the text of documents' sidecars under a folder.",
+            description=(
+                "Regex-search document text. Give a folder to search everything under it, "
+                "or one file to find where in that document a thing is said."
+            ),
             params=_GrepArgs,
             handler=_grep,
         ),

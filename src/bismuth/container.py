@@ -24,6 +24,7 @@ from bismuth.ports.vault import STATE_DIR, Vault
 from bismuth.services.agent import AgentService
 from bismuth.services.cards import CardService
 from bismuth.services.charters import CharterService
+from bismuth.services.conversation import ConversationService
 from bismuth.services.deletion import DeletionService
 from bismuth.services.ingest import IngestService
 from bismuth.services.move import MoveService
@@ -61,6 +62,9 @@ class Bismuth:
     deletion: DeletionService
     move: MoveService
     agent: AgentService
+    conversation: ConversationService
+    """Multi-turn questions answered by walking the tree the rest of this builds."""
+
     simple: SimpleFiler
     """The two-question pipeline: file a batch, and look at the whole tree when it grows."""
     redesign: RedesignService
@@ -84,26 +88,30 @@ def build(
     catalog = FileCatalog(state)
     parsers = build_registry()
 
+    # Filing and answering are separate jobs and may be separate models; when nothing
+    # is set for the second, both of these resolve to the same endpoint.
+    filing = settings.librarian().for_workload(uses_tools=False)
+    asking = settings.chat().for_workload(uses_tools=True)
     model: LLM = llm or LiteLLMAdapter(
-        model=settings.model_for(),
-        api_key=settings.api_key,
-        api_base=settings.api_base,
+        model=filing.model,
+        api_key=filing.api_key,
+        api_base=filing.api_base,
         timeout=settings.llm_timeout_seconds,
         absolute_timeout=settings.llm_absolute_timeout_seconds,
         max_schema_retries=settings.llm_max_schema_retries,
         max_concurrency=settings.llm_max_concurrency,
-        headers=settings.api_headers,
-        body=settings.api_body,
+        headers=filing.headers,
+        body=filing.body,
         native_schema=settings.native_schema,
     )
     chat: ChatModel = chat_model or LiteLLMChatModel(
-        model=settings.model_for(),
-        api_key=settings.api_key,
-        api_base=settings.api_base,
+        model=asking.model,
+        api_key=asking.api_key,
+        api_base=asking.api_base,
         timeout=settings.llm_timeout_seconds,
         max_concurrency=settings.llm_max_concurrency,
-        headers=settings.api_headers,
-        body=settings.api_body,
+        headers=asking.headers,
+        body=asking.body,
     )
 
     transactor = Transactor(vault, journal)
@@ -161,5 +169,12 @@ def build(
         move=move,
         redesign=redesign,
         agent=AgentService(model=chat, vault=vault, charters=charters),
+        conversation=ConversationService(
+            model=chat,
+            vault=vault,
+            charters=charters,
+            context_tokens=settings.chat_context_tokens,
+            budget_tokens=settings.chat_budget_tokens,
+        ),
         simple=SimpleFiler(vault=vault, charters=charters, transactor=transactor, llm=model),
     )
