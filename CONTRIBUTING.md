@@ -47,8 +47,7 @@ thing you need into `domain/`, not to add an ignore.
 
 ## What we would like help with
 
-- **Parsers.** Formats we cannot read are documents we cannot organise. See the
-  licence constraint below before reaching for a library.
+- **Parsers.** Formats we cannot read are documents we cannot organise.
 - **Prompts.** [`src/bismuth/prompts/`](src/bismuth/prompts/) is the highest-leverage
   code in the repo and it is currently tuned by one person's intuition. If you run
   Bismuth on a real corpus in your language and the cards come out wrong, that is a
@@ -62,14 +61,7 @@ thing you need into `domain/`, not to add an ignore.
 
 ## Licences: the one hard rule
 
-**No copyleft dependencies.** Bismuth is Apache-2.0 so it can be installed inside
-companies next to proprietary code ??that deployment is the whole point, and a viral
-licence rules it out. CI fails on AGPL/GPL/LGPL appearing anywhere in the tree.
-
-This has cost us real quality: PyMuPDF is a better PDF extractor than pypdf and we
-do not use it, and we hand-wrote an HWPX parser rather than take the AGPL one.
-If a permissive alternative exists for something we currently do badly, that is a
-very welcome PR.
+Runtime dependencies must use an MIT, BSD, or Apache-2.0 compatible licence.
 
 ## Tests
 
@@ -81,7 +73,7 @@ model makes untestable. That is what `FakeLLM` is for.
 A test asserting that we called the model is not interesting. A test asserting that
 we *declined to guess* when the model gave us half an answer is the product.
 
-If you are touching a framework boundary (FastAPI, Typer), write a test that makes a
+If you are touching a framework boundary (such as FastAPI or the CLI), write a test that makes a
 real call. That layer is where type checking stops helping ??a dependency alias in
 the wrong scope once turned every endpoint into a 422 while types, lint and every
 unit test stayed green.
@@ -98,5 +90,5 @@ Vaults contain documents you probably cannot share, so please include instead: t
 shape (how many files, what formats, roughly what facets), the model you configured,
 the relevant lines from `.bismuth/journal.jsonl`, and what you expected to happen.
 
-If Bismuth moved a file somewhere wrong, `bismuth log` shows the rationale it used.
-That line is the most useful thing you can paste.
+If Bismuth moved a file somewhere wrong, include the matching entry from
+`.bismuth/journal.jsonl`; its rationale is the most useful detail you can paste.

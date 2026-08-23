@@ -28,6 +28,7 @@ from bismuth.adapters.llm import (
 )
 from bismuth.api import diagnostics
 from bismuth.api.progress import ProgressBus, stream
+from bismuth.api.progress import label as progress_label
 from bismuth.config import (
     PROVIDERS,
     ApiMode,
@@ -548,7 +549,7 @@ def create_app(
         def report(progress: Progress) -> None:
             batch.current = progress.filename
             batch.current_stage = progress.stage.value
-            batch.current_label = progress.label()
+            batch.current_label = progress_label(progress)
             app.state.progress.publish(progress)
 
         try:

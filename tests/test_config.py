@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Iterator
+from importlib import import_module
 from pathlib import Path
 
 import pytest
@@ -330,8 +331,15 @@ class TestImportOrdering:
         )
         assert result.stdout.strip() == "False"
 
-    def test_the_env_file_in_the_working_directory_wins(self, tmp_path: Path) -> None:
+    def test_the_env_file_in_the_working_directory_wins(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        clean_env: None,
+    ) -> None:
         """End to end through the real CLI."""
+        cli_main = import_module("bismuth.cli.main")
+
         decoy = tmp_path / "decoy"
         decoy.mkdir()
         (decoy / ".env").write_text("BISMUTH_VAULT_PATH=./WRONG\n", encoding="utf-8")
@@ -340,18 +348,16 @@ class TestImportOrdering:
         workdir.mkdir()
         (workdir / ".env").write_text("BISMUTH_VAULT_PATH=./RIGHT\n", encoding="utf-8")
 
-        # Strip BISMUTH_* from the environment so a leaked var can't decide the outcome.
-        clean = {k: v for k, v in os.environ.items() if not k.startswith("BISMUTH_")}
-        result = subprocess.run(
-            [sys.executable, "-m", "bismuth.cli.main", "doctor"],
-            cwd=workdir,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env={**clean, "PYTHONIOENCODING": "utf-8", "COLUMNS": "200"},
-        )
-        assert "RIGHT" in result.stdout, result.stdout
-        assert "WRONG" not in result.stdout
+        seen: dict[str, Path] = {}
+
+        def capture_settings(_args: object) -> None:
+            seen["vault"] = Settings().vault_path
+
+        monkeypatch.chdir(workdir)
+        monkeypatch.setattr(cli_main, "_serve", capture_settings)
+        cli_main.main([])
+
+        assert seen["vault"].name == "RIGHT"
 
 
 class TestTwoModels:

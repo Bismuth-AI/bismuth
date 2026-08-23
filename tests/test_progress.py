@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 from fastapi.testclient import TestClient
 
-from bismuth.api.progress import ProgressBus, as_event, stream
+from bismuth.api.progress import ProgressBus, as_event, label, stream
 from bismuth.container import Bismuth
 from bismuth.domain.document import Extraction, Section
 from bismuth.domain.progress import Progress, Stage, report
@@ -27,25 +27,24 @@ def _p(stage: Stage, **kw: object) -> Progress:
 class TestProgressValue:
     def test_reading_says_which_window_and_what_it_found(self) -> None:
         p = _p(Stage.READING, step=3, steps=8, found=("지연배상", "대한물산"))
-        assert p.label() == "3/8조각 읽는 중 — 지연배상, 대한물산"
+        assert label(p) == "3/8조각 읽는 중 — 지연배상, 대한물산"
         assert p.fraction == pytest.approx(0.375)
         assert not p.terminal
 
     def test_a_window_full_of_finds_still_fits_on_one_line(self) -> None:
-        """A real run turned up a dozen things in one window; the line is a status, not a list."""
         p = _p(Stage.READING, step=2, steps=5, found=tuple(f"주제{i}" for i in range(9)))
-        assert p.label() == "2/5조각 읽는 중 — 주제0, 주제1, 주제2 외 6개"
+        assert label(p) == "2/5조각 읽는 중 — 주제0, 주제1, 주제2 외 6개"
 
     def test_exactly_three_finds_need_no_counter(self) -> None:
         p = _p(Stage.READING, step=1, steps=2, found=("가", "나", "다"))
-        assert p.label() == "1/2조각 읽는 중 — 가, 나, 다"
+        assert label(p) == "1/2조각 읽는 중 — 가, 나, 다"
 
     def test_a_step_with_no_measure_has_no_fraction(self) -> None:
         assert _p(Stage.FILING).fraction is None
 
     def test_placing_into_an_empty_vault_does_not_say_zero_folders(self) -> None:
-        assert _p(Stage.PLACING, steps=0).label() == "첫 문서라 둘 폴더를 새로 정하는 중"
-        assert "12개" in _p(Stage.PLACING, steps=12).label()
+        assert label(_p(Stage.PLACING, steps=0)) == "첫 문서라 둘 폴더를 새로 정하는 중"
+        assert "12개" in label(_p(Stage.PLACING, steps=12))
 
     def test_a_total_without_a_position_is_not_progress(self) -> None:
         # Placement knows how many folders it weighs, not which one it is on. Reporting
@@ -58,7 +57,7 @@ class TestProgressValue:
 
     def test_every_stage_has_a_label(self) -> None:
         # A stage added without a label would render as an empty line, which reads as a hang.
-        assert all(_p(s, note="x", steps=1, step=1).label() for s in Stage)
+        assert all(label(_p(s, note="x", steps=1, step=1)) for s in Stage)
 
 
 class TestReport:

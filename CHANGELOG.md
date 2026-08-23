@@ -21,6 +21,8 @@ that below `1.0.0` the interface may break between minor versions.
 
 ### Changed
 
+- **The CLI now has one job: `bismuth` starts the local web app.** Early maintenance,
+  ingest, inspection, and recovery commands were removed from the public command surface.
 - **A run ends on tokens spent, not on a turn count.** `max_turns` remains only as a
   backstop against a looping model. A cap on turns says nothing about how big a turn is:
   it cut off cheap questions with the answer half-found and let expensive ones overflow
@@ -75,8 +77,7 @@ built yet.
   header naming the document it came from, so a matching line is never an orphan
   fragment. Originals are never modified.
 - **A journal, and undo for everything.** Every batch is written down before any
-  file moves and knows its own inverse. `bismuth undo <id>` reverses any entry,
-  and the undo is itself undoable. An interrupted run is recovered on next start.
+  file moves and knows its own inverse. An interrupted run is recovered on next start.
 - **Parsers** for `.pdf`, `.docx`, `.pptx`, `.xlsx`, `.hwpx`, `.md`, `.txt` and
   `.csv`.
 - **Provider abstraction.** Services request a model *profile* (`FAST`,

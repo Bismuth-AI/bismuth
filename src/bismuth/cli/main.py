@@ -1,7 +1,8 @@
-"""The command line."""
+"""Launch the local Bismuth web application."""
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import socket
 import sys
@@ -9,445 +10,97 @@ import threading
 import time
 import webbrowser
 from asyncio import AbstractEventLoop, SelectorEventLoop
-from pathlib import Path, PurePosixPath
-from typing import Annotated, Any
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
-import anyio
-import typer
-from rich.console import Console
-from rich.table import Table
-from rich.tree import Tree
-
 from bismuth import __version__
-from bismuth.adapters.llm import list_models, litellm_adapter
-from bismuth.adapters.parsers import build_registry
-from bismuth.config import CONFIG_FILE, Settings, load_env_file
-from bismuth.container import Bismuth, build
+from bismuth.config import Settings, load_env_file
 from bismuth.domain.errors import BismuthError
 from bismuth.logging_setup import configure_logging
-from bismuth.ports.vault import INBOX
-from bismuth.services import simple as simple_service
 
 
 def _force_utf8_output() -> None:
-    """Force UTF-8 stdout/stderr so a Korean Windows console (cp949) doesn't crash on non-ASCII output."""
+    """Use UTF-8 for Windows console output."""
     if sys.platform != "win32":
         return
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
-            # Redirected or unusual streams may not take it; never worth dying over.
             with contextlib.suppress(OSError, ValueError):
                 reconfigure(encoding="utf-8", errors="replace")
 
 
-_force_utf8_output()
-
-app = typer.Typer(
-    name="bismuth",
-    help="에이전트가 탐색할 수 있는 문서 구조를, 알아서. 인자 없이 실행하면 시작됩니다.",
-    # Bare `bismuth` starts the app instead of printing the subcommand list.
-    no_args_is_help=False,
-    invoke_without_command=True,
-    add_completion=False,
-    # We render our own failures instead of Typer's provider-internals traceback.
-    pretty_exceptions_enable=False,
-)
-console = Console()
-error_console = Console(stderr=True, style="red")
-
-_verbose = False
-
-
-def _engine(vault: Path | None = None) -> Bismuth:
-    settings = Settings()
-    if vault is not None:
-        settings = settings.model_copy(update={"vault_path": vault.expanduser().resolve()})
-    engine = build(settings)
-    # Every entry point recovers first, so a crash mid-batch is never left for the user to notice.
-    if recovered := engine.recover():
-        console.print(f"[yellow]이전 실행에서 중단된 변경 {recovered}건을 되돌렸습니다.")
-    return engine
-
-
-VaultOption = Annotated[
-    Path | None,
-    typer.Option("--vault", "-v", help="볼트 폴더. 기본값은 설정에 저장된 경로입니다."),
-]
-
-
-@app.callback()
-def _root(
-    context: typer.Context,
-    verbose: Annotated[
-        bool, typer.Option("--verbose", help="디버그 로그와 전체 트레이스백을 봅니다.")
-    ] = False,
-) -> None:
-    global _verbose
-    _verbose = verbose
-    # Must run before Settings() is constructed.
-    load_env_file()
-    configure_logging(verbose=verbose)
-    if context.invoked_subcommand is None:
-        serve()
-
-
-@app.command()
-def version() -> None:
-    """Print the version."""
-    console.print(f"bismuth {__version__}")
-
-
-@app.command()
-def doctor(vault: VaultOption = None) -> None:
-    """Report what's configured and whether it actually responds."""
-    settings = Settings()
-    if vault is not None:
-        settings = settings.model_copy(update={"vault_path": vault.expanduser().resolve()})
-
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_row("볼트", str(settings.vault_path))
-    table.add_row("설정 파일", str(CONFIG_FILE) if CONFIG_FILE.exists() else "[dim]아직 설정 전[/]")
-    table.add_row("", "")
-
-    if not settings.is_configured:
-        table.add_row("모델", "[yellow]설정되지 않음[/]")
-        console.print(table)
-        console.print("\n[cyan]bismuth[/] 를 실행하고 브라우저에서 설정을 마쳐 주세요.")
-        return
-
-    chosen = settings.provider
-    assert chosen is not None
-    table.add_row("프로바이더", chosen.label)
-    table.add_row("모델", settings.model_for())
-    table.add_row("엔드포인트", settings.api_base or "(프로바이더 기본값)")
-    table.add_row(
-        "API 키", f"…{settings.api_key[-4:]}" if settings.api_key else "[dim](필요 없음)[/]"
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="bismuth",
+        description="Launch the local Bismuth web app.",
     )
-    table.add_row(
-        "데이터가 이 컴퓨터를 벗어나는가",
-        "[green]아니오 — 완전 로컬[/]"
-        if settings.runs_locally
-        else "[yellow]예 — 외부 모델을 씁니다[/]",
+    parser.add_argument(
+        "--vault",
+        "-v",
+        type=Path,
+        help="Vault directory. Uses the saved setting when omitted.",
     )
-    table.add_row("", "")
-    formats = build_registry().supported_extensions()
-    table.add_row("읽을 수 있는 형식", " ".join(sorted(formats)))
-    console.print(table)
-
-    if ".hwpx" in formats:
-        console.print(
-            "\n[dim]참고: 한글 문서는 .hwpx 로 읽습니다. 구형 바이너리 .hwp 는 "
-            "한글에서 .hwpx 로 다시 저장한 뒤 넣어 주세요.[/]"
-        )
-
-    with console.status("프로바이더에 무엇을 쓸 수 있는지 묻는 중..."):
-        check = list_models(chosen.id, api_key=settings.api_key, api_base=settings.api_base)
-
-    if not check.ok:
-        console.print(f"\n[red]프로바이더가 응답하지 않았습니다:[/] {check.error}")
-        console.print("\n[cyan]bismuth[/] 를 실행해 설정 화면에서 고쳐 주세요.")
-        raise typer.Exit(1)
-
-    console.print(
-        f"\n[green]프로바이더가 응답했습니다.[/] 이 키로 쓸 수 있는 모델 {len(check.models)}개."
+    parser.add_argument("--host", help="Server address. Only localhost is allowed.")
+    parser.add_argument("--port", type=_port, help="Server port.")
+    parser.add_argument(
+        "--open",
+        dest="open_browser",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Open a browser when the server is ready.",
     )
-    if settings.model not in check.models:
-        console.print(
-            f"  [yellow]![/] 모델 [cyan]{settings.model}[/] 이(가) 그 목록에 없습니다. "
-            f"호출하면 실패합니다. [cyan]bismuth[/] 를 실행해 다른 걸 골라 주세요."
-        )
+    parser.add_argument("--verbose", action="store_true", help="Show full error details.")
+    parser.add_argument("--version", action="version", version=f"bismuth {__version__}")
+    return parser
 
 
-@app.command()
-def add(
-    files: Annotated[list[Path], typer.Argument(help="추가할 파일. 볼트로 복사됩니다.")],
-    vault: VaultOption = None,
-) -> None:
-    """Copy files into the vault and file them."""
-    engine = _engine(vault)
-    anyio.run(_add, engine, files)
-
-
-async def _add(engine: Bismuth, files: list[Path]) -> None:
+def _port(value: str) -> int:
     try:
-        for path in files:
-            if not path.is_file():
-                error_console.print(f"{path} 건너뜀: 파일이 아닙니다")
-                continue
-            rel = engine.ingest.stage(path.read_bytes(), path.name)
-            await _process_one(engine, rel)
-    finally:
-        await litellm_adapter.close_clients()
+        port = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("port must be a number") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
 
 
-@app.command()
-def scan(vault: VaultOption = None) -> None:
-    """Read and file everything unprocessed in the inbox, including hand-dropped files."""
-    engine = _engine(vault)
-    pending = engine.ingest.pending_inbox()
-    if not pending:
-        console.print("[green]기다리는 파일이 없습니다.")
-        return
-    console.print(f"문서 {len(pending)}개를 읽는 중...\n")
-    anyio.run(_scan, engine, pending)
-
-
-async def _scan(engine: Bismuth, pending: list[PurePosixPath]) -> None:
-    try:
-        for rel in pending:
-            await _process_one(engine, rel)
-    finally:
-        await litellm_adapter.close_clients()
-
-
-async def _process_one(engine: Bismuth, rel: PurePosixPath) -> None:
-    try:
-        result = await engine.ingest.process(rel)
-    except BismuthError as exc:
-        error_console.print(f"  {rel}: {exc}")
-        return
-
-    if result.duplicate:
-        console.print(f"  [dim]{result.filename} — 이미 읽은 문서라 그대로 뒀습니다[/]")
-        return
-
-    if result.placement.is_placed:
-        badge = "[dim](새 폴더)[/]" if result.placement.created_folder else ""
-        console.print(f"  [green]→[/] {result.filename}  →  [cyan]{result.destination}/[/] {badge}")
-        console.print(f"    [dim]{result.placement.rationale}[/]")
-    else:
-        console.print(f"  [yellow]?[/] {result.filename}  →  [yellow]{INBOX}/[/]")
-        console.print(f"    [dim]{result.placement.rationale}[/]")
-
-
-@app.command()
-def tree(vault: VaultOption = None) -> None:
-    """Show the vault as an agent sees it: folders and their purpose."""
-    engine = _engine(vault)
-    root = Tree(f"[bold]{engine.vault.root.name}[/]")
-    nodes: dict[tuple[str, ...], Tree] = {(): root}
-
-    for folder in engine.vault.iter_folders():
-        if not folder.parts:
-            continue
-        parent = nodes.get(folder.parts[:-1], root)
-        count = engine.vault.count_files(folder)
-        label = f"[cyan]{folder.name}/[/]" + (f" [dim]({count})[/]" if count else "")
-        try:
-            if charter := engine.charters.load(folder):
-                label += f"\n[dim]{charter.purpose}[/]"
-        except BismuthError:
-            label += " [red](헌장을 읽을 수 없음)[/]"
-        nodes[folder.parts] = parent.add(label)
-
-    console.print(root)
-
-
-@app.command()
-def replay(
-    vault: VaultOption = None,
-    into: Annotated[
-        Path | None, typer.Option("--into", help="결과를 담을 폴더. 비우면 임시 폴더를 만듭니다.")
-    ] = None,
-    only: Annotated[int, typer.Option("--only", help="앞에서 몇 건만. 0 이면 전부.", min=0)] = 0,
-    seed: Annotated[
-        int, typer.Option("--seed", help="문서 순서를 섞습니다. 순서 독립성 확인용.")
-    ] = 0,
-) -> None:
-    """이미 읽은 장서를 다시 읽지 않고, 폴더 배치만 새 볼트에 다시 돌립니다.
-
-    문서 카드는 사이드카에서 그대로 가져오므로 카드 만드는 호출이 없습니다. 300건 기준으로
-    21분이 1분대로 줄고, 원본 볼트는 건드리지 않습니다.
-    """
-    import random
-    import tempfile
-
-    from bismuth.services import replay as replay_service
-
-    source = _engine(vault)
-    pinned = replay_service.read_pinned(source.vault.root)
-    if not pinned:
-        error_console.print(
-            f"{source.vault.root} 에 사이드카가 있는 문서가 없습니다. "
-            "한 번은 정상 처리를 돌려야 다시 돌릴 카드가 생깁니다."
-        )
-        raise typer.Exit(1)
-    if seed:
-        random.Random(seed).shuffle(pinned)
-    if only:
-        pinned = pinned[:only]
-
-    target = (into or Path(tempfile.mkdtemp(prefix="bismuth-replay-"))).expanduser().resolve()
-    if into is not None and target.exists() and any(target.iterdir()):
-        error_console.print(f"{target} 가 비어 있지 않습니다. 빈 폴더를 주세요.")
-        raise typer.Exit(1)
-    target.mkdir(parents=True, exist_ok=True)
-
-    settings = source.settings.model_copy(update={"vault_path": target})
-    engine = build(settings)
-    console.print(f"\n  문서 [bold]{len(pinned)}[/]건, 카드 재사용 → [cyan]{target}[/]\n")
-
-    began = time.monotonic()
-    filed = 0
-    reviews = 0
-
-    def nonlocal_reviews() -> None:
-        nonlocal reviews
-        reviews += 1
-        console.print(f"  [yellow]마지막 구조 점검 #{reviews}[/]")
-
-    async def run() -> None:
-        nonlocal filed, reviews
-        batch: list[tuple[PurePosixPath, object, object]] = []
-        for one in pinned:
-            rel = engine.ingest.stage(one.path.read_bytes(), one.name)
-            batch.append(replay_service.staged(one, rel))
-            if len(batch) < simple_service.BATCH:
-                continue
-            await engine.simple.file(batch)  # type: ignore[arg-type]
-            filed += len(batch)
-            batch.clear()
-            console.print(f"  [dim]{filed}/{len(pinned)} 배치[/]")
-            if await engine.simple.regroup():
-                console.print("  [cyan]최상위가 넓어져서 묶었습니다[/]")
-            if engine.simple.due():
-                reviews += 1
-                console.print(f"  [yellow]전체 구조 점검 #{reviews}[/] ({filed}건 시점)")
-                await engine.simple.review()
-        if batch:
-            await engine.simple.file(batch)  # type: ignore[arg-type]
-            filed += len(batch)
-        if engine.simple.due(settling=True):
-            nonlocal_reviews()
-            await engine.simple.review(ending=True)
-        else:
-            await engine.simple.regroup(ending=True)
-
-    try:
-        anyio.run(run)
-    finally:
-        anyio.run(litellm_adapter.close_clients)
-
-    took = time.monotonic() - began
-    loose = engine.vault.count_files(PurePosixPath())
-    folders = [f for f in engine.vault.iter_folders() if f.parts and f.parts[0] != INBOX.parts[0]]
-    console.print(
-        f"\n  [green]{filed}건[/] 배치, 점검 {reviews}회, [bold]{took:.0f}초[/]\n"
-        f"  폴더 {len(folders)}개 · 루트에 남은 문서 {loose}건\n"
-    )
-    console.print(f"  트리를 보려면: [cyan]bismuth tree --vault {target}[/]\n")
-
-
-@app.command()
-def status(vault: VaultOption = None) -> None:
-    """Vault status: document count, folder count, what's left in the inbox."""
-    engine = _engine(vault)
-    total = engine.catalog.card_count()
-    folders = sum(
-        1 for f in engine.vault.iter_folders() if f.parts and f.parts[0] != INBOX.parts[0]
-    )
-    inbox = engine.vault.count_files(INBOX, recursive=True)
-
-    console.print(f"[bold]{engine.vault.root}[/]\n")
-    console.print(f"  문서    {total}")
-    console.print(f"  폴더    {folders}")
-    console.print(f"  인박스  {inbox}" + ("  [yellow](읽었지만 배치 못 함)[/]" if inbox else ""))
-
-
-@app.command(name="log")
-def show_log(
-    vault: VaultOption = None,
-    limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
-) -> None:
-    """Everything Bismuth has done to this vault."""
-    engine = _engine(vault)
-    table = Table(box=None, padding=(0, 2))
-    table.add_column("id", style="dim")
-    table.add_column("언제", style="dim")
-    table.add_column("누가")
-    table.add_column("무엇을")
-    table.add_column("상태")
-
-    for entry in engine.journal.iter_entries(limit=limit):
-        colour = {"applied": "green", "reverted": "dim", "failed": "red"}.get(
-            entry.status.value, "yellow"
-        )
-        table.add_row(
-            entry.id,
-            entry.created_at.strftime("%m-%d %H:%M"),
-            entry.actor.value,
-            entry.reason,
-            f"[{colour}]{entry.status.value}[/]",
-        )
-    console.print(table)
-    console.print("\n[dim]되돌리려면: bismuth undo <id>[/]")
-
-
-@app.command()
-def undo(
-    entry_id: Annotated[str, typer.Argument(help="저널 항목 id. 'bismuth log' 에서 확인합니다.")],
-    vault: VaultOption = None,
-) -> None:
-    """Reverse a change. Any change."""
-    engine = _engine(vault)
-    try:
-        reversed_entry = engine.transactor.undo(entry_id)
-    except BismuthError as exc:
-        error_console.print(str(exc))
-        raise typer.Exit(1) from exc
-    console.print(f"[green]되돌렸습니다.[/] {reversed_entry.reason}")
-    console.print(
-        f"[dim]이 되돌리기 자체가 항목 {reversed_entry.id} 이며, 다시 되돌릴 수 있습니다.[/]"
-    )
-
-
-@app.command()
-def serve(
-    vault: VaultOption = None,
-    host: Annotated[str | None, typer.Option("--host")] = None,
-    port: Annotated[int | None, typer.Option("--port")] = None,
-    open_browser: Annotated[
-        bool, typer.Option("--open/--no-open", help="서버가 뜨면 브라우저를 엽니다.")
-    ] = True,
-) -> None:
-    """Run Bismuth. What `bismuth` with no subcommand does."""
+def _serve(args: argparse.Namespace) -> None:
     try:
         import uvicorn
     except ImportError as exc:
-        error_console.print("서버에는 추가 패키지가 필요합니다: pip install 'bismuth-kb[server]'")
-        raise typer.Exit(1) from exc
-
-    settings = Settings()
-    if vault is not None:
-        settings = settings.model_copy(update={"vault_path": vault.expanduser().resolve()})
+        raise RuntimeError(
+            "server dependencies are missing: pip install 'bismuth-kb[server]'"
+        ) from exc
 
     from bismuth.api.app import create_app
 
-    bound_host = host or settings.host
-    bound_port = port or settings.port
-    if not _is_loopback_host(bound_host):
-        error_console.print("Bismuth 웹 서버는 인증이 없으므로 localhost에서만 실행할 수 있습니다.")
-        raise typer.Exit(2)
-    url_host = (
-        f"[{bound_host}]" if ":" in bound_host and not bound_host.startswith("[") else bound_host
-    )
-    url = f"http://{url_host}:{bound_port}"
+    settings = Settings()
+    if args.vault is not None:
+        settings = settings.model_copy(update={"vault_path": args.vault.expanduser().resolve()})
 
-    console.print(f"\n  [green]Bismuth[/] → [cyan]{url}[/]")
+    host = args.host or settings.host
+    port = args.port or settings.port
+    if not _is_loopback_host(host):
+        raise ValueError("Bismuth can only serve on localhost.")
+
+    url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    url = f"http://{url_host}:{port}"
+    print(f"\n  Bismuth → {url}")
     if settings.is_configured:
-        console.print(f"  [dim]볼트: {settings.vault_path}[/]\n")
+        print(f"  Vault: {settings.vault_path}\n")
     else:
-        console.print("  [dim]아직 설정 전 — 열리는 페이지가 안내합니다[/]\n")
+        print("  Setup required — finish configuration in the browser.\n")
 
-    if open_browser:
+    if args.open_browser:
         _open_when_ready(url)
 
     uvicorn.run(
-        create_app(settings, verbose=_verbose),
-        host=bound_host,
-        port=bound_port,
+        create_app(settings, verbose=args.verbose),
+        host=host,
+        port=port,
         log_level="warning",
         **_loop_choice(),
     )
@@ -459,7 +112,7 @@ def _is_loopback_host(host: str) -> bool:
 
 
 def _selector_loop() -> AbstractEventLoop:
-    """The loop uvicorn should run on. Named by import string in ``_loop_choice``."""
+    """Return the Windows event loop used by Uvicorn."""
     return SelectorEventLoop()
 
 
@@ -471,7 +124,7 @@ def _loop_choice() -> dict[str, Any]:
 
 
 def _open_when_ready(url: str, *, timeout: float = 10.0) -> None:
-    """Open a browser once the port answers, polled from a background thread (a cold LiteLLM import can take seconds)."""
+    """Open the browser after the server starts accepting connections."""
     parsed = urlparse(url)
     host, port = parsed.hostname or "127.0.0.1", parsed.port or 80
 
@@ -488,43 +141,39 @@ def _open_when_ready(url: str, *, timeout: float = 10.0) -> None:
     threading.Thread(target=wait_and_open, daemon=True).start()
 
 
-def main() -> None:
-    """Entry point. Turns provider exceptions into a message, a hint, and ``--verbose`` for the traceback."""
-    try:
-        app()
-    except BismuthError as exc:
-        # Ours, and deliberate. The message is already written for a human.
-        error_console.print(f"\n{exc}")
-        raise SystemExit(1) from exc
-    except KeyboardInterrupt:
-        error_console.print("\n중단했습니다. 하다 만 변경은 다음 실행 때 되돌려집니다.")
-        raise SystemExit(130) from None
-    except Exception as exc:
-        if _verbose:
-            raise
-        error_console.print(f"\n{type(exc).__name__}: {exc}")
-        if hint := _hint_for(exc):
-            error_console.print(f"\n{hint}")
-        error_console.print("\n[dim]전체 트레이스백을 보려면 --verbose 를 붙이세요.[/]")
-        raise SystemExit(1) from exc
-
-
 def _hint_for(exc: Exception) -> str:
-    """Guess at the fix for the failures that are not our fault but are our problem."""
     text = f"{type(exc).__name__} {exc}".lower()
     if "api key" in text or "not active" in text or "authentication" in text:
-        return (
-            "Bismuth 문제가 아니라 모델 인증 문제로 보입니다. `bismuth` 를 실행해 설정 화면에서 "
-            "키를 다시 넣거나, Ollama 같은 로컬 모델을 고르면 키 자체가 필요 없어집니다."
-        )
+        return "Check the API key and provider in Settings."
     if "rate limit" in text or "quota" in text:
-        return "프로바이더가 요청 속도를 제한하고 있습니다. 잠시 뒤 다시 시도해 주세요."
+        return "The provider rate limit was reached. Try again shortly."
     if "connection" in text or "connect" in text or "timeout" in text:
-        return (
-            "모델 엔드포인트에 연결하지 못했습니다. 로컬 모델이라면 실행 중인지, "
-            "설정한 주소가 맞는지 확인해 주세요."
-        )
+        return "Check that the model endpoint is running and its address is correct."
     return ""
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Run the local web application."""
+    _force_utf8_output()
+    args = _parser().parse_args(argv)
+    try:
+        load_env_file()
+        configure_logging(verbose=args.verbose)
+        _serve(args)
+    except BismuthError as exc:
+        print(f"\n{exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    except KeyboardInterrupt:
+        print("\nStopped. Incomplete changes will be recovered on the next run.", file=sys.stderr)
+        raise SystemExit(130) from None
+    except Exception as exc:
+        if args.verbose:
+            raise
+        print(f"\n{type(exc).__name__}: {exc}", file=sys.stderr)
+        if hint := _hint_for(exc):
+            print(f"\n{hint}", file=sys.stderr)
+        print("\nRun with --verbose to see the full error.", file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
