@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import yaml
 
-from bismuth.domain.document import DocumentCard, Extraction, SourceRef
+from bismuth.domain.document import Coverage, DocumentCard, Extraction, SourceRef
 
 SIDECAR_SCHEMA_VERSION = 1
 
@@ -122,9 +122,9 @@ def _coverage_lines(*, card: DocumentCard, extraction: Extraction) -> list[str]:
         ]
 
     if coverage.whole_document:
-        return [f"> 📖 {coverage.summary_line()}"]
+        return [f"> 📖 {_coverage_summary(coverage)}"]
 
-    lines = [">", f"> ⚠️ **{coverage.summary_line()}**"]
+    lines = [">", f"> ⚠️ **{_coverage_summary(coverage)}**"]
     if coverage.extraction_truncated:
         lines.append("> 추출 한도에 걸려 파일 뒷부분은 아예 읽지 못했습니다.")
     if coverage.windows_read < coverage.windows_total:
@@ -132,6 +132,16 @@ def _coverage_lines(*, card: DocumentCard, extraction: Extraction) -> list[str]:
     if coverage.windows_failed:
         lines.append(f"> 조각 {coverage.windows_failed}개는 모델이 읽지 못했습니다.")
     return lines
+
+
+def _coverage_summary(coverage: Coverage) -> str:
+    """Render document coverage for a sidecar."""
+    if coverage.whole_document:
+        return f"전체를 읽었습니다 ({coverage.chars_total:,}자, {coverage.windows_total}조각)"
+    return (
+        f"{coverage.windows_total}조각 중 {coverage.windows_read}조각을 읽었습니다 "
+        f"({coverage.chars_read:,}/{coverage.chars_total:,}자)"
+    )
 
 
 def _body(*, card: DocumentCard, extraction: Extraction) -> str:

@@ -19,12 +19,7 @@ def sidecar_name(document_filename: str) -> str:
 
 
 LABEL_MAX_CHARS = 40
-"""How long a topic or keyword may be. These are filing labels: they go on the card, into
-the sidecar, and into every placement prompt afterwards.
-
-Measured over 3,661 topics and 6,568 keywords from a real vault: the longest honest value
-is 40 characters and the 95th percentile is 23.
-"""
+"""Maximum length of a topic or keyword used as a filing label."""
 
 NAME_MAX_CHARS = 60
 """How long an entity name may be. Longer than a label because organisations have long
@@ -170,11 +165,7 @@ class Extraction(BaseModel):
 
 
 class Coverage(BaseModel):
-    """How much of a document actually reached the model, and how much of it mattered.
-
-    Replaces a bare ``truncated`` flag: "we read 6 of 17 windows and 4 of them told
-    us something new" is actionable, "some of it" is not.
-    """
+    """How much of a document reached the model and contributed to its card."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -198,15 +189,6 @@ class Coverage(BaseModel):
     def whole_document(self) -> bool:
         """True when every extracted character was read and nothing was cut upstream."""
         return not self.extraction_truncated and self.windows_read >= self.windows_total
-
-    def summary_line(self) -> str:
-        """One human-readable line, also the shape the sidecar renders."""
-        if self.whole_document:
-            return f"전체를 읽었습니다 ({self.chars_total:,}자, {self.windows_total}조각)"
-        return (
-            f"{self.windows_total}조각 중 {self.windows_read}조각을 읽었습니다 "
-            f"({self.chars_read:,}/{self.chars_total:,}자)"
-        )
 
 
 class DocumentCard(BaseModel):

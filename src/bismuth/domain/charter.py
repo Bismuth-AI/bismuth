@@ -22,15 +22,7 @@ _GENERATED_BODY_NOTICE = "<!-- generated from frontmatter -->"
 
 
 def routing_purpose(value: str, *, fallback: str) -> str:
-    """Return a bounded, one-line routing sign without trusting model obedience.
-
-    A folder purpose is a stable boundary contract, not an inventory paragraph.  Prompts
-    ask for a short sign, but provider output is untrusted: rejecting an overlong sign
-    caused schema-repair calls and could make an already-filed document look failed.
-    Existing callers therefore keep a known sign, while a newly-created boundary falls
-    back to its already validated class name.  The fallback is capped only as a final
-    filesystem-safe guard; model prose is never blindly truncated into a broken sentence.
-    """
+    """Return a bounded one-line purpose, falling back to a validated name."""
     normalised = " ".join(value.split()).strip()
     if normalised and len(normalised) <= MAX_PURPOSE_CHARS:
         return normalised
@@ -39,15 +31,7 @@ def routing_purpose(value: str, *, fallback: str) -> str:
 
 
 def boundary_purpose(axis: str, class_name: str) -> str:
-    """The last-resort child sign, derived from machine-owned boundary state alone.
-
-    Used when no usable sign was proposed.  It says nothing the folder name does not
-    already say -- the axis is identical across every sibling, so ``axis: name`` cannot
-    rule anything out.  That is acceptable as a fallback and was not acceptable as the
-    only mechanism: a 300-document run wrote it everywhere and review then answered
-    "these signs do not help a reader rule alternatives out" in 25 of 26 packets,
-    correctly.  Prefer :func:`routing_sign`.
-    """
+    """Build a fallback purpose from validated boundary state."""
     clean_axis = " ".join(axis.split()).strip()
     clean_name = " ".join(class_name.split()).strip()
     if clean_axis and clean_name:
@@ -55,41 +39,19 @@ def boundary_purpose(axis: str, class_name: str) -> str:
     return clean_name or clean_axis or "?"
 
 
-#: Request-local handles the model is shown. They mean nothing outside that one request,
-#: and they have been observed inside model-written notes. Not anchored with ``\b``: in a
-#: language that does not space its particles, ``D0001과`` has no word boundary after the
-#: digits, and that is exactly the shape the leak took.
+#: Request-local handles must not be persisted in folder notes.
 _REQUEST_HANDLE = re.compile(r"(?<![A-Za-z0-9])[DFG]\d{3,4}(?!\d)")
 
 
 def routing_sign(proposed: str, *, axis: str, class_name: str) -> str:
-    """A child's sign: what belongs here that does not belong behind a sibling.
-
-    [SPEC.md 3.6] makes the note the only thing a reader has for narrowing candidates,
-    so it has to be able to exclude.  ADR-0014 replaced model prose with a derived
-    string because the model had written request-local handles, exclusions and its own
-    decision process into a public file; that removed the leak and the information with
-    it.
-
-    So the prose comes back, but never as something that can fail an ingest or outlive
-    its meaning: anything carrying a request-local handle, spanning lines, or running
-    past the sign budget falls back to the derived form.  A fallback sign is worse; a
-    wrong one is a lie on disk, and a failed one loses a document that is already safe.
-    """
+    """Return a safe routing sign or a deterministic fallback."""
     if sign_refusal(proposed, class_name=class_name) is None:
         return " ".join(proposed.split()).strip()
     return boundary_purpose(axis, class_name)
 
 
 def sign_refusal(proposed: str, *, class_name: str) -> str | None:
-    """Why this sign cannot go on disk, or ``None`` when it can.
-
-    Split out of ``routing_sign`` so the caller can say what happened. The fallback is a
-    folder note that repeats its own name in other words, and ``boundary_purpose`` says
-    plainly that such a note rules nothing out -- so a run where it appears often has a
-    real defect. Measured on 300 documents: eight of twenty-seven divisions wrote the
-    fallback, and nothing recorded which of these four conditions had rejected the sign.
-    """
+    """Return why a sign cannot be persisted, or ``None`` when valid."""
     normalised = " ".join(proposed.split()).strip()
     if not normalised:
         return "no sign was proposed"
@@ -97,8 +59,7 @@ def sign_refusal(proposed: str, *, class_name: str) -> str | None:
         return f"sign is {len(normalised)} characters, past the {MAX_PURPOSE_CHARS} budget"
     if _REQUEST_HANDLE.search(normalised):
         return "sign carries a request-local document handle"
-    # A sign that only repeats the folder name excludes nothing, which is the whole
-    # job. Observed live: a model asked for name then sign returned "지침" for both.
+    # A useful routing sign must distinguish the folder from its siblings.
     if normalise_label(normalised) == normalise_label(class_name):
         return "sign is the folder name again"
     return None
@@ -145,11 +106,8 @@ class Charter(BaseModel):
         ge=0,
         description=(
             "How many documents were under here, at any depth, when it was divided. The "
-            "division is reconsidered once that number has doubled: a judgement made from "
-            "thirty is not worth revisiting at thirty-one. Counted through the subtree, not "
-            "directly: dividing empties the folder into its children, so a direct count "
-            "would drop to zero on the way out and the division would never be looked at "
-            "again however much grew beneath it."
+            "division is reconsidered once that number has doubled. Counted through the "
+            "subtree because division moves direct documents into child folders."
         ),
     )
     redrawn_at_documents: int = Field(
@@ -157,9 +115,8 @@ class Charter(BaseModel):
         ge=0,
         description=(
             "Root only. How many documents the collection held when the whole-collection "
-            "pass last drew the top of it. Its own field, because split_at_documents is "
-            "rewritten every time the root divides -- eighteen times in one 300-document "
-            "run -- and a schedule measured against that can never mature."
+            "pass last drew the top of it. Kept separately from split_at_documents so "
+            "root-level scheduling remains stable across individual divisions."
         ),
     )
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

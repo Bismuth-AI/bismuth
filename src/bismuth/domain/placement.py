@@ -12,7 +12,7 @@ class Verdict(StrEnum):
     PLACED = "placed"
     INBOX = "inbox"
     """The document could not be read, so there is nothing to file it by. Not for
-    documents that are merely hard to sort -- those go to the root (SPEC.md 3.4)."""
+    documents that are merely hard to sort; those go to the root."""
 
 
 class Placement(BaseModel):
