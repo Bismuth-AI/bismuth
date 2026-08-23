@@ -78,7 +78,7 @@ built yet.
   file moves and knows its own inverse. `bismuth undo <id>` reverses any entry,
   and the undo is itself undoable. An interrupted run is recovered on next start.
 - **Parsers** for `.pdf`, `.docx`, `.pptx`, `.xlsx`, `.hwpx`, `.md`, `.txt` and
-  `.csv`. HWPX is hand-written rather than taken from the AGPL library.
+  `.csv`.
 - **Provider abstraction.** Services request a model *profile* (`FAST`,
   `REASONING`) and never name a model, so running fully local through Ollama
   changes no code path. Every model call is schema-constrained and retried on
