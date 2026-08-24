@@ -1,5 +1,5 @@
 """Command line interface."""
 
-from bismuth.cli.main import app, main
+from bismuth.cli.main import main
 
-__all__ = ["app", "main"]
+__all__ = ["main"]

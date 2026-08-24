@@ -13,12 +13,19 @@ from bismuth.domain.errors import CharterError
 
 #: Filename of a folder's note; sorts to the top of a listing.
 CHARTER_FILENAME = "_folder.md"
-CHARTER_SCHEMA_VERSION = 2
+CHARTER_SCHEMA_VERSION = 8
+MAX_PURPOSE_CHARS = 220
 
-_GENERATED_BODY_NOTICE = (
-    "<!-- 아래 본문은 이 파일의 frontmatter 에서 자동 생성됩니다. 고치려면 frontmatter 를 "
-    "고치거나 Bismuth 화면에서 수정하세요. 본문을 직접 고치면 덮어써집니다. -->"
-)
+_GENERATED_BODY_NOTICE = "<!-- generated from frontmatter -->"
+
+
+def routing_purpose(value: str, *, fallback: str) -> str:
+    """Return a bounded one-line purpose, falling back to a validated name."""
+    normalised = " ".join(value.split()).strip()
+    if normalised and len(normalised) <= MAX_PURPOSE_CHARS:
+        return normalised
+    safe = " ".join(fallback.split()).strip()
+    return safe[:MAX_PURPOSE_CHARS] or "?"
 
 
 class Charter(BaseModel):
@@ -29,14 +36,6 @@ class Charter(BaseModel):
     path: PurePosixPath = Field(description="Vault-relative folder path. Empty path is the root.")
     title: str
     purpose: str = Field(description="One line: what this folder holds. The routing hint.")
-    holds: tuple[str, ...] = Field(
-        default=(),
-        description="A few concrete examples of what belongs here, to steer future filing.",
-    )
-    answers: tuple[str, ...] = Field(
-        default=(),
-        description="Questions whose answers live in this subtree. Read by an agent deciding to descend.",
-    )
     managed: bool = Field(
         default=True,
         description="False for a note a human wrote. Bismuth reads those but never rewrites them.",
@@ -50,22 +49,12 @@ class Charter(BaseModel):
             "updated_at": self.updated_at.isoformat(),
             "title": self.title,
             "purpose": self.purpose,
-            "holds": list(self.holds),
-            "answers": list(self.answers),
         }
         front = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False, default_flow_style=False)
         return f"---\n{front}---\n\n{self._render_body()}\n"
 
     def _render_body(self) -> str:
         lines: list[str] = [_GENERATED_BODY_NOTICE, "", f"# {self.title}", "", self.purpose, ""]
-        if self.holds:
-            lines += ["## 여기에 들어오는 것", ""]
-            lines += [f"- {item}" for item in self.holds]
-            lines += [""]
-        if self.answers:
-            lines += ["## 여기서 답할 수 있는 질문", ""]
-            lines += [f"- {question}" for question in self.answers]
-            lines += [""]
         return "\n".join(lines).rstrip() + "\n"
 
     @classmethod
@@ -93,8 +82,6 @@ class Charter(BaseModel):
                 path=path,
                 title=str(meta.get("title") or (path.name if path.name else "Vault root")),
                 purpose=str(meta.get("purpose") or ""),
-                holds=tuple(str(x) for x in meta.get("holds") or ()),
-                answers=tuple(str(x) for x in meta.get("answers") or ()),
                 managed=bool(meta.get("managed", True)),
                 updated_at=_parse_datetime(meta.get("updated_at")),
             )

@@ -1,4 +1,4 @@
-"""The parsing boundary. Synchronous and CPU-bound; services run it off the event loop."""
+"""Document parsing boundaries."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ class DocumentParser(Protocol):
 
     @property
     def name(self) -> str:
-        """Recorded on every :class:`~bismuth.domain.document.Extraction`."""
+        """Return the parser name recorded on each extraction."""
         ...
 
     @property
@@ -33,6 +33,14 @@ class DocumentParser(Protocol):
         """
         ...
 
+    def warm(self) -> None:
+        """Verify that the parser is ready for use.
+
+        Raises:
+            ParserUnavailableError: if the parser cannot be loaded.
+        """
+        ...
+
 
 @runtime_checkable
 class ParserRegistry(Protocol):
@@ -43,5 +51,9 @@ class ParserRegistry(Protocol):
         ...
 
     def supported_extensions(self) -> frozenset[str]:
-        """Used by the CLI and the upload form, so the two cannot disagree."""
+        """Return every file extension handled by the registry."""
+        ...
+
+    def warm(self) -> dict[str, str]:
+        """Return unavailable parser names mapped to their load errors."""
         ...

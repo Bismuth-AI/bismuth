@@ -41,8 +41,8 @@ body:
     attributes:
       label: The relevant lines from .bismuth/journal.jsonl
       description: |
-        If a file was placed somewhere wrong, `bismuth log` shows the rationale
-        it used. That line is the single most useful thing you can paste.
+        If a file was placed somewhere wrong, include the matching journal entry.
+        Its rationale is the single most useful detail you can paste.
       render: shell
 
   - type: input

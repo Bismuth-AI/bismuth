@@ -26,6 +26,8 @@ class DeletionResult:
     path: str
     files: int
     """Documents removed (sidecars and notes are not counted)."""
+    folders: int = 0
+    """Folders removed, including the ones nested inside them."""
 
 
 class DeletionService:
@@ -95,27 +97,47 @@ class DeletionService:
         Raises:
             VaultError: for the root, the inbox, or a path that is not a folder.
         """
-        if not rel.parts:
-            raise VaultError("볼트 루트는 삭제할 수 없습니다.")
-        if rel.parts[0] == INBOX.parts[0]:
-            raise VaultError("인박스는 삭제할 수 없습니다.")
-        if not self._vault.is_dir(rel):
-            raise VaultError(f"삭제할 폴더가 없습니다: {rel}")
+        return await self.delete_folders([rel])
+
+    async def delete_folders(self, paths: list[PurePosixPath]) -> DeletionResult:
+        """Delete several folders and everything under them, as one reversible batch.
+
+        One entry, so one undo puts all of them back: deleting three folders and
+        getting three separate undos back is a worse deal than the user agreed to.
+
+        Raises:
+            VaultError: if any path is the root, the inbox, or not a folder (nothing
+                is deleted).
+        """
+        for rel in paths:
+            if not rel.parts:
+                raise VaultError("볼트 루트는 삭제할 수 없습니다.")
+            if rel.parts[0] == INBOX.parts[0]:
+                raise VaultError("인박스는 삭제할 수 없습니다.")
+            if not self._vault.is_dir(rel):
+                raise VaultError(f"삭제할 폴더가 없습니다: {rel}")
+
+        roots = _outermost(paths)
+        if not roots:
+            return DeletionResult(path="", files=0)
+
+        doomed = sorted(
+            (
+                f
+                for f in self._vault.iter_folders()
+                if any(f == r or _is_under(f, r) for r in roots)
+            ),
+            key=lambda f: len(f.parts),
+            reverse=True,  # Deepest first: RMDIR no-ops on a non-empty directory.
+        )
 
         operations: list[Operation] = []
         documents = 0
-
-        for file in self._vault.iter_files(rel, recursive=True):
-            operations.extend(self._file_operations(file))
-            documents += 1
-
-        # Deepest folders first: RMDIR no-ops on a non-empty directory.
-        folders = sorted(
-            (f for f in self._vault.iter_folders() if f == rel or _is_under(f, rel)),
-            key=lambda f: len(f.parts),
-            reverse=True,
-        )
-        for folder in folders:
+        for root in roots:
+            for file in self._vault.iter_files(root, recursive=True):
+                operations.extend(self._file_operations(file))
+                documents += 1
+        for folder in doomed:
             note = folder / CHARTER_FILENAME
             if self._vault.exists(note):
                 operations.append(
@@ -126,12 +148,18 @@ class DeletionService:
         self._transactor.execute(
             JournalEntry(
                 actor=Actor.USER,
-                reason=f"delete folder {rel}/ ({documents} document(s))",
+                reason=(
+                    f"delete folder {roots[0]}/ ({documents} document(s))"
+                    if len(roots) == 1
+                    else f"delete {len(roots)} folder(s) ({documents} document(s))"
+                ),
                 operations=tuple(operations),
             )
         )
-        await self._refresh([rel.parent])
-        return DeletionResult(path=str(rel), files=documents)
+        # A parent that is itself being deleted has no note left to redraw.
+        survivors = {r.parent for r in roots} - set(doomed)
+        await self._refresh(survivors)
+        return DeletionResult(path=str(roots[0]), files=documents, folders=len(doomed))
 
     async def _refresh(self, folders: set[PurePosixPath] | list[PurePosixPath]) -> None:
         """Redraw the notes of folders that just lost documents or a child."""
@@ -157,6 +185,21 @@ class DeletionService:
                 self._catalog.forget(document_id)
             operations.append(Operation(kind=OperationKind.REMOVE, target=sidecar, note="sidecar"))
         return operations
+
+
+def _outermost(paths: list[PurePosixPath]) -> list[PurePosixPath]:
+    """Drop paths already covered by another one, and duplicates.
+
+    Selecting a folder and its child is a normal thing to do in a tree. Counting the
+    child twice would double its documents in the result and queue two RMDIRs for the
+    same directory, the second of which fails.
+    """
+    unique = sorted(set(paths), key=lambda p: len(p.parts))
+    kept: list[PurePosixPath] = []
+    for path in unique:
+        if not any(_is_under(path, k) for k in kept):
+            kept.append(path)
+    return kept
 
 
 def _is_under(path: PurePosixPath, ancestor: PurePosixPath) -> bool:

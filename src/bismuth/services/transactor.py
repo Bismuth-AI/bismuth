@@ -81,6 +81,13 @@ class Transactor:
             raise VaultError(
                 f"entry {entry_id} is {entry.status.value}, not applied -- nothing to undo"
             )
+        # Refuse an inverse whose source paths no longer match the journal entry.
+        if missing := self._moved_since(entry):
+            raise VaultError(
+                f"entry {entry_id} cannot be undone: {len(missing)} of the files it moved "
+                f"have since been moved again, starting with {missing[0]}. Undo the later "
+                "entries first."
+            )
 
         inverse = JournalEntry(
             actor=Actor.USER,
@@ -91,6 +98,16 @@ class Transactor:
         applied = self.execute(inverse)
         self._journal.update(entry.with_status(EntryStatus.REVERTED))
         return applied
+
+    def _moved_since(self, entry: JournalEntry) -> list[str]:
+        """The destinations this entry wrote that are no longer where it left them."""
+        gone: list[str] = []
+        for operation in entry.operations:
+            if operation.kind is not OperationKind.MOVE:
+                continue
+            if not self._vault.exists(operation.target):
+                gone.append(str(operation.target))
+        return gone
 
     def recover(self) -> list[JournalEntry]:
         """Undo anything a crash left half-done. Safe to call on every startup."""

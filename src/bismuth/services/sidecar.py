@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import yaml
 
-from bismuth.domain.document import DocumentCard, Extraction, SourceRef
+from bismuth.domain.document import Coverage, DocumentCard, Extraction, SourceRef
 
 SIDECAR_SCHEMA_VERSION = 1
 
@@ -76,6 +76,8 @@ def _frontmatter(
         "keywords": list(card.keywords),
         "generated_at": datetime.now(UTC).isoformat(),
     }
+    if card.coverage is not None:
+        meta["coverage"] = card.coverage.model_dump()
     dumped = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False, default_flow_style=False)
     return f"---\n{dumped}---"
 
@@ -96,12 +98,7 @@ def _header(*, source: SourceRef, card: DocumentCard, extraction: Extraction) ->
         origin += f" — {extraction.page_count}쪽"
     lines += [origin]
 
-    if extraction.truncated:
-        lines += [
-            ">",
-            "> ⚠️ **일부만 읽었습니다.** 이 문서가 추출 한도보다 길어서 아래는 앞부분뿐입니다. "
-            "위 요약도 부분적으로만 읽고 쓴 것입니다.",
-        ]
+    lines += _coverage_lines(card=card, extraction=extraction)
 
     lines += ["", "## 요약", "", card.summary]
 
@@ -110,6 +107,41 @@ def _header(*, source: SourceRef, card: DocumentCard, extraction: Extraction) ->
         lines += [f"- {question}" for question in card.answers_questions]
 
     return "\n".join(lines)
+
+
+def _coverage_lines(*, card: DocumentCard, extraction: Extraction) -> list[str]:
+    """How much of the document the summary above is based on. Silence would read as 'all of it'."""
+    coverage = card.coverage
+    if coverage is None:
+        # A card from before coverage existed; the parser flag is all we know.
+        if not extraction.truncated:
+            return []
+        return [
+            ">",
+            "> ⚠️ **일부만 읽었습니다.** 이 문서가 추출 한도보다 길어서 아래는 앞부분뿐입니다.",
+        ]
+
+    if coverage.whole_document:
+        return [f"> 📖 {_coverage_summary(coverage)}"]
+
+    lines = [">", f"> ⚠️ **{_coverage_summary(coverage)}**"]
+    if coverage.extraction_truncated:
+        lines.append("> 추출 한도에 걸려 파일 뒷부분은 아예 읽지 못했습니다.")
+    if coverage.windows_read < coverage.windows_total:
+        lines.append("> 읽은 조각은 문서 전체에 고르게 흩어져 있지만, 사이사이는 건너뛰었습니다.")
+    if coverage.windows_failed:
+        lines.append(f"> 조각 {coverage.windows_failed}개는 모델이 읽지 못했습니다.")
+    return lines
+
+
+def _coverage_summary(coverage: Coverage) -> str:
+    """Render document coverage for a sidecar."""
+    if coverage.whole_document:
+        return f"전체를 읽었습니다 ({coverage.chars_total:,}자, {coverage.windows_total}조각)"
+    return (
+        f"{coverage.windows_total}조각 중 {coverage.windows_read}조각을 읽었습니다 "
+        f"({coverage.chars_read:,}/{coverage.chars_total:,}자)"
+    )
 
 
 def _body(*, card: DocumentCard, extraction: Extraction) -> str:

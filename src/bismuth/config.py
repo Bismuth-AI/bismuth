@@ -1,4 +1,4 @@
-"""Configuration. Bismuth owns it; it does not go looking for it."""
+"""Application settings and persisted user configuration."""
 
 from __future__ import annotations
 
@@ -6,8 +6,11 @@ import json
 import os
 import stat
 import tempfile
+from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
@@ -17,8 +20,6 @@ from pydantic_settings import (
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
-
-from bismuth.ports.llm import ModelProfile
 
 CONFIG_DIR = Path.home() / ".bismuth"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -36,7 +37,6 @@ class Provider(BaseModel):
     needs_api_base: bool = False
     default_api_base: str | None = None
     litellm_prefix: str = Field(description="What LiteLLM wants in front of the model name.")
-    local: bool = False
     hint: str = ""
 
 
@@ -54,29 +54,95 @@ PROVIDERS: tuple[Provider, ...] = (
         hint="platform.openai.com → API keys 에서 발급",
     ),
     Provider(
-        id="ollama",
-        label="Ollama — 내 컴퓨터에서 실행, 키 불필요, 아무것도 밖으로 안 나감",
-        litellm_prefix="ollama",
-        needs_key=False,
-        needs_api_base=True,
-        default_api_base="http://localhost:11434",
-        local=True,
-        hint="ollama.com 에서 설치한 뒤: ollama pull qwen3:8b",
-    ),
-    Provider(
         id="custom",
-        label="OpenAI 호환 엔드포인트 (vLLM, LM Studio, 프록시…)",
+        label="OpenAI 호환 서버",
         litellm_prefix="openai",
         needs_key=False,
         needs_api_base=True,
-        default_api_base="http://localhost:8000/v1",
-        hint="OpenAI 프로토콜을 쓰는 것이면 무엇이든 됩니다.",
+        default_api_base="http://localhost:11434/v1",
+        hint="vLLM · Ollama · LM Studio · 사내 프록시 등",
     ),
 )
 
 
 def provider(provider_id: str) -> Provider | None:
     return next((p for p in PROVIDERS if p.id == provider_id), None)
+
+
+ApiMode = Literal["auto", "responses", "chat_completions"]
+ReasoningEffort = Literal["auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+
+@dataclass(frozen=True, slots=True)
+class Endpoint:
+    """One model behind one address, including how that model should be called."""
+
+    provider_id: str
+    model: str
+    api_key: str
+    api_base: str | None
+    headers: dict[str, str]
+    body: dict[str, Any]
+    api_mode: ApiMode = "auto"
+    reasoning_effort: ReasoningEffort = "auto"
+
+    def for_workload(self, *, uses_tools: bool) -> Endpoint:
+        """Resolve automatic model settings for one kind of work.
+
+        A model name is not enough to choose an OpenAI wire protocol. GPT-5.6 tool
+        calls are a Responses workload; leaving the effort absent keeps LiteLLM on
+        Chat Completions and OpenAI refuses that combination. Custom OpenAI-compatible
+        servers are deliberately excluded from the automatic rule because many do not
+        implement Responses at all; their operator can opt in explicitly.
+        """
+        body = dict(self.body)
+        openai_gpt56_tools = (
+            uses_tools
+            and self.provider_id == "openai"
+            and _bare_model(self.model).startswith("gpt-5.6")
+        )
+        responses = self.api_mode == "responses" or (self.api_mode == "auto" and openai_gpt56_tools)
+        model = (
+            _with_responses_mode(self.model) if responses else _without_responses_mode(self.model)
+        )
+
+        if self.api_mode == "chat_completions" and openai_gpt56_tools:
+            # This is the one reasoning value OpenAI permits beside function tools on
+            # Chat Completions. The transport contract owns it over every other setting.
+            body["reasoning_effort"] = "none"
+        elif self.reasoning_effort != "auto":
+            body["reasoning_effort"] = self.reasoning_effort
+        elif responses and openai_gpt56_tools:
+            body.setdefault("reasoning_effort", "low")
+
+        return Endpoint(
+            provider_id=self.provider_id,
+            model=model,
+            api_key=self.api_key,
+            api_base=self.api_base,
+            headers=dict(self.headers),
+            body=body,
+            api_mode=self.api_mode,
+            reasoning_effort=self.reasoning_effort,
+        )
+
+
+def _bare_model(model: str) -> str:
+    bare = model.split("/", 1)[1] if "/" in model else model
+    return bare.removeprefix("responses/")
+
+
+def _with_responses_mode(model: str) -> str:
+    if "/" not in model:
+        return f"responses/{_bare_model(model)}"
+    prefix = model.split("/", 1)[0]
+    return f"{prefix}/responses/{_bare_model(model)}"
+
+
+def _without_responses_mode(model: str) -> str:
+    if "/responses/" in model:
+        return model.replace("/responses/", "/", 1)
+    return model.removeprefix("responses/")
 
 
 class Settings(BaseSettings):
@@ -98,26 +164,144 @@ class Settings(BaseSettings):
     provider_id: str = Field(default="", description="One of PROVIDERS. Empty until set up.")
     api_key: str = Field(
         default="",
-        description=(
-            "The credential, and the only one Bismuth reads. Provider variables in "
-            "the ambient environment are deliberately ignored -- see the module "
-            "docstring for the bug that taught us why."
-        ),
+        description="The credential used for model calls. Provider-specific environment variables are ignored.",
     )
     api_base: str | None = Field(
         default=None, description="Endpoint override. Local backends need it."
     )
-    model_fast: str = Field(default="", description="High-volume work. Bare model name.")
-    model_reasoning: str = Field(
-        default="", description="Decisions worth paying for. Bare model name."
+    api_headers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Additional headers sent with every model call.",
+    )
+    api_body: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Provider-specific values merged into each model request body.",
+    )
+    native_schema: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the endpoint constrains decoding to a JSON Schema. None asks "
+            "LiteLLM, which answers from a table of models it knows -- so anything "
+            "self-hosted is 'no', and every structured call falls back to describing "
+            "the schema in the prompt. Detected against the endpoint at setup instead."
+        ),
+    )
+    model: str = Field(
+        default="",
+        description="The model that reads documents and shapes the tree.",
+    )
+    api_mode: ApiMode = Field(
+        default="auto",
+        description="How to call the filing model: automatic, Responses, or Chat Completions.",
+    )
+    reasoning_effort: ReasoningEffort = Field(
+        default="auto", description="Reasoning effort for the filing model."
     )
 
-    llm_timeout_seconds: float = 120.0
+    # -- the librarian at the desk, which need not be the one filing in the back.
+    #
+    # Filing reads one document at a time and answers in a fixed schema; answering a
+    # question walks the tree over dozens of turns and writes prose. They are different
+    # jobs and they were on one model only because there was one setting. Each of these
+    # falls back to the value above when it is empty, so a vault that wants one model
+    # for both keeps working without setting anything.
+    chat_provider_id: str = Field(
+        default="",
+        description=(
+            "The answering side's provider. Empty means the same one as above -- and "
+            "then every field below falls back to its counterpart. Set, it makes the "
+            "answering side a configuration in its own right: another company's model "
+            "may answer questions about a vault a local one filed."
+        ),
+    )
+    chat_model: str = Field(
+        default="",
+        description="The model that answers in 서고에 묻기. Empty means the one above.",
+    )
+    chat_api_key: str = Field(default="", description="Empty means the credential above.")
+    chat_api_base: str | None = Field(default=None, description="None means the endpoint above.")
+    chat_api_headers: dict[str, str] = Field(
+        default_factory=dict, description="Empty means the headers above."
+    )
+    chat_api_body: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Empty means the body above. Set it when the two models want different "
+            "sampling -- filing is decided at temperature 0, answering is not."
+        ),
+    )
+    chat_api_mode: ApiMode = Field(
+        default="auto",
+        description="How to call the model used by 서고에 묻기.",
+    )
+    chat_reasoning_effort: ReasoningEffort = Field(
+        default="auto", description="Reasoning effort for the model used by 서고에 묻기."
+    )
+
+    llm_timeout_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        description="Maximum silence after the last received LLM stream chunk.",
+    )
+    llm_absolute_timeout_seconds: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "Maximum provider execution time even while chunks keep arriving. Queue "
+            "wait is excluded; per-schema output caps normally stop generation first."
+        ),
+    )
     llm_max_schema_retries: int = Field(default=2, ge=0)
-    llm_max_concurrency: int = Field(default=4, ge=1)
+    llm_max_concurrency: int = Field(
+        default=12,
+        ge=1,
+        description="Maximum model calls in flight at once.",
+    )
+    ingest_read_ahead: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "How many documents are read and carded ahead of filing during a batch. "
+            "Reading depends on the document alone; filing depends on the tree the "
+            "documents before it built, so only the first half runs ahead."
+        ),
+    )
     extraction_max_chars: int = Field(default=200_000, ge=1_000)
-    card_context_chars: int = Field(default=12_000, ge=500)
-    placement_min_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
+    card_context_chars: int = Field(
+        default=12_000,
+        ge=500,
+        description="Window size for cataloguing. The document is read window by window, not truncated to this.",
+    )
+    card_max_windows: int = Field(
+        default=16,
+        ge=1,
+        description=(
+            "Model calls one document may cost. A document with more windows than "
+            "this is sampled across its whole length rather than read from the top, "
+            "and the gap is recorded on the card."
+        ),
+    )
+    chat_context_tokens: int = Field(
+        default=64_000,
+        ge=4_000,
+        description=(
+            "The chat model's context window. Not a cap on how hard a question may be "
+            "worked: it is what the agent measures its transcript against, compacting "
+            "old tool results when it nears the ceiling. Set too low it wastes the "
+            "window; set too high the provider refuses a request, and the agent then "
+            "adopts the limit the refusal states and carries on."
+        ),
+    )
+    chat_budget_tokens: int = Field(
+        default=400_000,
+        ge=10_000,
+        description=(
+            "What one question may spend before the agent must answer from what it "
+            "has. Deliberately separate from the window: how much can be held at once "
+            "and how long the search may run are different questions, and tying them "
+            "together doubles the bill for a change meant only to widen the desk."
+        ),
+    )
     host: str = "127.0.0.1"
     port: int = 8765
 
@@ -151,50 +335,215 @@ class Settings(BaseSettings):
     def is_configured(self) -> bool:
         """Whether Bismuth can call a model. Gates the setup wizard, nothing else."""
         chosen = self.provider
-        if chosen is None or not self.model_fast or not self.model_reasoning:
+        if chosen is None or not self.model:
             return False
         if chosen.needs_key and not self.api_key:
             return False
         return not (chosen.needs_api_base and not self.api_base)
 
-    def model_for(self, profile: ModelProfile) -> str:
-        """Resolve a profile to the string LiteLLM wants. The only place this mapping exists."""
-        bare = self.model_fast if profile is ModelProfile.FAST else self.model_reasoning
+    def model_for(self) -> str:
+        """Resolve the selected bare model name to the string LiteLLM wants."""
+        return self._qualify(self.model)
+
+    def _qualify(self, bare: str) -> str:
         chosen = self.provider
         if chosen is None or "/" in bare:
             return bare
         return f"{chosen.litellm_prefix}/{bare}"
 
+    def librarian(self) -> Endpoint:
+        """Where document reading and tree shaping are sent."""
+        return Endpoint(
+            provider_id=self.provider_id,
+            model=self.model_for(),
+            api_key=self.api_key,
+            api_base=self.api_base,
+            headers=self.api_headers,
+            body=self.api_body,
+            api_mode=self.api_mode,
+            reasoning_effort=self.reasoning_effort,
+        )
+
+    def chat(self) -> Endpoint:
+        """Where a question in 서고에 묻기 is sent.
+
+        The filing endpoint is inherited only while the provider and address stay the
+        same. A separately configured provider inherits nothing.
+        """
+        own = provider(self.chat_provider_id) if self.chat_provider_id else None
+        if own is not None:
+            bare = self.chat_model or self.model
+            qualified = bare if "/" in bare else f"{own.litellm_prefix}/{bare}"
+            return Endpoint(
+                provider_id=own.id,
+                model=qualified,
+                api_key=self.chat_api_key,
+                api_base=self.chat_api_base or own.default_api_base,
+                headers=dict(self.chat_api_headers),
+                body=dict(self.chat_api_body),
+                api_mode=self.chat_api_mode,
+                reasoning_effort=self.chat_reasoning_effort,
+            )
+        elsewhere = bool(self.chat_api_base) and _endpoint_host(
+            self.chat_api_base
+        ) != _endpoint_host(self.api_base)
+        return Endpoint(
+            provider_id=self.provider_id,
+            model=self._qualify(self.chat_model) if self.chat_model else self.model_for(),
+            api_key=self.chat_api_key or ("" if elsewhere else self.api_key),
+            api_base=self.chat_api_base or self.api_base,
+            headers=self.chat_api_headers or ({} if elsewhere else self.api_headers),
+            body={**({} if elsewhere else self.api_body), **self.chat_api_body},
+            api_mode=self.chat_api_mode,
+            reasoning_effort=self.chat_reasoning_effort,
+        )
+
+    @property
+    def chat_is_separate(self) -> bool:
+        """Whether answering is pointed anywhere other than filing."""
+        return self.chat() != self.librarian()
+
     @property
     def runs_locally(self) -> bool:
-        """Whether this configuration keeps every byte on the machine."""
-        chosen = self.provider
-        if chosen is not None and chosen.local:
-            return True
-        if self.api_base:
-            return any(
-                host in self.api_base for host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
-            )
-        return False
+        """Whether both configured model endpoints are on this machine."""
+        return _is_local_url(self.librarian().api_base) and _is_local_url(self.chat().api_base)
 
     def redacted(self) -> dict[str, Any]:
-        """Safe to log, safe to render, safe to paste into an issue."""
+        """Safe to log, render or paste into an issue."""
         data = self.model_dump(mode="json")
         if self.api_key:
             data["api_key"] = f"…{self.api_key[-4:]}"
+        # Custom headers may contain credentials and must be redacted.
+        if self.chat_api_key:
+            data["chat_api_key"] = f"…{self.chat_api_key[-4:]}"
+        data["api_base"] = _redacted_url(self.api_base)
+        data["chat_api_base"] = _redacted_url(self.chat_api_base)
+        data["api_headers"] = {name: _tail(value) for name, value in self.api_headers.items()}
+        data["chat_api_headers"] = {
+            name: _tail(value) for name, value in self.chat_api_headers.items()
+        }
+        data["api_body"] = dict.fromkeys(self.api_body, "…")
+        data["chat_api_body"] = dict.fromkeys(self.chat_api_body, "…")
         return data
 
 
-def save_user_config(settings: Settings) -> Path:
-    """Persist the wizard's answers to :data:`CONFIG_FILE`."""
+def _is_local_url(url: str | None) -> bool:
+    try:
+        host = urlsplit(url or "").hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host.casefold() == "localhost" or host.casefold().endswith(".localhost"):
+        return True
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
+
+
+def _tail(value: str) -> str:
+    """Enough to tell two credentials apart, not enough to use one."""
+    return f"…{value[-4:]}" if len(value) > 4 else "…"
+
+
+def _endpoint_host(url: str | None) -> tuple[str, str, int | None] | None:
+    """Return the origin used to decide whether endpoint settings may be shared."""
+    try:
+        parsed = urlsplit(url or "")
+        port = parsed.port
+    except ValueError:
+        return None
+    return (parsed.scheme.casefold(), parsed.hostname.casefold(), port) if parsed.hostname else None
+
+
+def _redacted_url(url: str | None) -> str | None:
+    """Keep only the non-secret origin of an endpoint URL."""
+    if not url:
+        return url
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return "…"
+    if not parsed.hostname:
+        return "…"
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    netloc = f"{host}:{port}" if port else host
+    return urlunsplit((parsed.scheme, netloc, "", "", ""))
+
+
+class UserConfig(BaseModel):
+    """One answered setup wizard, and the whole of what :data:`CONFIG_FILE` holds.
+
+    Deliberately not a :class:`Settings`. Settings resolves four sources and *merges*
+    them, and a merge cannot say "this endpoint has no headers": pydantic-settings
+    deep-merges dict-valued fields, so ``Settings(api_headers={})`` keeps whatever the
+    config file had. Every scalar answer replaced the old one and the two dicts did not.
+
+    Provider-specific dictionaries must be replaced rather than inherited when the
+    selected provider changes. The wizard writes from here and re-reads Settings so
+    environment variables retain their documented precedence.
+    """
+
+    vault_path: Path
+    provider_id: str
+    api_key: str = ""
+    api_base: str | None = None
+    api_headers: dict[str, str] = Field(default_factory=dict)
+    api_body: dict[str, Any] = Field(default_factory=dict)
+    native_schema: bool | None = None
+    model: str = ""
+    api_mode: ApiMode = "auto"
+    reasoning_effort: ReasoningEffort = "auto"
+    chat_provider_id: str = ""
+    chat_model: str = ""
+    chat_api_key: str = ""
+    chat_api_base: str | None = None
+    chat_api_headers: dict[str, str] = Field(default_factory=dict)
+    chat_api_body: dict[str, Any] = Field(default_factory=dict)
+    chat_api_mode: ApiMode = "auto"
+    chat_reasoning_effort: ReasoningEffort = "auto"
+
+    @field_validator("vault_path")
+    @classmethod
+    def _expand_vault_path(cls, value: Path) -> Path:
+        return value.expanduser().resolve()
+
+    @property
+    def is_configured(self) -> bool:
+        """The same question :meth:`Settings.is_configured` asks, before anything is written."""
+        chosen = provider(self.provider_id)
+        if chosen is None or not self.model:
+            return False
+        if chosen.needs_key and not self.api_key:
+            return False
+        return not (chosen.needs_api_base and not self.api_base)
+
+
+def save_user_config(config: UserConfig) -> Path:
+    """Persist the wizard's answers to :data:`CONFIG_FILE`, replacing what was there."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
-        "vault_path": str(settings.vault_path),
-        "provider_id": settings.provider_id,
-        "api_key": settings.api_key,
-        "api_base": settings.api_base,
-        "model_fast": settings.model_fast,
-        "model_reasoning": settings.model_reasoning,
+        "vault_path": str(config.vault_path),
+        "provider_id": config.provider_id,
+        "api_key": config.api_key,
+        "api_base": config.api_base,
+        "api_headers": config.api_headers,
+        "api_body": config.api_body,
+        "native_schema": config.native_schema,
+        "model": config.model,
+        "api_mode": config.api_mode,
+        "reasoning_effort": config.reasoning_effort,
+        "chat_provider_id": config.chat_provider_id,
+        "chat_model": config.chat_model,
+        "chat_api_key": config.chat_api_key,
+        "chat_api_base": config.chat_api_base,
+        "chat_api_headers": config.chat_api_headers,
+        "chat_api_body": config.chat_api_body,
+        "chat_api_mode": config.chat_api_mode,
+        "chat_reasoning_effort": config.chat_reasoning_effort,
     }
 
     # Temp file + chmod before write: no half-written config, key never world-readable.

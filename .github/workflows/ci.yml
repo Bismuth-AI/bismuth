@@ -40,8 +40,7 @@ jobs:
       - run: mypy
 
   licences:
-    # The Apache-2.0 promise in docs/licensing.md is only true if nothing copyleft
-    # sneaks in transitively. Checked, not trusted.
+    # Keep copyleft dependencies from entering transitively.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +52,6 @@ jobs:
           pip-licenses --from=mixed --format=csv > licences.csv
           cat licences.csv
           if grep -Ei '(^|,)"?(GNU )?(A?GPL|LGPL)' licences.csv; then
-            echo "::error::A copyleft dependency was introduced. See docs/licensing.md."
+            echo "::error::A copyleft dependency was introduced."
             exit 1
           fi

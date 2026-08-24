@@ -18,23 +18,33 @@ htmlcov/
 # Environment
 .env
 
-# Bismuth runtime state (a vault's own .bismuth/ dir lives with the vault,
-# not in this repo -- this only guards against accidentally committing a
-# scratch vault used during development).
+# Local vaults and runtime state
 /scratch/
 /vault/
 *.bismuth-vault/
 
-# Team operating notes -- ownership map and each member's git identity. Kept out
-# of the repository on purpose; the workflow itself is in docs/git-workflow.md.
+# Local project notes
 /TEAM.md
+/SPEC.md
+/docs/
+/CLAUDE.md
+/HANDOFF.md
+/scripts/
 
 # Editors / OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-/examples/demo-vault/
 
-# Debug logs (per-run, regenerated)
+# Diagnostics and generated output
 /logs/
+/artifacts/
+/src/bismuth/api/static/demo.html
+/src/bismuth/api/static/chat-demo.html
+
+# Local process output
+/NEXT_AGENT_HANDOFF.md
+/.codex-*.err
+/.codex-*.out
+/.codex-*.json

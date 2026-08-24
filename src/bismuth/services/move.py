@@ -1,4 +1,4 @@
-"""Moves documents between folders reversibly, when a person corrects placement."""
+"""Move documents between folders reversibly."""
 
 from __future__ import annotations
 
@@ -91,8 +91,7 @@ class MoveService:
                 operations=tuple(operations),
             )
         )
-        # Both ends of the move changed: sources lost documents, the target (and any
-        # ancestors newly created for it) gained them.
+        # Refresh notes for both source and destination branches.
         await self._refresh(sources | {target} | set(_ancestors(target)))
         return MoveResult(target=str(target), moved=moved)
 
@@ -129,8 +128,7 @@ class MoveService:
                 ),
             )
         )
-        # The renamed folder's note now describes it under an outdated name; redraw
-        # it (and any ancestors) to match.
+        # Refresh the renamed folder and its ancestors.
         await self._refresh({target, *_ancestors(target)})
         return str(target)
 
@@ -164,7 +162,7 @@ class MoveService:
 
 
 def _safe_folder(raw: str) -> PurePosixPath | None:
-    """Sanitise a target folder path the same way placement does, or None."""
+    """Sanitise a target folder path, or return None."""
     segments: list[str] = []
     for part in raw.replace("\\", "/").split("/"):
         part = part.strip()

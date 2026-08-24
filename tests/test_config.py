@@ -7,12 +7,19 @@ import os
 import subprocess
 import sys
 from collections.abc import Iterator
+from importlib import import_module
 from pathlib import Path
 
 import pytest
 
-from bismuth.config import PROVIDERS, Settings, load_env_file, provider, save_user_config
-from bismuth.ports.llm import ModelProfile
+from bismuth.config import (
+    PROVIDERS,
+    Settings,
+    UserConfig,
+    load_env_file,
+    provider,
+    save_user_config,
+)
 
 
 @pytest.fixture
@@ -41,52 +48,62 @@ def config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def configured(**overrides: object) -> Settings:
     base = {
         "provider_id": "openai",
-        "api_key": "sk-test",
-        "model_fast": "gpt-4o-mini",
-        "model_reasoning": "gpt-4o",
+        "api_key": "test-key-test",
+        "model": "gpt-4o",
     }
     return Settings(**{**base, **overrides})  # type: ignore[arg-type]
 
 
+def answers(**overrides: object) -> UserConfig:
+    """What the wizard would send for a working hosted provider."""
+    base: dict[str, object] = {
+        "vault_path": Path.home() / "bismuth-vault",
+        "provider_id": "openai",
+        "api_key": "test-key-test",
+        "model": "gpt-4o",
+    }
+    return UserConfig(**{**base, **overrides})  # type: ignore[arg-type]
+
+
 class TestAmbientKeysAreIgnored:
-    """The regression, stated as a rule: nothing ambient decides our credentials."""
+    """Only Bismuth-owned settings may supply credentials."""
 
     def test_a_provider_key_in_the_environment_is_not_used(self, clean_env: None) -> None:
-        os.environ["OPENAI_API_KEY"] = "sk-the-dead-one-from-2019"
+        os.environ["OPENAI_API_KEY"] = "ambient-test-key"
         assert Settings().api_key == ""
 
     def test_a_provider_key_in_a_dotenv_is_not_used(self, tmp_path: Path, clean_env: None) -> None:
         # load_dotenv still runs; only BISMUTH_API_KEY is read.
         env_file = tmp_path / ".env"
-        env_file.write_text("OPENAI_API_KEY=sk-also-dead\n", encoding="utf-8")
+        env_file.write_text("OPENAI_API_KEY=ambient-dotenv-key\n", encoding="utf-8")
         load_env_file(env_file)
         assert Settings().api_key == ""
 
     def test_the_prefixed_variable_is_the_one_that_works(self, clean_env: None) -> None:
-        os.environ["BISMUTH_API_KEY"] = "sk-ours"
-        assert Settings().api_key == "sk-ours"
+        os.environ["BISMUTH_API_KEY"] = "test-key-ours"
+        assert Settings().api_key == "test-key-ours"
 
 
 class TestPrecedence:
     """argument > BISMUTH_* env > ./.env > ~/.bismuth/config.json > default."""
 
     def test_config_file_supplies_the_baseline(self, clean_env: None, config_file: Path) -> None:
-        config_file.write_text(json.dumps({"api_key": "sk-from-wizard"}), encoding="utf-8")
-        assert Settings().api_key == "sk-from-wizard"
+        config_file.write_text(json.dumps({"api_key": "test-key-from-wizard"}), encoding="utf-8")
+        assert Settings().api_key == "test-key-from-wizard"
 
     def test_an_env_var_beats_the_config_file(self, clean_env: None, config_file: Path) -> None:
-        config_file.write_text(json.dumps({"api_key": "sk-from-wizard"}), encoding="utf-8")
-        os.environ["BISMUTH_API_KEY"] = "sk-from-docker"
-        assert Settings().api_key == "sk-from-docker"
+        config_file.write_text(json.dumps({"api_key": "test-key-from-wizard"}), encoding="utf-8")
+        os.environ["BISMUTH_API_KEY"] = "test-key-from-docker"
+        assert Settings().api_key == "test-key-from-docker"
 
     def test_a_dotenv_beats_the_config_file(self, clean_env: None, config_file: Path) -> None:
-        config_file.write_text(json.dumps({"api_key": "sk-from-wizard"}), encoding="utf-8")
-        Path(".env").write_text("BISMUTH_API_KEY=sk-from-dotenv\n", encoding="utf-8")
-        assert Settings().api_key == "sk-from-dotenv"
+        config_file.write_text(json.dumps({"api_key": "test-key-from-wizard"}), encoding="utf-8")
+        Path(".env").write_text("BISMUTH_API_KEY=test-key-from-dotenv\n", encoding="utf-8")
+        assert Settings().api_key == "test-key-from-dotenv"
 
     def test_an_argument_beats_everything(self, clean_env: None) -> None:
-        os.environ["BISMUTH_API_KEY"] = "sk-from-env"
-        assert Settings(api_key="sk-explicit").api_key == "sk-explicit"
+        os.environ["BISMUTH_API_KEY"] = "test-key-from-env"
+        assert Settings(api_key="test-key-explicit").api_key == "test-key-explicit"
 
 
 class TestConfigFile:
@@ -97,13 +114,14 @@ class TestConfigFile:
         monkeypatch.setattr("bismuth.config.CONFIG_DIR", tmp_path)
         monkeypatch.setattr("bismuth.config.CONFIG_FILE", tmp_path / "config.json")
 
-        save_user_config(configured(vault_path=tmp_path / "v"))
+        save_user_config(answers(vault_path=tmp_path / "v"))
 
         saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-        assert saved["api_key"] == "sk-test"
-        assert saved["model_fast"] == "gpt-4o-mini"
+        assert saved["api_key"] == "test-key-test"
+        assert saved["model"] == "gpt-4o"
         assert "pressure_folder_size" not in saved
         assert "llm_timeout_seconds" not in saved
+        assert "llm_absolute_timeout_seconds" not in saved
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
     def test_the_key_file_is_not_world_readable(
@@ -112,9 +130,69 @@ class TestConfigFile:
         monkeypatch.setattr("bismuth.config.CONFIG_DIR", tmp_path)
         monkeypatch.setattr("bismuth.config.CONFIG_FILE", tmp_path / "config.json")
 
-        path = save_user_config(configured())
+        path = save_user_config(answers())
 
         assert oct(path.stat().st_mode)[-3:] == "600"
+
+
+class TestSwitchingProviderLeavesNothingBehind:
+    """A private endpoint's configuration must not travel to another provider."""
+
+    def test_an_empty_dict_cannot_clear_one_the_config_file_holds(
+        self, tmp_path: Path, clean_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Why the wizard cannot persist by constructing Settings, however explicit it is.
+
+        pydantic-settings deep-merges dict-valued fields across sources, so the empty
+        dict a higher-priority source passes contributes no keys instead of replacing
+        them. Pinned because it reads like it should work.
+        """
+        path = tmp_path / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "provider_id": "custom",
+                    "api_headers": {"Cookie": "gateway-session"},
+                    "api_body": {"chat_template_kwargs": {"enable_thinking": False}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setitem(Settings.model_config, "json_file", path)
+
+        merged = Settings(provider_id="openai", api_headers={}, api_body={}, model="gpt-4o")
+
+        assert merged.api_headers == {"Cookie": "gateway-session"}
+        assert merged.api_body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+    def test_saving_the_answers_replaces_the_previous_endpoint(
+        self, tmp_path: Path, clean_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """What the wizard does instead: write the answers, then read the settings back."""
+        path = tmp_path / "config.json"
+        monkeypatch.setattr("bismuth.config.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("bismuth.config.CONFIG_FILE", path)
+        monkeypatch.setitem(Settings.model_config, "json_file", path)
+        save_user_config(
+            answers(
+                provider_id="custom",
+                api_key="",
+                api_base="http://gateway.internal/v1",
+                api_headers={"Cookie": "gateway-session"},
+                api_body={"chat_template_kwargs": {"enable_thinking": False}},
+                native_schema=True,
+                model="qwen3-32b",
+            )
+        )
+
+        save_user_config(answers())
+        reloaded = Settings()
+
+        assert reloaded.provider_id == "openai"
+        assert reloaded.api_headers == {}
+        assert reloaded.api_body == {}
+        assert reloaded.api_base is None
+        assert reloaded.native_schema is None
 
 
 class TestConfigured:
@@ -124,18 +202,20 @@ class TestConfigured:
         assert not Settings().is_configured
 
     def test_a_key_without_models_is_not_enough(self, clean_env: None) -> None:
-        assert not Settings(provider_id="openai", api_key="sk-x").is_configured
+        assert not Settings(provider_id="openai", api_key="test-key-x").is_configured
 
     def test_a_hosted_provider_without_a_key_is_not_enough(self, clean_env: None) -> None:
         assert not configured(api_key="").is_configured
 
-    def test_ollama_needs_no_key(self, clean_env: None) -> None:
+    def test_a_compatible_endpoint_needs_no_key(self, clean_env: None) -> None:
+        """Ollama, vLLM and LM Studio all speak the OpenAI protocol and most want no
+        credential; they are one provider now, told apart by the address."""
         assert configured(
-            provider_id="ollama", api_key="", api_base="http://localhost:11434"
+            provider_id="custom", api_key="", api_base="http://localhost:11434/v1"
         ).is_configured
 
-    def test_a_local_provider_still_needs_an_endpoint(self, clean_env: None) -> None:
-        assert not configured(provider_id="ollama", api_key="", api_base=None).is_configured
+    def test_a_compatible_endpoint_still_needs_an_address(self, clean_env: None) -> None:
+        assert not configured(provider_id="custom", api_key="", api_base=None).is_configured
 
 
 class TestModelNames:
@@ -143,24 +223,26 @@ class TestModelNames:
 
     def test_the_provider_prefix_is_added(self, clean_env: None) -> None:
         settings = configured()
-        assert settings.model_for(ModelProfile.FAST) == "openai/gpt-4o-mini"
-        assert settings.model_for(ModelProfile.REASONING) == "openai/gpt-4o"
+        assert settings.model_for() == "openai/gpt-4o"
 
     def test_an_already_qualified_name_is_left_alone(self, clean_env: None) -> None:
-        settings = configured(model_fast="openrouter/meta/llama-3")
-        assert settings.model_for(ModelProfile.FAST) == "openrouter/meta/llama-3"
+        settings = configured(model="openrouter/meta/llama-3")
+        assert settings.model_for() == "openrouter/meta/llama-3"
 
-    def test_ollama_gets_its_own_prefix(self, clean_env: None) -> None:
-        settings = configured(provider_id="ollama", api_key="", model_fast="qwen3:8b")
-        assert settings.model_for(ModelProfile.FAST) == "ollama/qwen3:8b"
+    def test_a_compatible_endpoint_is_addressed_as_openai(self, clean_env: None) -> None:
+        """LiteLLM routes by protocol, and these speak OpenAI's."""
+        settings = configured(provider_id="custom", api_key="", model="qwen3.6-35b")
+        assert settings.model_for() == "openai/qwen3.6-35b"
 
 
 class TestLocality:
     """runs_locally is computed from the endpoint, not assumed."""
 
-    def test_ollama_is_local(self, clean_env: None) -> None:
+    def test_a_local_address_is_local(self, clean_env: None) -> None:
+        """Read off the address, never assumed from the provider's name -- the same
+        software is local on this machine and not local on someone else's."""
         assert configured(
-            provider_id="ollama", api_key="", api_base="http://localhost:11434"
+            provider_id="custom", api_key="", api_base="http://localhost:11434/v1"
         ).runs_locally
 
     def test_a_localhost_endpoint_is_local_whatever_the_provider_is_called(
@@ -172,12 +254,41 @@ class TestLocality:
     def test_a_hosted_provider_is_not_local(self, clean_env: None) -> None:
         assert not configured().runs_locally
 
+    def test_a_remote_chat_endpoint_makes_the_configuration_nonlocal(self) -> None:
+        settings = configured(
+            provider_id="custom",
+            api_key="",
+            api_base="http://localhost:11434/v1",
+            chat_provider_id="openai",
+            chat_model="gpt-5.6-luna",
+            chat_api_key="test-key-test",
+        )
+
+        assert not settings.runs_locally
+
+    def test_a_hostname_containing_localhost_is_not_local(self, clean_env: None) -> None:
+        assert not configured(
+            provider_id="custom", api_key="", api_base="https://notlocalhost.example/v1"
+        ).runs_locally
+
 
 class TestRedaction:
     def test_the_key_is_never_rendered_in_full(self, clean_env: None) -> None:
-        redacted = configured(api_key="sk-supersecret-abcd").redacted()
+        redacted = configured(api_key="test-key-supersecret-abcd").redacted()
         assert redacted["api_key"] == "…abcd"
         assert "supersecret" not in json.dumps(redacted)
+
+    def test_urls_and_request_bodies_are_safe_to_render(self, clean_env: None) -> None:
+        redacted = configured(
+            api_base="https://user:password@example.com/v1?token=secret",
+            api_body={"access_token": "body-secret", "temperature": 0.2},
+        ).redacted()
+
+        rendered = json.dumps(redacted)
+        assert redacted["api_base"] == "https://example.com"
+        assert redacted["api_body"] == {"access_token": "…", "temperature": "…"}
+        assert "password" not in rendered
+        assert "body-secret" not in rendered
 
 
 class TestProviders:
@@ -231,8 +342,15 @@ class TestImportOrdering:
         )
         assert result.stdout.strip() == "False"
 
-    def test_the_env_file_in_the_working_directory_wins(self, tmp_path: Path) -> None:
+    def test_the_env_file_in_the_working_directory_wins(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        clean_env: None,
+    ) -> None:
         """End to end through the real CLI."""
+        cli_main = import_module("bismuth.cli.main")
+
         decoy = tmp_path / "decoy"
         decoy.mkdir()
         (decoy / ".env").write_text("BISMUTH_VAULT_PATH=./WRONG\n", encoding="utf-8")
@@ -241,15 +359,175 @@ class TestImportOrdering:
         workdir.mkdir()
         (workdir / ".env").write_text("BISMUTH_VAULT_PATH=./RIGHT\n", encoding="utf-8")
 
-        # Strip BISMUTH_* from the environment so a leaked var can't decide the outcome.
-        clean = {k: v for k, v in os.environ.items() if not k.startswith("BISMUTH_")}
-        result = subprocess.run(
-            [sys.executable, "-m", "bismuth.cli.main", "doctor"],
-            cwd=workdir,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env={**clean, "PYTHONIOENCODING": "utf-8", "COLUMNS": "200"},
+        seen: dict[str, Path] = {}
+
+        def capture_settings(_args: object) -> None:
+            seen["vault"] = Settings().vault_path
+
+        monkeypatch.chdir(workdir)
+        monkeypatch.setattr(cli_main, "_serve", capture_settings)
+        cli_main.main([])
+
+        assert seen["vault"].name == "RIGHT"
+
+
+class TestTwoModels:
+    """Filing and answering are separate jobs; they may be separate models."""
+
+    def _settings(self, **over: object) -> Settings:
+        base = {
+            "provider_id": "custom",
+            "model": "filing-model",
+            "api_base": "http://a/v1",
+            "api_key": "key-a",
+            "api_headers": {"Cookie": "session-a"},
+            "api_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        }
+        return Settings(**{**base, **over})  # type: ignore[arg-type]
+
+    def test_one_model_by_default(self) -> None:
+        one = self._settings()
+
+        assert one.chat() == one.librarian()
+        assert not one.chat_is_separate
+
+    def test_a_second_model_keeps_the_same_server_and_key(self) -> None:
+        two = self._settings(chat_model="answering-model")
+
+        assert two.chat().model.endswith("answering-model")
+        assert two.librarian().model.endswith("filing-model")
+        assert two.chat().api_base == two.librarian().api_base
+        assert two.chat().api_key == "key-a"
+        assert two.chat_is_separate
+
+    def test_a_second_server_does_not_get_the_first_ones_credential(self) -> None:
+        far = self._settings(chat_model="answering-model", chat_api_base="http://b/v1")
+
+        assert far.chat().api_base == "http://b/v1"
+        assert far.chat().api_key == ""
+        assert far.chat().headers == {}
+        assert far.chat().body == {}
+        assert far.librarian().api_key == "key-a"  # untouched
+
+    def test_the_chat_body_is_merged_not_swapped(self) -> None:
+        """A body naming only temperature must not drop the switch that turns thinking off."""
+        tuned = self._settings(chat_model="answering-model", chat_api_body={"temperature": 0.7})
+
+        assert tuned.chat().body["temperature"] == 0.7
+        assert tuned.chat().body["chat_template_kwargs"] == {"enable_thinking": False}
+
+    def test_its_own_provider_inherits_nothing(self) -> None:
+        """A key, a header and a sampling switch belong to the endpoint they were set for."""
+        apart = self._settings(
+            chat_provider_id="anthropic",
+            chat_model="claude-x",
+            chat_api_key="key-b",
         )
-        assert "RIGHT" in result.stdout, result.stdout
-        assert "WRONG" not in result.stdout
+
+        answering = apart.chat()
+
+        assert answering.model == "anthropic/claude-x"
+        assert answering.api_key == "key-b"
+        assert answering.headers == {}  # the other server's cookie stays there
+        assert answering.body == {}  # and so does the other server's thinking switch
+        assert apart.librarian().model == "openai/filing-model"
+        assert apart.chat_is_separate
+
+    def test_its_own_provider_falls_back_to_that_providers_address(self) -> None:
+        apart = self._settings(chat_provider_id="openai", chat_model="gpt-x", chat_api_key="key-b")
+
+        assert apart.chat().api_base is None or "openai" in str(apart.chat().api_base)
+        assert apart.chat().model == "openai/gpt-x"
+
+    def test_its_own_provider_can_answer_with_the_same_model_name(self) -> None:
+        """Same name, another company: the prefix is what decides where it is sent."""
+        apart = self._settings(chat_provider_id="anthropic", chat_api_key="key-b")
+
+        assert apart.chat().model == "anthropic/filing-model"
+
+    def test_neither_key_is_printable(self) -> None:
+        both = self._settings(chat_api_key="key-b")
+
+        printed = both.redacted()
+
+        assert "key-a" not in str(printed) and "key-b" not in str(printed)
+        assert printed["chat_api_key"].endswith("ey-b")
+
+
+class TestModelRuntimeSettings:
+    def test_openai_gpt56_tools_use_responses_and_low_by_default(self) -> None:
+        settings = Settings(
+            provider_id="openai",
+            api_key="test-key-test",
+            model="gpt-5.6-luna",
+        )
+
+        endpoint = settings.chat().for_workload(uses_tools=True)
+
+        assert endpoint.model == "openai/responses/gpt-5.6-luna"
+        assert endpoint.body["reasoning_effort"] == "low"
+
+    def test_filing_does_not_get_the_tool_calling_rule(self) -> None:
+        settings = Settings(
+            provider_id="openai",
+            api_key="test-key-test",
+            model="gpt-5.6-luna",
+        )
+
+        endpoint = settings.librarian().for_workload(uses_tools=False)
+
+        assert endpoint.model == "openai/gpt-5.6-luna"
+        assert "reasoning_effort" not in endpoint.body
+
+    def test_chat_completions_tools_turn_reasoning_off(self) -> None:
+        settings = Settings(
+            provider_id="openai",
+            api_key="test-key-test",
+            model="gpt-5.6-luna",
+            chat_api_mode="chat_completions",
+            chat_api_body={"reasoning_effort": "high"},
+        )
+
+        endpoint = settings.chat().for_workload(uses_tools=True)
+
+        assert endpoint.model == "openai/gpt-5.6-luna"
+        assert endpoint.body["reasoning_effort"] == "none"
+
+    def test_chat_completions_cannot_be_forced_to_an_incompatible_effort(self) -> None:
+        settings = Settings(
+            provider_id="openai",
+            api_key="test-key-test",
+            model="gpt-5.6-luna",
+            chat_api_mode="chat_completions",
+            chat_reasoning_effort="high",
+        )
+
+        endpoint = settings.chat().for_workload(uses_tools=True)
+
+        assert endpoint.body["reasoning_effort"] == "none"
+
+    def test_an_explicit_responses_profile_keeps_its_effort(self) -> None:
+        settings = Settings(
+            provider_id="openai",
+            api_key="test-key-test",
+            model="gpt-5.6-luna",
+            chat_api_mode="responses",
+            chat_reasoning_effort="high",
+        )
+
+        endpoint = settings.chat().for_workload(uses_tools=True)
+
+        assert endpoint.model == "openai/responses/gpt-5.6-luna"
+        assert endpoint.body["reasoning_effort"] == "high"
+
+    def test_custom_openai_compatible_servers_are_not_assumed_to_support_responses(self) -> None:
+        settings = Settings(
+            provider_id="custom",
+            api_base="http://localhost:8000/v1",
+            model="gpt-5.6-luna",
+        )
+
+        endpoint = settings.chat().for_workload(uses_tools=True)
+
+        assert endpoint.model == "openai/gpt-5.6-luna"
+        assert "reasoning_effort" not in endpoint.body

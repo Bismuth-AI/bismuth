@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bismuth</title>
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" href="/favicon.png" type="image/png" sizes="180x180">
+<link rel="apple-touch-icon" href="/favicon.png">
 <style>
 /*
   One file, no build step, no CDN. `pip install` then `bismuth` has to be the whole
@@ -43,11 +46,20 @@ button:disabled { opacity: .45; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.ghost { border-color: transparent; background: transparent; color: var(--dim); }
 button.ghost:hover { color: var(--ink); background: var(--accent-soft); }
-input, select {
+input, select, textarea {
   font: inherit; padding: 8px 11px; border-radius: 7px; border: 1px solid var(--line);
   background: var(--bg); color: var(--ink); width: 100%; max-width: 480px;
 }
-input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+textarea { resize: vertical; font-family: ui-monospace, monospace; font-size: 13px; }
+button.small { padding: 5px 9px; font-size: 13px; }
+/* Header rows: name and value are separate fields because they are separate things --
+   a colon inside a cookie value is not a separator, and typing one into a single box
+   silently split the value in half. */
+.hrow { display: grid; grid-template-columns: 170px 1fr 30px; gap: 6px; margin-bottom: 6px; max-width: 480px; }
+.hrow input { max-width: none; font-family: ui-monospace, monospace; font-size: 13px; }
+.hrow button { padding: 0; color: var(--dim); border-color: transparent; background: transparent; }
+.hrow button:hover { color: var(--warn); background: var(--accent-soft); }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .hidden { display: none !important; }
 .muted { color: var(--dim); }
 
@@ -56,11 +68,11 @@ header {
   border-bottom: 1px solid var(--line); padding: 12px 20px; background: var(--panel);
   display: flex; align-items: center; gap: 14px; flex-shrink: 0;
 }
-h1 { font-size: 17px; margin: 0; letter-spacing: -.01em; font-weight: 650; }
-h1 span { color: var(--accent); }
-.badge { font-size: 12px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--dim); }
-.badge.local { color: var(--ok); border-color: currentColor; }
-.badge.cloud { color: var(--warn); border-color: currentColor; }
+h1 {
+  font-size: 17px; margin: 0; letter-spacing: -.01em; font-weight: 650;
+  display: flex; align-items: center; gap: 8px;
+}
+h1 img { width: 22px; height: 22px; }
 .spacer { margin-left: auto; }
 .hstat { font-size: 13px; color: var(--dim); }
 .hstat b { color: var(--ink); font-weight: 650; }
@@ -76,6 +88,18 @@ h1 span { color: var(--accent); }
   border: 1.5px dashed var(--line); border-radius: var(--radius); cursor: pointer; transition: .12s;
 }
 #drop.over, #drop:hover { border-color: var(--accent); color: var(--ink); background: var(--accent-soft); }
+#drop .only { margin-top: 6px; font-size: 11.5px; opacity: .75; }
+#treebar {
+  display: flex; align-items: center; gap: 6px; padding: 2px 14px 6px;
+  color: var(--dim); font-size: 11px;
+}
+#treebar .lbl { letter-spacing: .05em; text-transform: uppercase; font-weight: 650; }
+#treebar .mini {
+  padding: 2px 7px; font-size: 11px; color: var(--dim); background: transparent;
+  border: 1px solid transparent; border-radius: 5px;
+}
+#treebar .mini:first-of-type { margin-left: auto; }
+#treebar .mini:hover { color: var(--accent); border-color: var(--line); background: var(--panel); }
 #tree { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
 .node {
   display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 6px;
@@ -83,10 +107,14 @@ h1 span { color: var(--accent); }
 }
 .node:hover { background: var(--accent-soft); }
 .node.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.node .twist { width: 12px; color: var(--dim); font-size: 10px; flex-shrink: 0; text-align: center; }
+.node .twist { width: 14px; color: var(--dim); font-size: 10px; flex-shrink: 0; text-align: center; }
+.node:hover .twist { color: var(--accent); }
 .node .ic { flex-shrink: 0; }
 .node .nm { overflow: hidden; text-overflow: ellipsis; }
 .node .ct { margin-left: auto; font-size: 11px; color: var(--dim); }
+/* Picked for a bulk action. Distinct from .on (where you are) -- the two co-occur. */
+.node.picked { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+.node.picked .nm { font-weight: 600; }
 
 #main { flex: 1; overflow-y: auto; padding: 22px 28px; min-width: 0; }
 .crumb { color: var(--dim); font-size: 13px; margin-bottom: 4px; }
@@ -136,11 +164,55 @@ h2 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.01em; }
 .up .dupflag { color: var(--warn); font-weight: 600; }
 
 /* uploads toast */
-#uploads { position: fixed; right: 18px; bottom: 18px; width: 340px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+#uploads { position: fixed; right: 18px; bottom: 18px; width: 360px; display: flex; flex-direction: column; gap: 8px; z-index: 50; max-height: 82vh; overflow-y: auto; }
 .up { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 13px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.08); }
 .up .fn { font-weight: 600; }
 .up .dest { color: var(--accent); }
+/* spend: never the loudest thing on screen, but never hidden either */
+.spend { color: var(--dim); font-variant-numeric: tabular-nums; }
+.up .spend { font-size: 11px; }
 .up.err .fn { color: var(--danger); }
+
+/* live progress: a slow document must read as working, not as hung */
+.job { display: flex; flex-direction: column; gap: 7px; }
+.job + .job { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.job .head { display: flex; align-items: baseline; gap: 8px; }
+.job .head .fn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job .count { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; flex: none; }
+.bar { height: 3px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); border-radius: 99px; width: 0; transition: width .35s ease; }
+/* Indeterminate: a step with no measure still has to look alive. */
+.bar.wait > i { width: 35%; animation: slide 1.25s ease-in-out infinite; }
+@keyframes slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+.bar.done > i { background: var(--ok); width: 100% !important; animation: none; }
+.bar.fail > i { background: var(--danger); width: 100% !important; animation: none; }
+
+.steps { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.steps li { display: flex; gap: 7px; align-items: baseline; color: var(--dim); list-style: none; }
+.steps li .mark { flex: none; width: 11px; text-align: center; font-size: 10px; }
+.steps li.past .mark { color: var(--ok); }
+.steps li.now { color: var(--ink); font-weight: 550; }
+.steps li.now .mark { color: var(--accent); }
+.steps li.fail, .steps li.fail .mark { color: var(--danger); }
+.steps li .what { min-width: 0; overflow-wrap: anywhere; }
+.found { display: flex; flex-wrap: wrap; gap: 4px; margin: 1px 0 2px 18px; }
+.found span { font-size: 11px; line-height: 1.5; padding: 0 6px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Finished documents fold to one line. Uploading ten files should not mean ten open
+   panels, and the steps of a document that is already filed are history. */
+.job.settled .steps, .job.settled .found, .job.settled .bar { display: none; }
+.job.settled .tail { color: var(--dim); font-size: 12px; }
+.job .tail { display: none; }
+.job.settled .tail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job.settled.failed .tail { color: var(--danger); }
+.batch-job { display: flex; flex-direction: column; gap: 8px; }
+.batch-job .head { display: flex; align-items: baseline; gap: 10px; }
+.batch-job .title { font-weight: 650; flex: 1; }
+.batch-job .count { color: var(--accent); font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.batch-job .current { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-job .summary { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.batch-job.done .current { color: var(--ok); }
+.batch-job.failed .current, .batch-job.failed .summary { color: var(--danger); }
+@media (prefers-reduced-motion: reduce) { .bar > i, .bar.wait > i { transition: none; animation: none; } }
 
 /* setup + modal */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px; overflow-y: auto; z-index: 100; }
@@ -149,10 +221,28 @@ h2 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.01em; }
   width: 100%; max-width: 560px;
 }
 .card h2 { margin-bottom: 4px; }
+.cardhead { display: flex; align-items: center; margin-bottom: 14px; }
+.cardhead h2 { flex: 1; margin: 0; }
+.cardfoot {
+  display: flex; align-items: center; gap: 8px; margin-top: 20px;
+  padding-top: 16px; border-top: 1px solid var(--line);
+}
+.cardfoot .hint { flex: 1; margin: 0; }
+/* One line under a field, not a paragraph beside it. */
+.hint { font-size: 12px; margin-top: 5px; line-height: 1.45; }
+.field > label .muted { font-weight: 400; font-size: 12.5px; margin-left: 4px; }
+.more > summary {
+  cursor: pointer; font-size: 13px; color: var(--dim); padding: 6px 0; user-select: none;
+  list-style: none;
+}
+.more > summary::-webkit-details-marker { display: none; }
+.more > summary::before { content: "▸ "; }
+.more[open] > summary::before { content: "▾ "; }
 .field { margin: 16px 0; }
 .field > label { display: block; font-weight: 550; margin-bottom: 6px; font-size: 14px; }
-.choices { display: grid; gap: 8px; }
-.choice { display: flex; align-items: center; gap: 10px; padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
+/* Keep provider choices compact. */
+.choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.choice { flex: 1 1 150px; display: flex; align-items: center; gap: 8px; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; font-size: 13.5px; }
 .choice:hover { border-color: var(--accent); }
 .choice.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .choice input { width: auto; }
@@ -167,21 +257,27 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
 <body>
 
 <header>
-  <h1><span>◆</span> Bismuth</h1>
-  <span class="badge" id="privacy">…</span>
+  <h1><img src="/favicon.png" alt="" width="22" height="22"> Bismuth</h1>
   <div class="spacer"></div>
   <span class="hstat"><b id="hs-docs">0</b> 문서 · <b id="hs-folders">0</b> 폴더<span id="hs-inbox"></span></span>
-  <button class="ghost" id="btn-organize">구조 정리</button>
-  <button class="ghost" id="btn-history">기록</button>
+  <button class="ghost" id="btn-empty-tree" title="문서와 카드는 유지하고 폴더만 비웁니다.">폴더 비우기</button>
+  <button class="ghost" id="btn-refile" title="저장된 카드로 전체 폴더 구조를 다시 만듭니다.">카드로 재배치</button>
+  <button class="primary" onclick="location.href='/chat'" title="폴더를 뒤지고 본문을 찾아 근거와 함께 답합니다.">서고에 묻기</button>
+  <button class="ghost" onclick="location.href='/trace'" title="모델에 무엇이 들어가고 무엇이 나왔는지, 호출 하나씩">추적</button>
   <button class="ghost" id="btn-settings">설정</button>
 </header>
 
 <div id="explorer">
   <aside id="sidebar">
     <div id="drop">
-      <strong>파일을 여기로</strong><br>끌어다 놓거나 눌러서 고르기
+      <strong>파일 올리기</strong><br>끌어다 놓거나 눌러서 고르기
     </div>
-    <input type="file" id="picker" multiple class="hidden">
+    <input type="file" id="picker" multiple accept=".pdf,application/pdf" class="hidden">
+    <div id="treebar">
+      <span class="lbl">폴더</span>
+      <button class="mini" id="tree-expand" title="모든 폴더를 폅니다">전체 펴기</button>
+      <button class="mini" id="tree-collapse" title="모든 폴더를 접습니다">전체 접기</button>
+    </div>
     <div id="tree"></div>
   </aside>
   <main id="main"><div class="empty">불러오는 중…</div></main>
@@ -206,17 +302,19 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
 
 <!-- setup wizard -->
 <div id="setup" class="overlay hidden"><div class="card">
-  <h2>설정</h2>
-  <p class="muted" style="margin-top:2px">처음 한 번, 1분이면 됩니다. 모든 설정은 이 컴퓨터에만 저장됩니다.</p>
+  <div class="cardhead">
+    <h2>설정</h2>
+    <button class="ghost" id="s-close">닫기</button>
+  </div>
+
   <div class="field">
-    <label>정리된 문서를 어디에 둘까요?</label>
+    <label>서고 폴더</label>
     <input type="text" id="s-vault" spellcheck="false">
-    <div class="muted" style="font-size:13px;margin-top:5px">평범한 폴더입니다. 원본이 이 안으로 옮겨지며 내용은 절대 수정되지 않습니다.</div>
   </div>
   <div class="field">
-    <label>어떤 모델을 쓸까요?</label>
+    <label>모델 제공자</label>
     <div id="s-providers" class="choices"></div>
-    <div class="muted" id="s-hint" style="font-size:13px;margin-top:6px"></div>
+    <div class="muted hint" id="s-hint"></div>
   </div>
   <div class="field hidden" id="s-key-field">
     <label id="s-key-label">API 키</label>
@@ -226,32 +324,64 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
     <label>엔드포인트 주소</label>
     <input type="text" id="s-base" spellcheck="false">
   </div>
-  <button id="s-check" class="primary">다음</button>
+
+  <details id="s-advanced" class="more hidden">
+    <summary>고급 — 헤더, 요청 본문</summary>
+    <div class="field" id="s-headers-field">
+      <label>추가 헤더</label>
+      <div id="s-headers-rows"></div>
+      <button type="button" class="ghost small" id="s-headers-add">+ 헤더 추가</button>
+      <div class="muted hint">게이트웨이가 쿠키나 자체 헤더로 인증할 때만. <code>Cookie: session=…</code> 통째로 붙여넣어도 나뉩니다.</div>
+    </div>
+    <div class="field" id="s-body-field">
+      <label>요청 본문 추가값</label>
+      <textarea id="s-body" spellcheck="false" rows="5" placeholder='{"temperature": 0.7, "chat_template_kwargs": {"enable_thinking": false}}'></textarea>
+      <div class="muted hint">JSON. 생각 모드가 있는 모델이면 꺼 두는 쪽이 훨씬 빠릅니다.</div>
+      <div id="s-body-error" class="err hidden"></div>
+    </div>
+  </details>
+
   <div id="s-error" class="err hidden"></div>
+
   <div id="s-models" class="hidden">
     <hr>
-    <p id="s-models-count" class="muted"></p>
-    <div class="field"><label>빠른 모델 <span class="muted" style="font-weight:400">— 문서마다 실행됩니다</span></label><select id="s-fast"></select></div>
-    <div class="field"><label>판단 모델 <span class="muted" style="font-weight:400">— 배치·폴더 노트에 실행됩니다</span></label><select id="s-reasoning"></select></div>
-    <div class="rowend">
-      <button class="ghost" id="s-cancel">취소</button>
-      <button id="s-save" class="primary">저장하고 시작</button>
+    <div class="field">
+      <label>정리 모델 <span class="muted">문서를 읽고 폴더를 나눕니다</span></label>
+      <input type="text" id="s-model" list="s-model-list" spellcheck="false" autocomplete="off">
     </div>
+    <div class="field">
+      <label>API 방식</label>
+      <select id="s-api-mode">
+        <option value="auto">자동 — 모델에 맞게 선택</option>
+        <option value="responses">Responses API</option>
+        <option value="chat_completions">Chat Completions</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>추론 강도</label>
+      <select id="s-reasoning-effort">
+        <option value="auto">자동 — 모델 기본값</option>
+        <option value="none">없음</option>
+        <option value="minimal">minimal</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+        <option value="xhigh">xhigh</option>
+        <option value="max">max</option>
+      </select>
+      <p class="muted hint" id="s-runtime-hint"></p>
+    </div>
+    <p class="muted hint">서고에 묻기에서 답하는 모델은 그 페이지에서 고릅니다 — 다른 회사의 모델이어도 됩니다.</p>
+    <datalist id="s-model-list"></datalist>
+    <p id="s-models-count" class="muted hint"></p>
   </div>
-</div></div>
 
-<!-- organize -->
-<div id="organize" class="overlay hidden"><div class="card">
-  <div style="display:flex;align-items:center"><h2 style="flex:1">구조 정리 제안</h2><button class="ghost" id="o-close">닫기</button></div>
-  <p class="muted" style="margin-top:2px">에이전트가 볼트를 직접 살펴보고 제안합니다. 승인해야만 실제로 옮겨지고, 기록에서 되돌릴 수 있습니다.</p>
-  <div id="o-body"></div>
-</div></div>
-
-<!-- history -->
-<div id="history" class="overlay hidden"><div class="card">
-  <div style="display:flex;align-items:center"><h2 style="flex:1">기록</h2><button class="ghost" id="h-close">닫기</button></div>
-  <p class="muted" style="margin-top:2px">모든 변경은 되돌릴 수 있습니다. 되돌린 것도 다시 되돌릴 수 있습니다.</p>
-  <table class="log"><tbody id="h-body"></tbody></table>
+  <div class="cardfoot">
+    <span class="muted hint" id="s-note">설정은 이 컴퓨터에만 저장됩니다</span>
+    <button class="ghost hidden" id="s-cancel">취소</button>
+    <button id="s-check" class="primary">다음</button>
+    <button id="s-save" class="primary hidden">저장</button>
+  </div>
 </div></div>
 
 <script>
@@ -264,19 +394,21 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
-let state = {}, tree = [], selected = "", expanded = new Set();
+// The vault root, as /api/tree names it. Documents live here until enough of them
+// arrive to show a distinction, which early on is most of them.
+const ROOT = ".";
+const UI_VERSION = "2026.08.10-resumable-batch-5";
+document.documentElement.dataset.uiVersion = UI_VERSION;
+let state = {}, tree = [], selected = ROOT, expanded = new Set();
+let rootInfo = null;   // the root's own entry: its loose documents are the common early case
 let sel = new Set(), selAnchor = null, viewDocs = [], moveTargets = [];
+// Folder and document selections are mutually exclusive.
+let fsel = new Set(), fselAnchor = null;
 
 /* ---------------- explorer ---------------- */
 
 async function refresh() {
   state = await api("/status");
-
-  const pv = $("privacy");
-  pv.className = "badge " + (!state.configured ? "" : state.runs_locally ? "local" : "cloud");
-  pv.textContent = !state.configured ? "설정 전"
-    : state.runs_locally ? "완전 로컬" : "외부 모델";
-
   $("hs-docs").textContent = state.documents;
   $("hs-folders").textContent = state.folders;
   $("hs-inbox").innerHTML = state.inbox
@@ -284,17 +416,26 @@ async function refresh() {
 
   if (!state.configured) { openSetup(false); return; }
 
-  tree = (await api("/tree")).filter((f) => f.depth > 0 && f.path.split("/")[0] !== "_inbox");
+  const all = await api("/tree");
+  rootInfo = all.find((f) => f.depth === 0) || null;
+  tree = all.filter((f) => f.depth > 0 && f.path.split("/")[0] !== "_inbox");
   renderTree();
   const onInbox = selected === "_inbox" && state.inbox;
-  if (!onInbox && (!selected || !tree.some((f) => f.path === selected))) {
-    selected = tree.length ? topLevel()[0]?.path ?? "" : (state.inbox ? "_inbox" : "");
+  const onRoot = selected === ROOT;
+  if (!onInbox && !onRoot && !tree.some((f) => f.path === selected)) {
+    selected = tree.length ? topLevel()[0]?.path ?? ROOT : ROOT;
   }
-  renderMain();
+  await renderMain();
 }
 
 const topLevel = () => tree.filter((f) => f.depth === 1);
 const childrenOf = (path) => tree.filter((f) => f.depth === path.split("/").length + 1 && f.path.startsWith(path + "/"));
+
+const rootRow = () => `<div class="node ${selected === ROOT ? "on" : ""}" data-path="${ROOT}" style="padding-left:8px">
+      <span class="twist"></span><span class="ic">📚</span>
+      <span class="nm">전체</span>
+      ${rootInfo?.files ? `<span class="ct">${rootInfo.files}</span>` : ""}
+    </div>`;
 
 const inboxRow = () => state.inbox
   ? `<div class="node inbox ${selected === "_inbox" ? "on" : ""}" data-path="_inbox" style="padding-left:8px">
@@ -306,8 +447,7 @@ const inboxRow = () => state.inbox
 function renderTree() {
   const el = $("tree");
   if (!tree.length) {
-    el.innerHTML = inboxRow()
-      || `<div class="muted" style="padding:16px;font-size:13px">아직 폴더가 없습니다. 문서를 넣으면 폴더가 생깁니다.</div>`;
+    el.innerHTML = rootRow() + inboxRow();
     bindTreeClicks(el);
     return;
   }
@@ -316,7 +456,7 @@ function renderTree() {
     for (const f of nodes) {
       const kids = childrenOf(f.path);
       const open = expanded.has(f.path);
-      rows.push(`<div class="node ${selected === f.path ? "on" : ""}" data-path="${esc(f.path)}" style="padding-left:${8 + depth * 16}px">
+      rows.push(`<div class="node ${selected === f.path ? "on" : ""}${fsel.has(f.path) ? " picked" : ""}" data-path="${esc(f.path)}" style="padding-left:${8 + depth * 16}px">
         <span class="twist" data-twist="${esc(f.path)}">${kids.length ? (open ? "▾" : "▸") : ""}</span>
         <span class="ic">${open && kids.length ? "📂" : "📁"}</span>
         <span class="nm">${esc(f.name)}</span>
@@ -327,47 +467,90 @@ function renderTree() {
     }
   };
   walk(topLevel(), 0);
-  el.innerHTML = rows.join("") + inboxRow();
+  el.innerHTML = rootRow() + rows.join("") + inboxRow();
   bindTreeClicks(el);
 }
 
 function bindTreeClicks(el) {
+  // The rows as drawn, which is what shift+click ranges over -- a collapsed subtree is
+  // not on screen, so ranging into it would delete folders the user cannot see.
+  const visible = [...el.querySelectorAll(".node")]
+    .map((n) => n.dataset.path)
+    .filter((p) => p !== "_inbox" && p !== ROOT);
+
   el.querySelectorAll(".node").forEach((n) => {
     const path = n.dataset.path;
     n.addEventListener("click", (e) => {
       if (e.target.dataset.twist !== undefined) { toggle(path); return; }
-      if (e.target.dataset.fkebab !== undefined) { e.stopPropagation(); if (path !== "_inbox") openFolderMenu(e, path); return; }
-      sel.clear();
+      if (e.target.dataset.fkebab !== undefined) { e.stopPropagation(); if (path !== "_inbox" && path !== ROOT) openFolderMenu(e, path); return; }
+
+      // Explorer conventions layered on top of the plain click, which still opens.
+      if (path !== "_inbox" && path !== ROOT && (e.ctrlKey || e.metaKey)) {
+        sel.clear();
+        fsel.has(path) ? fsel.delete(path) : fsel.add(path);
+        fselAnchor = path;
+        renderTree(); syncSel(); return;
+      }
+      if (path !== "_inbox" && path !== ROOT && e.shiftKey && fselAnchor) {
+        sel.clear();
+        const i = visible.indexOf(fselAnchor), j = visible.indexOf(path);
+        // Shift-click replaces the current range.
+        fsel.clear();
+        if (i >= 0 && j >= 0) for (let k = Math.min(i, j); k <= Math.max(i, j); k++) fsel.add(visible[k]);
+        else fsel.add(path);
+        renderTree(); syncSel(); return;
+      }
+
+      sel.clear(); fsel.clear();
+      // A plain click anchors the next shift-click range.
+      fselAnchor = path === "_inbox" || path === ROOT ? null : path;
+      // Clicking the current folder toggles its expansion.
+      if (childrenOf(path).length) {
+        if (selected === path && expanded.has(path)) expanded.delete(path);
+        else expanded.add(path);
+      }
       selected = path;
-      if (childrenOf(path).length) expanded.add(path);
-      renderTree(); renderMain();
+      renderTree(); renderMain(); syncSel();
     });
-    if (path !== "_inbox") n.addEventListener("contextmenu", (e) => { e.preventDefault(); openFolderMenu(e, path); });
+    if (path !== "_inbox" && path !== ROOT) n.addEventListener("contextmenu", (e) => { e.preventDefault(); openFolderMenu(e, path); });
   });
+}
+
+/* What deleting the picked folders would actually take with it. Folders are collapsed
+   by default, so "3 folders" alone tells the user nothing about the cost. */
+function folderImpact(paths) {
+  const roots = paths.filter((p) => !paths.some((q) => q !== p && p.startsWith(q + "/")));
+  const doomed = tree.filter((f) => roots.some((r) => f.path === r || f.path.startsWith(r + "/")));
+  return { roots, folders: doomed.length, files: doomed.reduce((n, f) => n + f.files, 0) };
 }
 
 function toggle(path) { expanded.has(path) ? expanded.delete(path) : expanded.add(path); renderTree(); }
 
+$("tree-expand").addEventListener("click", () => {
+  for (const f of tree) if (childrenOf(f.path).length) expanded.add(f.path);
+  renderTree();
+});
+// Where you are stays where you are: folding the tree is not moving out of the folder,
+// and the pane on the right goes on showing it.
+$("tree-collapse").addEventListener("click", () => { expanded.clear(); renderTree(); });
+
 async function renderMain() {
   const el = $("main");
   if (selected === "_inbox") { renderInbox(el); return; }
-  if (!tree.length) {
-    el.innerHTML = `<div class="empty">왼쪽에 파일을 끌어다 놓으면<br>Bismuth 가 읽고 폴더에 정리합니다.</div>`;
-    return;
-  }
   if (!selected) { el.innerHTML = `<div class="empty">왼쪽에서 폴더를 고르세요.</div>`; return; }
 
+  const atRoot = selected === ROOT;
   let detail;
-  try { detail = await api("/folder?path=" + encodeURIComponent(selected)); }
+  try { detail = await api("/folder?path=" + encodeURIComponent(atRoot ? "" : selected)); }
   catch (err) { el.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
 
   const parts = selected.split("/");
-  const crumb = parts.map((p, i) => {
+  const crumb = atRoot ? "전체" : parts.map((p, i) => {
     const path = parts.slice(0, i + 1).join("/");
     return i < parts.length - 1 ? `<a data-go="${esc(path)}">${esc(p)}</a>` : `<span>${esc(p)}</span>`;
   }).join(" / ");
 
-  const kids = childrenOf(selected);
+  const kids = atRoot ? topLevel() : childrenOf(selected);
   const note = detail.charter;
   const docs = detail.documents;
 
@@ -375,16 +558,17 @@ async function renderMain() {
   el.innerHTML = `
     <div class="crumb">${crumb}</div>
     <div style="display:flex;align-items:center;gap:10px">
-      <h2 style="flex:1">${esc(parts[parts.length - 1])}/</h2>
-      <button class="ghost danger-btn" data-del-folder="${esc(selected)}" data-count="${totalFiles}">폴더 삭제</button>
+      <h2 style="flex:1">${atRoot ? "전체" : esc(parts[parts.length - 1]) + "/"}</h2>
+      ${atRoot ? "" : `<button class="ghost danger-btn" data-del-folder="${esc(selected)}" data-count="${totalFiles}">폴더 삭제</button>`}
     </div>
+    ${atRoot && docs.length ? `<div class="note-box"><div class="k">아직 나뉘지 않음</div>문서가 더 쌓이면 Bismuth 가 여기서 구분을 찾아 폴더로 나눕니다. 그때까지는 여기 그대로 있습니다.</div>` : ""}
     ${note?.purpose ? `<div class="note-box"><div class="k">이 폴더</div>${esc(note.purpose)}
       ${note.answers?.length ? `<div style="margin-top:8px;font-size:13px;color:var(--dim)">${note.answers.map((a) => "· " + esc(a)).join("<br>")}</div>` : ""}</div>` : ""}
     ${kids.length ? `<div class="sect">하위 폴더</div>
       ${kids.map((k) => `<div class="doc" data-go="${esc(k.path)}"><div class="t">📁 ${esc(k.name)}</div>
         ${k.purpose ? `<div class="sm">${esc(k.purpose)}</div>` : ""}</div>`).join("")}` : ""}
     ${docs.length ? `<div class="sect">문서 ${docs.length}개</div>
-      ${docs.map(docRow).join("")}` : (kids.length ? "" : `<div class="empty" style="padding:32px 0">이 폴더에 문서가 없습니다.</div>`)}`;
+      ${docs.map(docRow).join("")}` : (kids.length ? "" : `<div class="empty" style="padding:32px 0">${atRoot ? "왼쪽에 파일을 끌어다 놓으면 Bismuth 가 읽고 정리합니다." : "이 폴더에 문서가 없습니다."}</div>`)}`;
 
   el.querySelectorAll("[data-go]").forEach((n) => n.addEventListener("click", () => {
     sel.clear();
@@ -480,6 +664,17 @@ function syncSel() {
 }
 function renderSelBar() {
   const bar = $("selbar");
+  if (fsel.size) {
+    const { folders, files } = folderImpact([...fsel]);
+    bar.className = "";
+    bar.innerHTML = `<span>폴더 <b>${fsel.size}</b>개 선택
+      <span class="muted">${folders > fsel.size ? `· 하위 포함 ${folders}개` : ""}${files ? ` · 문서 ${files}개` : " · 비어 있음"}</span></span>
+      <button class="ghost danger-btn" id="fsel-del">삭제</button>
+      <button class="ghost" id="fsel-clear">해제</button>`;
+    $("fsel-del").onclick = () => deleteFolders([...fsel]);
+    $("fsel-clear").onclick = () => { fsel.clear(); fselAnchor = null; renderTree(); syncSel(); };
+    return;
+  }
   if (!sel.size) { bar.className = "hidden"; bar.innerHTML = ""; return; }
   bar.className = "";
   bar.innerHTML = `<span><b>${sel.size}</b>개 선택</span>
@@ -503,10 +698,13 @@ function openDocMenu(e, path) {
   showMenu(e, items);
 }
 function openFolderMenu(e, path) {
-  showMenu(e, [
-    { label: "열기", fn: () => { sel.clear(); selected = path; openAncestors(path); expanded.add(path); renderTree(); renderMain(); } },
-    { label: "삭제", danger: true, fn: () => deleteFolder(path) },
-  ]);
+  // Right-clicking inside a selection acts on the selection, as in openDocMenu.
+  const targets = fsel.has(path) && fsel.size > 1 ? [...fsel] : [path];
+  const multi = targets.length > 1;
+  const items = [];
+  if (!multi) items.push({ label: "열기", fn: () => { sel.clear(); fsel.clear(); selected = path; openAncestors(path); expanded.add(path); renderTree(); renderMain(); syncSel(); } });
+  items.push({ label: `삭제${multi ? ` (${targets.length}개)` : ""}`, danger: true, fn: () => deleteFolders(targets) });
+  showMenu(e, items);
 }
 function showMenu(e, items) {
   const m = $("ctxmenu");
@@ -557,6 +755,33 @@ async function doMove(target) {
   } catch (err) { $("mv-error").textContent = err.message; $("mv-error").classList.remove("hidden"); }
 }
 
+async function deleteFolders(paths) {
+  if (!paths.length) return;
+  if (paths.length === 1) { await deleteFolder(paths[0], folderImpact(paths).files); return; }
+
+  const { roots, folders, files } = folderImpact(paths);
+  const covered = paths.length - roots.length;
+  // null drops out; "" is a deliberate blank line, so the filter must tell them apart.
+  const lines = [
+    `폴더 ${roots.length}개를 통째로 삭제할까요?`,
+    "",
+    ...roots.slice(0, 8).map((p) => `  · ${p}/`),
+    roots.length > 8 ? `  · … 외 ${roots.length - 8}개` : null,
+    "",
+    `하위 폴더까지 ${folders}개, 그 안의 문서 ${files}개가 지워집니다.`,
+    covered ? `(선택한 ${covered}개는 상위 폴더에 이미 포함됩니다.)` : null,
+    "기록에서 한 번에 되돌릴 수 있습니다.",
+  ].filter((l) => l !== null);
+  if (!confirm(lines.join("\n"))) return;
+
+  try {
+    await api("/delete-folders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paths: roots }) });
+    fsel.clear(); fselAnchor = null; sel.clear();
+    for (const p of roots) { expanded.delete(p); if (selected === p || selected.startsWith(p + "/")) selected = p.split("/").slice(0, -1).join("/"); }
+    await refresh();
+  } catch (err) { alert(err.message); }
+}
+
 async function deleteFolder(path, count) {
   const tail = count != null ? `\n\n문서 ${count}개와 하위 폴더가 모두 지워집니다.` : "\n\n폴더와 그 안의 모든 것이 지워집니다.";
   if (!confirm(`"${path}/" 폴더를 통째로 삭제할까요?${tail} 기록에서 되돌릴 수 있습니다.`)) return;
@@ -568,46 +793,376 @@ async function deleteFolder(path, count) {
   } catch (err) { alert(err.message); }
 }
 
+/* ---------------- live progress ----------------
+   The server streams one event per step. Repeated reading steps collapse into a
+   single line that counts up; every other stage appends. Nothing here invents
+   progress -- a step appears only once the server says it happened. */
+
+const ORDER = ["received", "parsing", "parsed", "reading", "densifying", "carded",
+               "placing", "placed", "filing", "notes", "done", "duplicate", "failed"];
+const CHIP_LIMIT = 8;   // beyond this the chips stop being scannable and become a wall
+const jobs = new Map();   // filename -> { el, lines: Map(stage -> li), found: Set, chips: el }
+const compactJobs = new Map();   // filename -> one compact multi-file batch card
+const settledCompactJobs = new Set();   // suppress an SSE event that races its POST response
+const batchCards = new Map();   // server batch id -> reloadable compact card
+let liveSyncTimer = null;
+let batchPollTimer = null;
+let batchPollRunning = false;
+
+function keepExplorerLive() {
+  if (liveSyncTimer !== null) return;
+  // Reconcile active jobs when an SSE update is missed.
+  liveSyncTimer = setInterval(() => {
+    if (!jobs.size && !compactJobs.size) {
+      clearInterval(liveSyncTimer);
+      liveSyncTimer = null;
+      return;
+    }
+    refreshAfterDocument();
+  }, 3000);
+}
+
+function jobCard(filename) {
+  const el = document.createElement("div");
+  el.className = "job";
+  el.innerHTML = `<div class="head"><span class="fn"></span><span class="count"></span></div>
+    <div class="bar wait"><i></i></div><ul class="steps"></ul><div class="tail"></div>`;
+  el.querySelector(".fn").textContent = filename;
+  const more = document.createElement("span");
+  return { el, lines: new Map(), found: new Set(), chips: null, more, hasFraction: false };
+}
+
+function ensureJob(filename, container) {
+  let job = jobs.get(filename);
+  if (job) return job;
+  job = jobCard(filename);
+  jobs.set(filename, job);
+  keepExplorerLive();
+  (container || standaloneBox()).appendChild(job.el);
+  return job;
+}
+
+// Progress for something this tab did not upload (a scan, or another tab) still deserves a box.
+function standaloneBox() {
+  let box = $("uploads").querySelector(".up.live");
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "up live";
+    $("uploads").prepend(box);
+  }
+  return box;
+}
+
+function renderStep(p) {
+  const job = jobs.get(p.filename);
+  if (!job) return;
+  const { el, lines } = job;
+
+  let li = lines.get(p.stage);
+  if (!li) {
+    // Replace the placeholder with the first reported step.
+    if (!lines.size) el.querySelector(".steps").innerHTML = "";
+    li = document.createElement("li");
+    li.innerHTML = `<span class="mark">◦</span><span class="what"></span>`;
+    lines.set(p.stage, li);
+    el.querySelector(".steps").appendChild(li);
+  }
+  li.querySelector(".what").textContent = p.label;
+
+  // Everything before the current stage is settled; only the newest line is "now".
+  const rank = ORDER.indexOf(p.stage);
+  for (const [stage, node] of lines) {
+    const done = ORDER.indexOf(stage) < rank;
+    node.className = done ? "past" : "now";
+    node.querySelector(".mark").textContent = done ? "✓" : "▸";
+  }
+
+  // Accumulate facts across reading steps.
+  if (p.found?.length) {
+    if (!job.chips) {
+      job.chips = document.createElement("div");
+      job.chips.className = "found";
+      li.after(job.chips);
+    }
+    for (const fact of p.found) {
+      if (job.found.has(fact)) continue;
+      job.found.add(fact);
+      if (job.found.size > CHIP_LIMIT) { job.more.textContent = `외 ${job.found.size - CHIP_LIMIT}개`; continue; }
+      const chip = document.createElement("span");
+      chip.textContent = fact;
+      chip.title = fact;   // the chip is clipped by CSS; hovering still gives the whole thing
+      job.chips.appendChild(chip);
+      job.chips.appendChild(job.more);   // keep the counter last
+    }
+  }
+
+  const bar = el.querySelector(".bar");
+  const fill = bar.querySelector("i");
+  el.querySelector(".count").textContent = p.stage === "reading" && p.steps ? `${p.step}/${p.steps} 조각` : "";
+  if (p.terminal) {
+    // Fold to one line: the steps of a document that is already filed are history.
+    el.classList.add("settled");
+    el.classList.toggle("failed", p.stage === "failed");
+    el.querySelector(".tail").textContent = p.label;
+    el.querySelector(".tail").title = p.label;
+  }
+  if (p.stage === "failed") { bar.className = "bar fail"; li.className = "fail"; li.querySelector(".mark").textContent = "✕"; }
+  else if (p.terminal) { bar.className = "bar done"; li.querySelector(".mark").textContent = "✓"; li.className = "past"; }
+  else if (p.fraction != null) { job.hasFraction = true; bar.className = "bar"; fill.style.width = `${Math.round(p.fraction * 100)}%`; }
+  else if (job.hasFraction) { bar.className = "bar"; }
+  else { bar.className = "bar wait"; fill.style.width = ""; }
+}
+
+function compactBatch(filenames, container) {
+  const el = document.createElement("div");
+  el.className = "batch-job";
+  el.innerHTML = `<div class="head"><span class="title">파일 정리</span><span class="count"></span></div>
+    <div class="bar"><i></i></div><div class="current"></div><div class="summary"></div>`;
+  container.appendChild(el);
+  const names = filenames.map((file) => typeof file === "string" ? file : file.name);
+  const batch = {
+    id: "", el, box: container.closest(".up"), filenames: names, total: names.length,
+    completed: 0, failed: 0, duplicate: 0, inbox: 0, current: "",
+    currentLabel: "", currentProgress: 0, status: "uploading", cleanup: null,
+  };
+  for (const filename of names) {
+    settledCompactJobs.delete(filename);
+    compactJobs.set(filename, batch);
+  }
+  keepExplorerLive();
+  drawCompactBatch(batch);
+  return batch;
+}
+
+function drawCompactBatch(batch, progress = null) {
+  const { el } = batch;
+  el.querySelector(".count").textContent = `${batch.completed}/${batch.total} 완료`;
+  if (progress?.fraction != null) batch.currentProgress = Math.max(batch.currentProgress, progress.fraction);
+  const fraction = Math.min(1, (batch.completed + batch.currentProgress) / batch.total);
+  el.querySelector(".bar i").style.width = `${Math.round(fraction * 100)}%`;
+  const current = el.querySelector(".current");
+  const stopped = batch.status === "failed" || batch.status === "interrupted";
+  if (batch.status === "uploading") {
+    current.textContent = "파일을 인박스에 안전하게 저장 중";
+  } else if (stopped) {
+    current.textContent = "작업이 중단되었습니다";
+  } else if (batch.completed === batch.total) {
+    current.textContent = batch.failed ? `완료 · ${batch.failed}개 실패` : "모든 파일 정리 완료";
+  } else if (batch.status === "queued") {
+    current.textContent = "서버 처리 순서를 기다리는 중";
+  } else {
+    const labelText = progress?.label || batch.currentLabel;
+    const label = labelText ? ` · ${labelText}` : "";
+    current.textContent = `${batch.current}${label}`;
+    current.title = current.textContent;
+  }
+  const parts = [
+    `성공 ${batch.completed - batch.failed - batch.duplicate - batch.inbox}개`,
+  ];
+  if (batch.duplicate) parts.push(`중복 ${batch.duplicate}개`);
+  if (batch.inbox) parts.push(`인박스 ${batch.inbox}개`);
+  if (batch.failed) parts.push(`실패 ${batch.failed}개`);
+  el.querySelector(".summary").textContent = parts.join(" · ");
+  const finished = batch.completed === batch.total || stopped;
+  el.classList.toggle("done", finished && !batch.failed && !stopped);
+  el.classList.toggle("failed", finished && (batch.failed > 0 || stopped));
+  el.querySelector(".bar").className = batch.status === "uploading"
+    ? "bar wait"
+    : `bar${finished ? (batch.failed || stopped ? " fail" : " done") : ""}`;
+}
+
+function applyBatchState(batch, state) {
+  const previousCompleted = batch.completed;
+  const previousCurrent = batch.current;
+  for (const filename of batch.filenames) {
+    if (compactJobs.get(filename) === batch) compactJobs.delete(filename);
+  }
+  batch.id = state.id;
+  batch.filenames = state.filenames;
+  batch.total = state.total;
+  batch.completed = state.completed;
+  batch.failed = state.failed;
+  batch.duplicate = state.duplicate;
+  batch.inbox = state.inbox;
+  batch.status = state.status;
+  batch.current = state.current;
+  batch.currentLabel = state.current_label;
+  if (previousCurrent !== batch.current || previousCompleted !== batch.completed) batch.currentProgress = 0;
+  const active = state.status === "queued" || state.status === "running";
+  if (active) {
+    for (const filename of batch.filenames) compactJobs.set(filename, batch);
+  } else {
+    for (const filename of batch.filenames) {
+      settledCompactJobs.add(filename);
+      setTimeout(() => settledCompactJobs.delete(filename), 10000);
+    }
+  }
+  drawCompactBatch(batch);
+  if (batch.completed > previousCompleted) refreshAfterDocument();
+  if (!active && !batch.cleanup) {
+    batch.cleanup = setTimeout(() => {
+      batchCards.delete(batch.id);
+      batch.box?.remove();
+    }, state.status === "done" && !state.failed ? 6000 : 10000);
+  }
+}
+
+function ensureBatchPolling() {
+  if (batchPollTimer !== null) return;
+  batchPollTimer = setInterval(syncBatches, 1000);
+}
+
+async function syncBatches() {
+  if (batchPollRunning) return;
+  batchPollRunning = true;
+  try {
+    const states = await api("/batches");
+    let active = false;
+    const now = Date.now() / 1000;
+    for (const state of states) {
+      const isActive = state.status === "queued" || state.status === "running";
+      active ||= isActive;
+      let batch = batchCards.get(state.id);
+      // Finished work is restored only briefly; an hour of old toast cards is noise.
+      if (!batch && (isActive || (state.finished_at && now - state.finished_at < 15))) {
+        const box = document.createElement("div");
+        box.className = "up";
+        $("uploads").prepend(box);
+        batch = compactBatch(state.filenames, box);
+        batch.id = state.id;
+        batchCards.set(state.id, batch);
+      }
+      if (batch) applyBatchState(batch, state);
+    }
+    if (active && batchPollTimer === null) ensureBatchPolling();
+    if (!active && batchPollTimer !== null) {
+      clearInterval(batchPollTimer);
+      batchPollTimer = null;
+    }
+  } catch (err) {
+    console.warn("batch status refresh failed", err);
+  } finally {
+    batchPollRunning = false;
+  }
+}
+
+// Share one refresh while completion events and responses overlap.
+let liveRefreshPromise = null;
+let liveRefreshQueued = false;
+
+function refreshAfterDocument() {
+  liveRefreshQueued = true;
+  if (liveRefreshPromise) return liveRefreshPromise;
+  liveRefreshPromise = (async () => {
+    try {
+      do {
+        liveRefreshQueued = false;
+        const before = new Set(tree.map((f) => f.path));
+        await refresh();
+        const added = tree.filter((f) => !before.has(f.path));
+        // Reveal new nested folders without closing existing expansions.
+        for (const folder of added) openAncestors(folder.path);
+        if (added.length) renderTree();
+      } while (liveRefreshQueued);
+    } catch (err) {
+      // Live refresh is a view update, never a reason to disturb a successful ingest.
+      console.warn("live explorer refresh failed", err);
+    } finally {
+      liveRefreshPromise = null;
+    }
+  })();
+  return liveRefreshPromise;
+}
+
+function watchProgress() {
+  const src = new EventSource("/api/progress");   // EventSource reconnects on its own
+  src.onmessage = (ev) => {
+    let p; try { p = JSON.parse(ev.data); } catch { return; }
+    if (settledCompactJobs.has(p.filename)) {
+      if (p.stage === "done" || p.stage === "failed") refreshAfterDocument();
+      return;
+    }
+    const compact = compactJobs.get(p.filename);
+    if (compact) {
+      compact.current = p.filename;
+      drawCompactBatch(compact, p);
+      if (p.stage === "done" || p.stage === "failed") refreshAfterDocument();
+      return;
+    }
+    ensureJob(p.filename, null);
+    renderStep(p);
+    if (p.terminal) {
+      const job = jobs.get(p.filename);
+      // Duplicate means nothing changed. DONE reveals the new folder/file immediately;
+      // FAILED reveals a file that remains in the inbox.
+      if (p.stage === "done" || p.stage === "failed") refreshAfterDocument();
+      // Held briefly so the last line is readable, then the batch summary takes over.
+      setTimeout(() => { jobs.delete(p.filename); job?.el.parentElement?.classList.contains("live") && job.el.remove(); }, 4000);
+    }
+  };
+}
+watchProgress();
+
+/* ---------------- spend ----------------
+   What the work just done cost, printed beside the document it was spent on. The vault
+   keeps its own running total in .bismuth/spend.jsonl and /status still reports it; the
+   header no longer shows it, because a number that only ever grows says less about the
+   document in front of you than the one line under it does. */
+
+function money(usd) {
+  if (usd == null) return "";
+  // Preserve precision for sub-cent costs.
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  if (usd < 1) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
+function tokens(n) {
+  return n >= 10000 ? `${(n / 1000).toFixed(1)}k` : n.toLocaleString();
+}
+
+function spendText(s) {
+  if (!s || !s.calls) return "";
+  const parts = [`${s.calls}회 호출`, `${tokens(s.input_tokens + s.output_tokens)} 토큰`];
+  if (s.cost_usd != null) {
+    // Fewer priced calls than calls means some model has no published rate: a floor, not a figure.
+    parts.push(money(s.cost_usd) + (s.priced_calls < s.calls ? "+" : ""));
+  } else if (s.calls) {
+    parts.push("단가 미상");
+  }
+  return parts.join(" · ");
+}
+
 /* ---------------- uploads ---------------- */
 
-async function upload(files) {
+// The picker filters by `accept`; a drag from the desktop does not, so the rule lives
+// here as well. The server refuses either way -- this is only so the refusal arrives
+// before the bytes do.
+const PDF_ONLY = (files) => files.filter((f) => f.name.toLowerCase().endsWith(".pdf"));
+
+async function upload(all) {
+  const files = PDF_ONLY(all);
+  const refused = all.length - files.length;
+  if (refused) alert(`올릴 수 없는 파일 ${refused}개를 빼고 올립니다.`);
   if (!files.length) return;
   const box = document.createElement("div");
   box.className = "up";
-  box.innerHTML = `<span class="muted">문서 ${files.length}개를 읽는 중…</span>`;
   $("uploads").prepend(box);
-
+  const batch = compactBatch(files, box);
   const fd = new FormData();
-  for (const f of files) fd.append("files", f);
+  for (const file of files) fd.append("files", file);
   try {
-    const results = await api("/documents", { method: "POST", body: fd });
-    box.innerHTML = results.map((r) => r.ok
-      ? (r.duplicate
-          ? `<div><span class="dupflag">⚠ 중복</span> <span class="fn">${esc(r.filename)}</span>
-             <div class="muted" style="font-size:12px">같은 내용이 이미 <code>${esc(r.destination)}/</code> 에 있어 넣지 않았습니다.</div></div>`
-          : r.placed
-            ? `<div><span class="fn">${esc(r.filename)}</span> → <span class="dest">${esc(r.destination)}/</span>${r.created_folder ? ' <span class="muted">(새 폴더)</span>' : ""}</div>`
-            : `<div><span class="fn">${esc(r.filename)}</span> <span class="muted">— 인박스 (${esc(r.reason)})</span></div>`)
-      : `<div class="err-line"><span class="fn">실패: ${esc(r.filename)}</span> <span class="muted">${esc(r.reason)}</span></div>`
-    ).join("");
-    if (results.some((r) => !r.ok)) box.classList.add("err");
-    else if (results.some((r) => r.duplicate)) box.classList.add("dup");
-    // jump to where the first document landed
-    const landed = results.find((r) => r.ok && r.placed);
-    if (landed) {
-      selected = landed.destination;
-      let p = ""; for (const seg of selected.split("/").slice(0, -1)) { p = p ? p + "/" + seg : seg; expanded.add(p); }
-    }
-    await refresh();
-    setTimeout(() => box.remove(), 6000);
-    // Autonomous: after documents land, let the agent judge the folder they landed
-    // in. If it proposes a reorganisation, surface it -- the user never had to ask.
-    const landedFolders = [...new Set(results.filter((r) => r.ok && r.placed).map((r) => r.destination))];
-    if (landedFolders.length) autoReview(landedFolders[0]);
+    const state = await api("/batches", { method: "POST", body: fd });
+    batch.id = state.id;
+    batchCards.set(state.id, batch);
+    applyBatchState(batch, state);
+    ensureBatchPolling();
   } catch (err) {
-    box.className = "up err";
-    box.innerHTML = `<span class="fn">${esc(err.message)}</span>`;
-    setTimeout(() => box.remove(), 8000);
+    batch.status = "failed";
+    batch.failed = batch.total;
+    batch.currentLabel = err.message;
+    box.classList.add("err");
+    drawCompactBatch(batch);
   }
 }
 
@@ -631,93 +1186,77 @@ $("mv-custom").addEventListener("keydown", (e) => { if (e.key === "Enter") $("mv
 document.addEventListener("click", (e) => { if (!e.target.closest("#ctxmenu")) closeMenu(); });
 document.addEventListener("scroll", closeMenu, true);
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closeMenu(); closeMoveModal(); if (sel.size) { sel.clear(); syncSel(); } return; }
-  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
-  if ((e.key === "Delete" || e.key === "Backspace") && sel.size && !typing) { e.preventDefault(); bulkDelete([...sel]); }
-});
-
-/* ---------------- organize ---------------- */
-
-$("btn-organize").addEventListener("click", async () => {
-  $("organize").classList.remove("hidden");
-  $("o-body").innerHTML = `<div class="empty">에이전트가 볼트 구조를 살펴보는 중… (조금 걸립니다)</div>`;
-  try {
-    const plan = await api("/organize/propose", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-    renderPlan(plan);
-  } catch (err) { $("o-body").innerHTML = `<div class="err">${esc(err.message)}</div>`; }
-});
-$("o-close").addEventListener("click", () => $("organize").classList.add("hidden"));
-
-async function autoReview(folder) {
-  // Fired automatically after an upload. Only surfaces if the agent proposes moves;
-  // stays silent otherwise, so it never nags.
-  try {
-    const plan = await api("/organize/propose", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ folder }) });
-    if ((plan.moves || []).length || (plan.renames || []).length) {
-      $("organize").classList.remove("hidden");
-      renderPlan(plan);
-    }
-  } catch (e) { /* autonomous check — stay silent on failure */ }
-}
-
-function renderPlan(plan) {
-  const moves = plan.moves || [];
-  const renames = plan.renames || [];
-  const summary = plan.summary || "";
-  if (!moves.length && !renames.length) {
-    $("o-body").innerHTML = `<div class="note-box">${esc(summary) || "바꿀 것이 없습니다. 구조가 괜찮습니다."}</div>`;
+  if (e.key === "Escape") {
+    closeMenu(); closeMoveModal();
+    if (sel.size) { sel.clear(); syncSel(); }
+    if (fsel.size) { fsel.clear(); fselAnchor = null; renderTree(); syncSel(); }
     return;
   }
-  $("o-body").innerHTML = `
-    ${summary ? `<div class="note-box">${esc(summary)}</div>` : ""}
-    ${renames.length ? `<div class="sect">이름 변경 ${renames.length}건</div>
-      ${renames.map((r) => `<div class="doc"><div class="t">✎ ${esc(r.folder)} → <span class="dest">${esc(r.new_name)}</span></div></div>`).join("")}` : ""}
-    ${moves.length ? `<div class="sect">이동 ${moves.length}건</div>
-      ${moves.map((m) => `<div class="doc">
-        <div class="t">→ <span class="dest">${esc(m.target)}/</span></div>
-        <div class="sm">${m.paths.map((p) => esc(p.split("/").pop())).join(", ")}</div>
-      </div>`).join("")}` : ""}
-    <div class="rowend">
-      <button class="ghost" id="o-cancel">취소</button>
-      <button class="primary" id="o-apply">이대로 적용</button>
-    </div>`;
-  $("o-cancel").onclick = () => $("organize").classList.add("hidden");
-  $("o-apply").onclick = async () => {
-    const btn = $("o-apply"); btn.disabled = true; btn.textContent = "적용 중…";
-    try {
-      await api("/organize/apply", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ moves, renames }) });
-      $("organize").classList.add("hidden");
-      await refresh();
-    } catch (err) { alert(err.message); btn.disabled = false; btn.textContent = "이대로 적용"; }
-  };
-}
-
-/* ---------------- history ---------------- */
-
-$("btn-history").addEventListener("click", async () => {
-  const entries = await api("/journal?limit=25");
-  $("h-body").innerHTML = entries.map((e) => `<tr>
-    <td>${new Date(e.created_at).toLocaleString("ko")}</td>
-    <td>${esc(e.reason)}</td>
-    <td style="text-align:right">${e.status === "applied"
-      ? `<button class="ghost" data-undo="${e.id}">되돌리기</button>`
-      : `<span class="muted">${e.status === "reverted" ? "되돌림" : esc(e.status)}</span>`}</td>
-  </tr>`).join("") || `<tr><td class="muted">아직 없습니다.</td></tr>`;
-  $("h-body").querySelectorAll("[data-undo]").forEach((b) => b.addEventListener("click", async () => {
-    b.disabled = true;
-    try { await api(`/journal/${b.dataset.undo}/undo`, { method: "POST" }); $("btn-history").click(); await refresh(); }
-    catch (err) { alert(err.message); b.disabled = false; }
-  }));
-  $("history").classList.remove("hidden");
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+  if ((e.key === "Delete" || e.key === "Backspace") && !typing) {
+    if (sel.size) { e.preventDefault(); bulkDelete([...sel]); }
+    else if (fsel.size) { e.preventDefault(); deleteFolders([...fsel]); }
+  }
 });
-$("h-close").addEventListener("click", () => $("history").classList.add("hidden"));
 
 /* ---------------- setup wizard ---------------- */
 
 let setup = {};
 function openSetup(force) { $("setup").classList.remove("hidden"); loadSetup(force); }
+
+/** Step one asks the provider; step two picks the models. The footer says which. */
+function setupStep(picking) {
+  $("s-models").classList.toggle("hidden", !picking);
+  $("s-check").classList.toggle("hidden", picking);
+  $("s-save").classList.toggle("hidden", !picking);
+  $("s-cancel").classList.toggle("hidden", !picking || !state.configured);
+}
 $("btn-settings").addEventListener("click", () => openSetup(true));
-$("s-cancel").addEventListener("click", () => { if (state.configured) $("setup").classList.add("hidden"); });
+$("btn-empty-tree").addEventListener("click", async () => {
+  if (!confirm("문서와 카드는 남기고 폴더 구조만 비울까요?\n\n문서는 루트로 이동하며 실행 기록에서 되돌릴 수 있습니다.")) return;
+  const button = $("btn-empty-tree");
+  button.disabled = true;
+  try {
+    const result = await api("/tree/empty", { method: "POST" });
+    selected = ROOT;
+    expanded.clear();
+    await refresh();
+    alert(`문서 ${result.documents}개를 루트로 옮기고 폴더 ${result.folders}개를 비웠습니다.`);
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+$("btn-refile").addEventListener("click", async () => {
+  if (!confirm("현재 폴더 구조를 비우고 저장된 카드로 전체 문서를 다시 배치할까요?")) return;
+  const button = $("btn-refile");
+  button.disabled = true;
+  try {
+    const state = await api("/refile-all", { method: "POST" });
+    const box = document.createElement("div");
+    box.className = "up";
+    $("uploads").prepend(box);
+    const batch = compactBatch(state.filenames, box);
+    batch.id = state.id;
+    batchCards.set(state.id, batch);
+    applyBatchState(batch, state);
+    ensureBatchPolling();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+const closeSetup = () => { if (state.configured) $("setup").classList.add("hidden"); };
+$("s-cancel").addEventListener("click", closeSetup);
+$("s-close").addEventListener("click", closeSetup);
+// Nothing works until this dialog is answered the first time, so on a fresh vault there
+// is nothing to go back to and both ways out are hidden rather than shown and refused.
+$("setup").addEventListener("click", (e) => { if (e.target.id === "setup") closeSetup(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("setup").classList.contains("hidden")) closeSetup();
+});
 
 async function loadSetup() {
   setup = await api("/setup");
@@ -728,46 +1267,183 @@ async function loadSetup() {
       <span>${esc(p.label)}</span>${p.local ? `<span class="tag">내 컴퓨터</span>` : ""}
     </label>`).join("");
   document.querySelectorAll('input[name=provider]').forEach((r) => r.addEventListener("change", onProvider));
-  $("s-models").classList.add("hidden");
+  setupStep(false);
+  $("s-close").classList.toggle("hidden", !setup.configured);
   if (setup.provider_id) onProvider();
 }
 const currentProvider = () => { const p = document.querySelector("input[name=provider]:checked"); return p ? setup.providers.find((x) => x.id === p.value) : null; };
 function onProvider() {
   const p = currentProvider();
   document.querySelectorAll(".choice").forEach((c) => c.classList.toggle("on", c.querySelector("input").checked));
-  $("s-models").classList.add("hidden"); $("s-error").classList.add("hidden");
+  setupStep(false); $("s-error").classList.add("hidden");
   if (!p) return;
   $("s-hint").textContent = p.hint || "";
-  $("s-key-field").classList.toggle("hidden", !p.needs_key);
-  $("s-key").placeholder = setup.api_key_tail && p.id === setup.provider_id ? `저장된 키 ${setup.api_key_tail} — 그대로 쓰려면 비워 두세요` : "여기에 붙여넣으세요";
+  // Custom endpoints may accept an optional key.
+  $("s-key-field").classList.remove("hidden");
+  $("s-key-label").textContent = p.needs_key
+    ? (p.key_label || "API 키")
+    : `${p.key_label || "API 키"} — 선택`;
+  $("s-key").placeholder = setup.api_key_tail && p.id === setup.provider_id
+    ? `저장된 키 ${setup.api_key_tail} — 그대로 쓰려면 비워 두세요`
+    : (p.needs_key ? "여기에 붙여넣으세요" : "키를 요구하는 엔드포인트라면 여기에. 아니면 비워 두세요");
   $("s-base-field").classList.toggle("hidden", !p.needs_api_base);
   if (p.needs_api_base) $("s-base").value = setup.api_base || p.default_api_base || "";
+  // Advanced headers and body values apply to custom endpoints.
+  $("s-advanced").classList.toggle("hidden", p.id !== "custom");
+  renderHeaders(setup.api_headers);
+  $("s-body").value = Object.keys(setup.api_body || {}).length
+    ? JSON.stringify(setup.api_body, null, 2)
+    : "";
+  $("s-body-error").classList.add("hidden");
+  const saved = p.id === setup.provider_id;
+  $("s-api-mode").value = saved ? (setup.api_mode || "auto") : "auto";
+  $("s-reasoning-effort").value = saved ? (setup.reasoning_effort || "auto") : "auto";
+  explainRuntime();
+}
+
+function explainRuntime() {
+  const p = currentProvider();
+  const model = $("s-model").value.trim();
+  const mode = $("s-api-mode").value;
+  let text = "자동은 프로바이더와 모델에 맞는 방식을 고릅니다.";
+  if (mode === "responses") text = "Responses API로 호출합니다.";
+  if (mode === "chat_completions") text = "Chat Completions로 호출합니다.";
+  if (p?.id === "openai" && model.startsWith("gpt-5.6") && mode === "auto") {
+    text += " 이 정리 작업은 도구를 쓰지 않으므로 기본 호출 방식을 유지합니다.";
+  }
+  $("s-runtime-hint").textContent = text;
+}
+
+$("s-model").addEventListener("input", explainRuntime);
+$("s-api-mode").addEventListener("change", explainRuntime);
+$("s-reasoning-effort").addEventListener("change", explainRuntime);
+
+/* The body box is JSON because the values are typed and nested -- 0.7 is a number,
+   chat_template_kwargs is an object, and a key/value grid cannot say either. */
+function collectBody() {
+  const text = $("s-body").value.trim();
+  if (!text) return {};
+  const parsed = JSON.parse(text);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("본문 추가값은 JSON 객체여야 합니다.");
+  }
+  return parsed;
+}
+
+/* ---- extra headers, one field per thing ----
+   A name and a value are separate, so they get separate boxes: a cookie value contains
+   colons of its own, and a single "Name: value" box cut them in half. */
+function headerRow(name = "", value = "") {
+  const row = document.createElement("div");
+  row.className = "hrow";
+  row.innerHTML = `<input class="h-name" spellcheck="false" autocomplete="off" placeholder="Cookie">
+    <input class="h-value" spellcheck="false" autocomplete="off" placeholder="session=…">
+    <button type="button" class="h-del" title="이 헤더 지우기">✕</button>`;
+  row.querySelector(".h-name").value = name;
+  row.querySelector(".h-value").value = value;
+  row.querySelector(".h-del").addEventListener("click", () => {
+    row.remove();
+    if (!$("s-headers-rows").children.length) $("s-headers-rows").append(headerRow());
+  });
+  // Split a pasted header line into name and value.
+  row.querySelector(".h-name").addEventListener("paste", (e) => {
+    const text = (e.clipboardData || window.clipboardData).getData("text");
+    const at = text.indexOf(":");
+    if (at < 1) return;
+    e.preventDefault();
+    row.querySelector(".h-name").value = text.slice(0, at).trim();
+    row.querySelector(".h-value").value = text.slice(at + 1).trim();
+  });
+  return row;
+}
+
+function renderHeaders(headers) {
+  const box = $("s-headers-rows");
+  box.innerHTML = "";
+  for (const [name, value] of Object.entries(headers || {})) box.append(headerRow(name, value));
+  if (!box.children.length) box.append(headerRow());
+}
+
+function collectHeaders() {
+  const out = {};
+  for (const row of $("s-headers-rows").querySelectorAll(".hrow")) {
+    const name = row.querySelector(".h-name").value.trim();
+    const value = row.querySelector(".h-value").value.trim();
+    if (name && value) out[name] = value;
+  }
+  return out;
+}
+
+$("s-headers-add").addEventListener("click", () => $("s-headers-rows").append(headerRow()));
+
+function setupBody(p) {
+  return {
+    provider_id: p.id,
+    api_key: $("s-key").value,
+    reuse_saved_key: !$("s-key").value && p.id === setup.provider_id,
+    api_base: p.needs_api_base ? $("s-base").value : null,
+    api_headers: p.id === "custom" ? collectHeaders() : {},
+    api_body: p.id === "custom" ? collectBody() : {},
+    api_mode: $("s-api-mode").value,
+    reasoning_effort: $("s-reasoning-effort").value,
+  };
+}
+
+/* Malformed JSON is caught before the request rather than after: a 422 from FastAPI
+   names a field path, not the line the comma is missing from. */
+function bodyIsValid() {
+  const box = $("s-body-error");
+  try {
+    collectBody();
+    box.classList.add("hidden");
+    return true;
+  } catch (err) {
+    box.textContent = `본문 추가값을 읽을 수 없습니다 — ${err.message}`;
+    box.classList.remove("hidden");
+    return false;
+  }
 }
 function showErr(m) { const b = $("s-error"); b.textContent = m; b.classList.remove("hidden"); }
 $("s-check").addEventListener("click", async () => {
   const p = currentProvider(); if (!p) { showErr("먼저 하나 골라 주세요."); return; }
+  if (!bodyIsValid()) return;
   const btn = $("s-check"); btn.disabled = true; btn.textContent = "프로바이더에 물어보는 중…"; $("s-error").classList.add("hidden");
   try {
-    const body = { provider_id: p.id, api_key: $("s-key").value, reuse_saved_key: !$("s-key").value && p.id === setup.provider_id, api_base: p.needs_api_base ? $("s-base").value : null };
-    const r = await api("/setup/check", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const r = await api("/setup/check", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(setupBody(p)) });
     if (!r.ok) { showErr(r.error); return; }
-    const opts = (sel) => r.models.map((m) => `<option ${m === sel ? "selected" : ""}>${esc(m)}</option>`).join("");
-    $("s-fast").innerHTML = opts(setup.model_fast || r.suggested_fast);
-    $("s-reasoning").innerHTML = opts(setup.model_reasoning || r.suggested_reasoning);
-    $("s-models-count").textContent = `이 키로 쓸 수 있는 모델 ${r.models.length}개. 무난한 조합을 골라 뒀으니 원하면 바꾸세요.`;
-    $("s-models").classList.remove("hidden");
+    $("s-model-list").innerHTML = r.models.map((m) => `<option value="${esc(m)}">`).join("");
+    // Reuse a saved model only for its provider.
+    const saved = p.id === setup.provider_id;
+    $("s-model").value = (saved && setup.model) || r.suggested_model || "";
+    explainRuntime();
+    // A missing model catalog does not prove the endpoint is unavailable.
+    $("s-models-count").textContent = r.models.length
+      ? `쓸 수 있는 모델 ${r.models.length}개. 무난한 모델을 골라 뒀으니 원하면 바꾸세요.`
+      : `모델 목록을 받지 못했습니다${r.error ? ` (${r.error})` : ""} — 쓸 모델 이름을 직접 적어 주세요.`;
+    setupStep(true);
   } catch (err) { showErr(err.message); } finally { btn.disabled = false; btn.textContent = "다음"; }
 });
 $("s-save").addEventListener("click", async () => {
   const p = currentProvider(); const btn = $("s-save"); btn.disabled = true;
   try {
+    if (!bodyIsValid()) return;
+    const model = $("s-model").value.trim();
+    if (!model) { showErr("모델 이름을 적어 주세요."); return; }
     await api("/setup", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ provider_id: p.id, api_key: $("s-key").value, reuse_saved_key: !$("s-key").value && p.id === setup.provider_id, api_base: p.needs_api_base ? $("s-base").value : null, model_fast: $("s-fast").value, model_reasoning: $("s-reasoning").value, vault_path: $("s-vault").value }) });
+      body: JSON.stringify({ ...setupBody(p), model, vault_path: $("s-vault").value }) });
     $("setup").classList.add("hidden"); await refresh();
   } catch (err) { showErr(err.message); } finally { btn.disabled = false; }
 });
 
-refresh().catch((err) => { $("main").innerHTML = `<div class="empty">${esc(err.message)}</div>`; });
+// Open setup when linked from the chat page.
+if (location.search.includes("setup")) {
+  history.replaceState(null, "", location.pathname);
+  setTimeout(() => openSetup(true), 0);
+}
+
+refresh()
+  .then(syncBatches)
+  .catch((err) => { $("main").innerHTML = `<div class="empty">${esc(err.message)}</div>`; });
 </script>
 </body>
 </html>

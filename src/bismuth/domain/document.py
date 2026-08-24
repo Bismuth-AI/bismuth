@@ -18,6 +18,17 @@ def sidecar_name(document_filename: str) -> str:
     return f"{document_filename}.md"
 
 
+LABEL_MAX_CHARS = 40
+"""Maximum length of a topic or keyword used as a filing label."""
+
+NAME_MAX_CHARS = 60
+"""How long an entity name may be. Longer than a label because organisations have long
+legal names, short enough that a pasted author list is not one."""
+
+QUESTION_MAX_CHARS = 200
+"""How long a question may be. A sentence, not a paragraph."""
+
+
 class EntityKind(StrEnum):
     """The entity types Bismuth extracts."""
 
@@ -40,6 +51,23 @@ class Entity(BaseModel):
     def key(self) -> str:
         """A normalised identity for deduplication across documents."""
         return f"{self.kind.value}:{' '.join(self.name.casefold().split())}"
+
+
+class Window(BaseModel):
+    """A contiguous slice of a document's text, sized to fit one model call."""
+
+    model_config = ConfigDict(frozen=True)
+
+    index: int = Field(description="0-based position in reading order.")
+    total: int = Field(description="How many windows the document was cut into.")
+    start: int
+    end: int
+    text: str
+
+    @property
+    def label(self) -> str:
+        """``3/7``, for prompts and logs."""
+        return f"{self.index + 1}/{self.total}"
 
 
 class Section(BaseModel):
@@ -105,9 +133,62 @@ class Extraction(BaseModel):
             parts.append(section.text)
         return "\n".join(parts).strip()
 
-    def head(self, max_chars: int) -> str:
-        """The opening of the document, for prompts that cannot afford all of it."""
-        return self.text[:max_chars]
+    def windows(self, size: int) -> tuple[Window, ...]:
+        """Cut the whole text into sequential windows of at most ``size`` characters.
+
+        Order and length are the only structure every document has -- headings,
+        pages and paragraphs are all optional -- so the cut is by length, and merely
+        snaps back to a nearby line break when one happens to be there.
+        """
+        text = self.text
+        if not text:
+            return ()
+
+        slack = max(size // 8, 1)
+        bounds: list[tuple[int, int]] = []
+        start = 0
+        while start < len(text):
+            end = min(start + size, len(text))
+            if end < len(text):
+                snap = text.rfind("\n", end - slack, end)
+                if snap < 0:
+                    snap = text.rfind(" ", end - slack, end)
+                if snap > start:
+                    end = snap + 1
+            bounds.append((start, end))
+            start = end
+
+        return tuple(
+            Window(index=i, total=len(bounds), start=s, end=e, text=text[s:e])
+            for i, (s, e) in enumerate(bounds)
+        )
+
+
+class Coverage(BaseModel):
+    """How much of a document reached the model and contributed to its card."""
+
+    model_config = ConfigDict(frozen=True)
+
+    chars_total: int = Field(ge=0, description="Characters the parser produced.")
+    chars_read: int = Field(ge=0, description="Characters actually sent to the model.")
+    windows_total: int = Field(ge=0)
+    windows_read: int = Field(ge=0)
+    windows_contributed: int = Field(
+        default=0, ge=0, description="Windows that added at least one fact the card lacked."
+    )
+    windows_failed: int = Field(default=0, ge=0, description="Windows the model choked on.")
+    extraction_truncated: bool = Field(
+        default=False, description="The parser itself hit its budget before the file ended."
+    )
+
+    @property
+    def read_ratio(self) -> float:
+        return self.chars_read / self.chars_total if self.chars_total else 1.0
+
+    @property
+    def whole_document(self) -> bool:
+        """True when every extracted character was read and nothing was cut upstream."""
+        return not self.extraction_truncated and self.windows_read >= self.windows_total
 
 
 class DocumentCard(BaseModel):
@@ -141,6 +222,13 @@ class DocumentCard(BaseModel):
         description=(
             "Questions this document can answer. Written for an agent deciding "
             "whether to open the file -- the retrieval surface, not a summary."
+        ),
+    )
+    coverage: Coverage | None = Field(
+        default=None,
+        description=(
+            "How much of the document this card was built from. Optional so cards "
+            "written before coverage existed still load."
         ),
     )
 

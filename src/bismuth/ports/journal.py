@@ -25,7 +25,7 @@ class JournalStore(Protocol):
     def iter_entries(
         self, *, limit: int | None = None, newest_first: bool = True
     ) -> Iterator[JournalEntry]:
-        """Walk history. Backs ``bismuth log`` and the activity feed."""
+        """Walk journal history for diagnostics and activity views."""
         ...
 
     def pending(self) -> list[JournalEntry]:

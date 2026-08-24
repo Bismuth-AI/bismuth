@@ -15,7 +15,10 @@ _WINDOWS_RESERVED = frozenset(
     | {f"lpt{i}" for i in range(1, 10)}
 )
 
-_MAX_SEGMENT = 64
+MAX_SEGMENT = 64
+"""Maximum path-segment and class-name length."""
+
+_MAX_SEGMENT = MAX_SEGMENT
 
 
 def sanitize_segment(raw: str) -> str:
@@ -37,7 +40,8 @@ def sanitize_segment(raw: str) -> str:
         raise ValueError(f"{raw!r} leaves nothing usable as a folder name")
     if text.casefold() in _WINDOWS_RESERVED:
         text = f"{text}_"
-    if text.startswith("_"):
-        # Leading underscore is Bismuth's own namespace (_inbox, _folder.md).
-        text = text.lstrip("_") or "unnamed"
+    if text.startswith(("_", ".")):
+        # Leading underscore and dot names are Bismuth/private namespaces
+        # (_inbox, _folder.md, .bismuth). Model-authored classes never target them.
+        text = text.lstrip("._") or "unnamed"
     return text

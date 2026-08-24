@@ -1,17 +1,17 @@
-"""Microsoft Office formats, via the python-openxml family (all MIT)."""
+"""Text extraction for modern Microsoft Office formats."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
 
-from bismuth.adapters.parsers.registry import build_extraction
+from bismuth.adapters.parsers.registry import build_extraction, require
 from bismuth.domain.document import Extraction, Section
 from bismuth.domain.errors import ParserUnavailableError
 
 
 class DocxParser:
-    """Word documents; tables are rendered as Markdown grids rather than flattened cell runs, to avoid mixing up values across rows."""
+    """Extract paragraphs and tables from Word documents."""
 
     @property
     def name(self) -> str:
@@ -21,13 +21,12 @@ class DocxParser:
     def extensions(self) -> frozenset[str]:
         return frozenset({".docx"})
 
+    def warm(self) -> None:
+        require("docx", "Reading .docx needs python-docx: pip install 'bismuth-kb[parsers]'")
+
     def parse(self, path: Path, *, max_chars: int) -> Extraction:
-        try:
-            import docx
-        except ImportError as exc:  # pragma: no cover
-            raise ParserUnavailableError(
-                "Reading .docx needs python-docx: pip install 'bismuth-kb[parsers]'"
-            ) from exc
+        self.warm()
+        import docx
 
         try:
             document = docx.Document(str(path))
@@ -78,13 +77,12 @@ class PptxParser:
     def extensions(self) -> frozenset[str]:
         return frozenset({".pptx"})
 
+    def warm(self) -> None:
+        require("pptx", "Reading .pptx needs python-pptx: pip install 'bismuth-kb[parsers]'")
+
     def parse(self, path: Path, *, max_chars: int) -> Extraction:
-        try:
-            from pptx import Presentation
-        except ImportError as exc:  # pragma: no cover
-            raise ParserUnavailableError(
-                "Reading .pptx needs python-pptx: pip install 'bismuth-kb[parsers]'"
-            ) from exc
+        self.warm()
+        from pptx import Presentation
 
         try:
             presentation = Presentation(str(path))
@@ -115,7 +113,7 @@ def _slides(presentation: object) -> Iterator[Section]:
 
 
 class XlsxParser:
-    """Spreadsheets, one section per worksheet as a Markdown table; formulas aren't evaluated, ``data_only=True`` reads Excel's last-cached values."""
+    """Extract each worksheet as a Markdown table using cached formula values."""
 
     @property
     def name(self) -> str:
@@ -125,13 +123,12 @@ class XlsxParser:
     def extensions(self) -> frozenset[str]:
         return frozenset({".xlsx", ".xlsm"})
 
+    def warm(self) -> None:
+        require("openpyxl", "Reading .xlsx needs openpyxl: pip install 'bismuth-kb[parsers]'")
+
     def parse(self, path: Path, *, max_chars: int) -> Extraction:
-        try:
-            import openpyxl
-        except ImportError as exc:  # pragma: no cover
-            raise ParserUnavailableError(
-                "Reading .xlsx needs openpyxl: pip install 'bismuth-kb[parsers]'"
-            ) from exc
+        self.warm()
+        import openpyxl
 
         try:
             workbook = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
@@ -146,10 +143,10 @@ class XlsxParser:
             workbook.close()
 
 
-def _sheets(workbook: object, *, max_rows: int = 200) -> Iterator[Section]:
+def _sheets(workbook: object) -> Iterator[Section]:
     for order, sheet in enumerate(workbook.worksheets):  # type: ignore[attr-defined]
         rows: list[list[str]] = []
-        for row in sheet.iter_rows(max_row=max_rows, values_only=True):
+        for row in sheet.iter_rows(values_only=True):
             cells = ["" if v is None else str(v).replace("|", "\\|") for v in row]
             if any(cell.strip() for cell in cells):
                 rows.append(cells)

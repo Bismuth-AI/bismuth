@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from agentkit.testing import FakeModel, call, says
+import asyncio
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
+from bismuth.agentkit.testing import FakeModel, call, says
 from bismuth.api.app import create_app
 from bismuth.config import Settings
 from bismuth.container import Bismuth, build
 from bismuth.services.agent import AgentService, build_propose_move_tool
-from tests.test_ingest import add
+from tests.conftest import seed_folder
+from tests.helpers import add
 
 
 def _svc(engine: Bismuth, model: FakeModel) -> AgentService:
@@ -63,14 +67,13 @@ def test_organize_api_propose_then_apply(settings: Settings, llm: object) -> Non
             says("계약 폴더로 나누자고 제안합니다."),
         ]
     )
-    app = create_app(settings)
-    app.state.engine = build(settings, llm=llm, chat_model=chat)  # type: ignore[arg-type]
+    app = create_app(settings, accepted_uploads=frozenset({".txt"}))
+    organized = build(settings, llm=llm, chat_model=chat)  # type: ignore[arg-type]
+    seed_folder(Path(organized.vault.root))
+    asyncio.run(add(organized, "a.txt", "아폴로 계약 A"))
+    app.state.engine = organized
 
     with TestClient(app) as client:
-        client.post(
-            "/api/documents", files={"files": ("a.txt", "아폴로 계약 A".encode(), "text/plain")}
-        )
-
         plan = client.post("/api/organize/propose", json={}).json()
         assert plan["moves"] == [{"paths": ["아폴로/2023/a.txt"], "target": "아폴로/2023/계약"}]
 
@@ -88,14 +91,13 @@ def test_organize_api_applies_a_rename(settings: Settings, llm: object) -> None:
             says("폴더 이름이 내용과 안 맞아 바꾸자고 제안합니다."),
         ]
     )
-    app = create_app(settings)
-    app.state.engine = build(settings, llm=llm, chat_model=chat)  # type: ignore[arg-type]
+    app = create_app(settings, accepted_uploads=frozenset({".txt"}))
+    organized = build(settings, llm=llm, chat_model=chat)  # type: ignore[arg-type]
+    seed_folder(Path(organized.vault.root))
+    asyncio.run(add(organized, "a.txt", "아폴로 계약 A"))
+    app.state.engine = organized
 
     with TestClient(app) as client:
-        client.post(
-            "/api/documents", files={"files": ("a.txt", "아폴로 계약 A".encode(), "text/plain")}
-        )
-
         plan = client.post("/api/organize/propose", json={}).json()
         assert plan["renames"] == [{"folder": "아폴로/2023", "new_name": "이천이십삼"}]
 

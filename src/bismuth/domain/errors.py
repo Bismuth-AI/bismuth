@@ -23,5 +23,9 @@ class StructuredOutputError(BismuthError):
     """A model could not be coaxed into returning the requested schema."""
 
 
+class ModelRequestError(BismuthError):
+    """The configured model endpoint did not complete a request."""
+
+
 class CharterError(BismuthError):
     """A folder charter is missing or malformed."""
