@@ -1,146 +1,244 @@
 # Bismuth
 
-**문서를 넣으면, LLM이 탐색하기 쉬운 실제 폴더 구조로 정리합니다.**
+<p align="center">
+  <a href="./README.md"><kbd>English</kbd></a>
+  <a href="./README.ko.md"><kbd>한국어</kbd></a>
+</p>
 
-Bismuth는 지정한 폴더의 문서를 읽고 문서 카드를 만든 다음, 현재 폴더 구조와 카드의
-의미를 함께 보며 문서를 배치합니다. 문서가 쌓이면 기존 폴더를 재사용하거나 새 폴더를
-만들고, 필요하면 구조를 다시 정리합니다.
+<p align="center">
+  <a href="https://github.com/Bismuth-AI/bismuth/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Bismuth-AI/bismuth/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Python 3.11+" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white">
+  <a href="LICENSE"><img alt="Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
+</p>
 
-결과는 별도 데이터베이스가 아니라 일반 폴더와 파일입니다. Bismuth를 실행하지 않아도
-정리된 원본을 그대로 열 수 있습니다.
+**Drop in documents. Get a real folder structure an LLM agent can navigate.**
 
-> Bismuth는 완벽한 분류 체계보다 LLM이 경로를 보고 탐색하기 좋은 구조를 목표로 합니다.
+Bismuth reads documents, creates compact document cards, and organizes the originals
+into an ordinary filesystem tree. As the collection grows, it reuses existing folders,
+creates useful new branches, and revisits structure that no longer fits.
 
-## 주요 동작
+The result is not a proprietary database. It is a directory of original files,
+searchable Markdown sidecars, and folder notes that remains usable without Bismuth.
 
-1. 문서를 파싱하고 검색 가능한 Markdown 사이드카를 만듭니다.
-2. LLM이 문서의 종류, 주제, 핵심 내용을 구조화된 카드로 작성합니다.
-3. 현재 폴더와 문서 카드를 보고 기존 폴더에 배치하거나 구조 변경안을 만듭니다.
-4. 변경안을 검증한 뒤 파일 이동과 폴더 생성을 하나의 저널 작업으로 적용합니다.
-5. 이후 문서가 들어오면 같은 흐름으로 현재 구조를 계속 보완합니다.
+> Bismuth aims for a practical, navigable library—not a perfect universal taxonomy.
 
-카테고리와 트리 깊이는 미리 정하지 않습니다. 운영 프롬프트에도 특정 산업, 기관,
-문서 종류에 맞춘 정답 예시를 넣지 않습니다. 구조는 업로드된 문서와 현재 폴더 상태를
-근거로 만들어집니다.
+> [!IMPORTANT]
+> Bismuth is alpha software. The complete web upload flow currently supports PDF files
+> only, and interfaces may change before 1.0.
 
-초기에는 비교할 문서가 적어 일부 파일이 루트에 남을 수 있습니다. 충분한 문서가 처리된
-뒤에는 기존 폴더 배치, 새 폴더 생성, 또는 구조 재정리를 통해 루트 파일을 정리합니다.
+## Why Bismuth?
 
-## 디스크에 남는 파일
+Tool-using LLMs can inspect paths, list folders, grep text, and read only the documents
+they need. That works best when the filesystem itself provides useful navigation clues.
+A flat directory does not.
+
+Bismuth turns an unstructured collection into an agent-readable library:
+
+- folder names narrow the search space;
+- `_folder.md` explains what belongs in each branch;
+- `<original>.md` makes extracted content and document metadata grep-friendly;
+- the original document remains the source of truth.
+
+There is no fixed category tree and no corpus-specific few-shot taxonomy. The structure
+is inferred from the documents in the vault and the tree that already exists.
+
+## How it works
+
+1. An upload is validated and staged safely.
+2. Bismuth parses the document and builds a structured card from its contents.
+3. The card is compared with the current folder tree.
+4. Documents are filed in order so each decision can use the structure built so far.
+5. As evidence accumulates, Bismuth groups loose files, reshapes overly broad branches,
+   and settles files that remain at the root.
+6. Filesystem changes are applied through a journaled transaction and reflected in
+   folder notes and Markdown sidecars.
+
+Documents are prepared concurrently for throughput, then filed in deterministic input
+order. A saved card can also be reused to rebuild the tree without parsing the original
+again.
+
+## What the vault looks like
 
 ```text
-내문서/
+my-vault/
 ├── _folder.md
-├── 프로젝트/
+├── Projects/
 │   ├── _folder.md
-│   ├── 보고서.pdf
-│   └── 보고서.pdf.md
+│   ├── Planning/
+│   │   ├── _folder.md
+│   │   ├── roadmap.pdf
+│   │   └── roadmap.pdf.md
+│   └── Research/
+│       └── ...
 └── .bismuth/
 ```
 
-- `_folder.md`: 폴더가 담고 있는 내용을 설명합니다. 배치와 탐색의 경로 힌트로 사용됩니다.
-- `<원본>.md`: 원본에서 추출한 검색 가능한 텍스트와 문서 카드입니다.
-- `.bismuth/`: 트랜잭션 저널과 런타임 메타데이터입니다. 직접 수정하거나 임의로 삭제하지
-  마세요.
+- `_folder.md` describes a folder's scope and helps both placement and retrieval.
+- `<original>.md` contains searchable extracted text and the document card.
+- `.bismuth/` stores journals and runtime metadata. Do not edit or delete it manually.
 
-Bismuth는 원본 파일의 내용을 다시 쓰지 않습니다. 파일 경로는 정리 과정에서 바뀔 수
-있으며, 생성된 사이드카와 폴더 노트는 Bismuth가 관리합니다.
+Bismuth does not rewrite original file contents. It does move originals while organizing
+the vault, so paths may change. Generated sidecars and folder notes are managed by
+Bismuth.
 
-파일 변경은 적용 전에 저널에 기록됩니다. 작업이 중단되면 다음 실행에서 완료되지 않은
-변경을 감지하고 롤백해 일관된 상태로 복구합니다.
+## Features
 
-## 설치와 실행
+- **Corpus-driven organization** — no predefined categories or domain-specific examples.
+- **Growing folder structure** — reuses, creates, groups, and revisits branches as the
+  collection changes.
+- **Card-based rebuilds** — clears and rebuilds folder structure from saved cards without
+  paying the parsing cost again.
+- **Agentic retrieval** — the library agent inspects paths and folder notes before using
+  `grep` and `read` on selected documents.
+- **Reversible changes** — moves, deletions, and approved reorganizations are journaled;
+  interrupted transactions are recovered on the next start and completed operations can
+  be undone.
+- **Provider choice** — Anthropic, OpenAI, and OpenAI-compatible endpoints such as Ollama,
+  LM Studio, vLLM, or an internal gateway.
+- **Separate answering model** — filing and question answering may use different model
+  configurations.
+- **Live progress and diagnostics** — the local web UI streams ingest progress and offers
+  per-run model-call traces and spend information.
 
-Python 3.11 이상이 필요합니다.
+## Quick start
+
+### Requirements
+
+- Python 3.11 or newer
+- A supported hosted model API, or an OpenAI-compatible local endpoint
+
+Bismuth is currently installed from source:
 
 ```console
-pip install "bismuth-kb[all]"
+git clone https://github.com/Bismuth-AI/bismuth.git
+cd bismuth
+python -m venv .venv
+```
+
+Activate the environment:
+
+```bash
+# macOS / Linux
+source .venv/bin/activate
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+```
+
+Install and launch:
+
+```console
+python -m pip install ".[all]"
 bismuth
 ```
 
-브라우저에서 다음 항목을 설정합니다.
+Bismuth opens `http://127.0.0.1:8765` by default. On first launch, the browser setup asks
+for:
 
-- 문서를 정리할 폴더
-- 모델 프로바이더
-- API 키 또는 OpenAI 호환 엔드포인트
-- 사용할 모델
+- the vault directory;
+- the model provider and model;
+- an API key, or the URL of an OpenAI-compatible endpoint.
 
-설정은 `~/.bismuth/config.json`에 저장됩니다. 환경변수 기반 설정이 필요하면
-[`.env.example`](.env.example)을 참고하세요.
+Useful launch options:
 
-웹 앱은 인증이 없는 개인용 로컬 도구이며 기본적으로 `127.0.0.1`에서 실행됩니다.
-외부 네트워크에 직접 공개하는 서버 구성은 지원하지 않습니다.
-
-현재 웹 업로드에서 공식 지원하는 입력 형식은 **PDF**입니다. 다른 형식용 파서도 코드에
-포함되어 있지만 전체 업로드·분석 흐름의 지원 대상으로 검증되지는 않았습니다.
-
-## 로컬 모델 사용
-
-설정 화면에서 `OpenAI 호환 서버`를 선택하고 Ollama, LM Studio, vLLM 또는 사내
-게이트웨이의 엔드포인트와 모델을 입력할 수 있습니다. 기본 예시는
-`http://localhost:11434/v1`입니다.
-
-로컬 엔드포인트를 선택하면 모델 요청은 해당 엔드포인트로 전송됩니다. 다만 Bismuth의
-모델 품질은 모델의 구조화 출력, 지시 이행, 컨텍스트 크기에 영향을 받습니다. 소형 로컬
-모델의 정리 품질은 아직 체계적으로 측정하지 않았습니다.
-
-## LLM 탐색
-
-Bismuth의 질의 에이전트는 폴더 노트와 경로를 먼저 확인한 뒤 필요한 문서만 `grep`과
-`read`로 엽니다. 에이전트 루프에는 도구 권한, 컨텍스트 예산, 하위 작업 위임이 포함되어
-있으며 `bismuth.agentkit` 내부 모듈로 함께 배포됩니다.
-
-## 아키텍처
-
-Ports and adapters 구조를 사용합니다. 의존성 방향은 Ruff 규칙으로 검사합니다.
-
-```text
-domain/       값 객체와 순수 함수
-ports/        서비스가 사용하는 Protocol
-services/     문서 처리와 정리 유스케이스
-adapters/     LLM, 파일시스템, 파서, 카탈로그, 저널 구현
-agentkit/     내부 도구 호출 에이전트 루프
-api/          FastAPI와 로컬 웹 UI
-cli/          웹 앱 실행 진입점
-container.py  의존성 조립
+```console
+bismuth --vault ./my-vault
+bismuth --port 9000
+bismuth --no-open
+bismuth --help
 ```
 
-테스트에서는 스크립트형 모델과 임시 볼트를 함께 주입해 API 키와 네트워크 호출 없이 문서
-처리, 정리, 이동 및 복구 규칙을 검증합니다.
+Settings are stored in `~/.bismuth/config.json`. For environment-based configuration,
+copy [`.env.example`](.env.example) to `.env` and use the documented `BISMUTH_*`
+variables.
 
-개발 환경과 기여 절차는 [`CONTRIBUTING.md`](CONTRIBUTING.md)에 있습니다.
+## Model backends
 
-## 진단 로그와 개인정보
+The setup screen supports:
 
-로그는 Bismuth를 실행한 위치의 `./logs/`에 기록됩니다. 최상위 로그는 현재 실행을 위한
-파일이라 재시작할 때 초기화되지만, 실행별 기록은 `./logs/runs/<run_id>/`에 보존되며
-Bismuth가 자동 삭제하지 않습니다.
+- Anthropic;
+- OpenAI;
+- OpenAI-compatible servers, including Ollama, LM Studio, vLLM, and internal gateways.
 
-실행별 로그에는 문서에서 추출한 내용, 프롬프트, 모델 입력과 응답이 포함될 수 있습니다.
-외부에 공유하거나 버그 리포트에 첨부하기 전에 반드시 내용을 확인하고 민감정보를 제거하세요.
+The default local endpoint example is `http://localhost:11434/v1`. Organization quality
+depends on the model's instruction following, structured-output reliability, and context
+window. Quality on small local models has not yet been benchmarked systematically.
 
-## 현재 상태
+Document text is sent to the model endpoint you configure. Choose and operate that
+endpoint according to your privacy requirements.
 
-Bismuth는 알파 단계입니다. 인터페이스와 폴더 구성 방식은 `1.0.0` 이전 릴리스에서 바뀔
-수 있습니다.
+Provider credentials are stored locally in `~/.bismuth/config.json`, not in an operating
+system keychain. The file is created with user-only permissions where the platform
+supports them.
 
-현재 지원 범위:
+## Current scope
 
-- PDF 업로드와 텍스트 추출
-- 문서 카드, 사이드카, 폴더 노트 생성
-- 순차 simple-batch 정리와 기존 카드 재배치
-- 파일 이동·삭제 저널과 undo
-- 폴더 기반 질의 에이전트
-- 실행별 LLM 진단 로그
+Supported in the complete product flow:
 
-아직 지원하지 않는 범위:
+- PDF upload and text extraction;
+- up to 500 files per request, 50 MB per file, and 500 MB total;
+- document cards, Markdown sidecars, and folder notes;
+- incremental organization and card-based full refiling;
+- manual move and delete with journal-backed undo;
+- folder-aware question answering;
+- per-run LLM diagnostics and usage accounting.
 
-- OCR
-- 외부 네트워크용 인증 서버
-- 백그라운드 주기 실행
-- MCP 서버
-- 소형 로컬 모델 품질 보장
+Not currently supported:
 
-## 라이선스
+- OCR for scanned PDFs;
+- authenticated deployment on an external network;
+- background scheduled organization;
+- an MCP server;
+- guaranteed organization quality on small local models.
 
-Apache License 2.0. 자세한 조건은 [`LICENSE`](LICENSE)를 확인하세요.
+Parser adapters for additional formats exist in the codebase, but those formats are not
+yet supported by the complete upload and analysis flow.
+
+## Architecture
+
+Bismuth uses ports and adapters. Dependency direction is enforced by Ruff rules.
+
+```text
+domain/       Value objects and pure rules
+ports/        Protocols required by the application
+services/     Ingest, filing, maintenance, retrieval, and transactions
+adapters/     LLM, filesystem, parser, catalog, and journal implementations
+prompts/      Structured, corpus-neutral model instructions
+agentkit/     Internal provider-neutral tool-calling agent loop
+api/          FastAPI application and local web UI
+cli/          Local web application launcher
+container.py  Composition root
+```
+
+Tests inject scripted models and temporary vaults, so core organization, recovery, and
+API behavior can be verified without an API key.
+
+## Data safety and diagnostics
+
+Every filesystem mutation is journaled before it is applied. If a process stops during a
+transaction, Bismuth detects the incomplete entry and rolls it back on the next start.
+
+Diagnostics are written to `./logs/`. Per-run records under `./logs/runs/<run_id>/` are
+not deleted automatically. They may contain extracted document text, prompts, model
+inputs, and model outputs. Review and redact them before sharing a bug report. The logs
+directory is ignored by Git.
+
+The web application has no authentication and intentionally binds only to a loopback
+address. Do not expose it directly to an external network.
+
+## Development
+
+```console
+python -m pip install -e ".[all,dev]"
+ruff check src tests
+ruff format --check src tests
+mypy
+pytest -q
+```
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidelines and
+[`CHANGELOG.md`](CHANGELOG.md) for release history.
+
+## License
+
+Bismuth is available under the [Apache License 2.0](LICENSE).
