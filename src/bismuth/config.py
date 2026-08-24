@@ -1,4 +1,4 @@
-"""Configuration. Bismuth owns it; it does not go looking for it."""
+"""Application settings and persisted user configuration."""
 
 from __future__ import annotations
 
@@ -7,11 +7,13 @@ import os
 import stat
 import tempfile
 from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     JsonConfigSettingsSource,
@@ -162,32 +164,18 @@ class Settings(BaseSettings):
     provider_id: str = Field(default="", description="One of PROVIDERS. Empty until set up.")
     api_key: str = Field(
         default="",
-        description=(
-            "The credential, and the only one Bismuth reads. Provider variables in "
-            "the ambient environment are deliberately ignored -- see the module "
-            "docstring for the bug that taught us why."
-        ),
+        description="The credential used for model calls. Provider-specific environment variables are ignored.",
     )
     api_base: str | None = Field(
         default=None, description="Endpoint override. Local backends need it."
     )
     api_headers: dict[str, str] = Field(
         default_factory=dict,
-        description=(
-            "Headers sent with every model call, on top of the credential. Some "
-            "endpoints sit behind a gateway that authenticates with a cookie or its "
-            "own header rather than a bearer token, and without this there is no way "
-            "to reach them at all."
-        ),
+        description="Additional headers sent with every model call.",
     )
     api_body: dict[str, Any] = Field(
         default_factory=dict,
-        description=(
-            "Request-body values sent with every model call, applied over Bismuth's "
-            "own. Sampling knobs a server wants (top_p, top_k, min_p) and switches only "
-            "it knows about -- qwen's chat_template_kwargs.enable_thinking is the one "
-            "that made this necessary: left on, a document took 93 seconds instead of 6."
-        ),
+        description="Provider-specific values merged into each model request body.",
     )
     native_schema: bool | None = Field(
         default=None,
@@ -267,10 +255,7 @@ class Settings(BaseSettings):
     llm_max_concurrency: int = Field(
         default=12,
         ge=1,
-        description=(
-            "Model calls in flight at once. Measured on 300-document runs: 12 is safe and "
-            "20 dropped documents. Was 4, which left the gateway idle most of the time."
-        ),
+        description="Maximum model calls in flight at once.",
     )
     ingest_read_ahead: int = Field(
         default=8,
@@ -342,20 +327,6 @@ class Settings(BaseSettings):
     def _expand(cls, value: Path) -> Path:
         return value.expanduser().resolve()
 
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy_model_pair(cls, value: Any) -> Any:
-        """Read old two-model config files once; the next save writes one model.
-
-        The former judgement model is preferred because it was the capability ceiling
-        users selected for placement and maintenance. Explicit new ``model`` always wins.
-        """
-        if not isinstance(value, dict) or value.get("model"):
-            return value
-        migrated = dict(value)
-        migrated["model"] = value.get("model_reasoning") or value.get("model_fast") or ""
-        return migrated
-
     @property
     def provider(self) -> Provider | None:
         return provider(self.provider_id)
@@ -396,19 +367,8 @@ class Settings(BaseSettings):
     def chat(self) -> Endpoint:
         """Where a question in 서고에 묻기 is sent.
 
-        Two shapes, and which one applies is decided by ``chat_provider_id``:
-
-        *Same provider* (it is empty). Every field falls back to its counterpart on its
-        own, so naming a second model keeps the server, the credential and the switches
-        that server needs. The body merges rather than replaces -- it carries switches,
-        not preferences, and a chat body naming only ``temperature`` would have silently
-        turned reasoning back on. A ``chat_api_base`` pointing at another host is still
-        another host, so the key and headers stop there too: a credential belongs to the
-        host it was issued for.
-
-        *Its own provider* (it is set). Nothing is inherited. A key, a header or a
-        sampling switch that belongs to one company's endpoint is meaningless at another
-        and dangerous to send, so the answering side stands alone or not at all.
+        The filing endpoint is inherited only while the provider and address stay the
+        same. A separately configured provider inherits nothing.
         """
         own = provider(self.chat_provider_id) if self.chat_provider_id else None
         if own is not None:
@@ -424,14 +384,16 @@ class Settings(BaseSettings):
                 api_mode=self.chat_api_mode,
                 reasoning_effort=self.chat_reasoning_effort,
             )
-        elsewhere = bool(self.chat_api_base) and self.chat_api_base != self.api_base
+        elsewhere = bool(self.chat_api_base) and _endpoint_host(
+            self.chat_api_base
+        ) != _endpoint_host(self.api_base)
         return Endpoint(
             provider_id=self.provider_id,
             model=self._qualify(self.chat_model) if self.chat_model else self.model_for(),
             api_key=self.chat_api_key or ("" if elsewhere else self.api_key),
             api_base=self.chat_api_base or self.api_base,
             headers=self.chat_api_headers or ({} if elsewhere else self.api_headers),
-            body={**self.api_body, **self.chat_api_body},
+            body={**({} if elsewhere else self.api_body), **self.chat_api_body},
             api_mode=self.chat_api_mode,
             reasoning_effort=self.chat_reasoning_effort,
         )
@@ -443,37 +405,73 @@ class Settings(BaseSettings):
 
     @property
     def runs_locally(self) -> bool:
-        """Whether this configuration keeps every byte on the machine.
-
-        Read off the address, never assumed from the provider's name: the same server is
-        local on this machine and not local on someone else's.
-        """
-        if self.api_base:
-            return any(
-                host in self.api_base for host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
-            )
-        return False
+        """Whether both configured model endpoints are on this machine."""
+        return _is_local_url(self.librarian().api_base) and _is_local_url(self.chat().api_base)
 
     def redacted(self) -> dict[str, Any]:
-        """Safe to log, safe to render, safe to paste into an issue."""
+        """Safe to log, render or paste into an issue."""
         data = self.model_dump(mode="json")
         if self.api_key:
             data["api_key"] = f"…{self.api_key[-4:]}"
-        # Headers are here because a bearer token was not enough, which means whatever
-        # is in them is a credential too. The first one written was a session cookie,
-        # and it went into bismuth.log in full.
+        # Custom headers may contain credentials and must be redacted.
         if self.chat_api_key:
             data["chat_api_key"] = f"…{self.chat_api_key[-4:]}"
+        data["api_base"] = _redacted_url(self.api_base)
+        data["chat_api_base"] = _redacted_url(self.chat_api_base)
         data["api_headers"] = {name: _tail(value) for name, value in self.api_headers.items()}
         data["chat_api_headers"] = {
             name: _tail(value) for name, value in self.chat_api_headers.items()
         }
+        data["api_body"] = dict.fromkeys(self.api_body, "…")
+        data["chat_api_body"] = dict.fromkeys(self.chat_api_body, "…")
         return data
+
+
+def _is_local_url(url: str | None) -> bool:
+    try:
+        host = urlsplit(url or "").hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host.casefold() == "localhost" or host.casefold().endswith(".localhost"):
+        return True
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
 
 
 def _tail(value: str) -> str:
     """Enough to tell two credentials apart, not enough to use one."""
     return f"…{value[-4:]}" if len(value) > 4 else "…"
+
+
+def _endpoint_host(url: str | None) -> tuple[str, str, int | None] | None:
+    """Return the origin used to decide whether endpoint settings may be shared."""
+    try:
+        parsed = urlsplit(url or "")
+        port = parsed.port
+    except ValueError:
+        return None
+    return (parsed.scheme.casefold(), parsed.hostname.casefold(), port) if parsed.hostname else None
+
+
+def _redacted_url(url: str | None) -> str | None:
+    """Keep only the non-secret origin of an endpoint URL."""
+    if not url:
+        return url
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return "…"
+    if not parsed.hostname:
+        return "…"
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    netloc = f"{host}:{port}" if port else host
+    return urlunsplit((parsed.scheme, netloc, "", "", ""))
 
 
 class UserConfig(BaseModel):
@@ -484,15 +482,9 @@ class UserConfig(BaseModel):
     deep-merges dict-valued fields, so ``Settings(api_headers={})`` keeps whatever the
     config file had. Every scalar answer replaced the old one and the two dicts did not.
 
-    Switching provider therefore carried the previous endpoint's configuration onto the
-    new one. Measured: a private gateway's session Cookie and a qwen-only
-    ``chat_template_kwargs`` stayed attached after the provider was changed to OpenAI.
-    The second came back ``400 Unknown parameter``. The first was sent to a third party
-    and did not come back at all.
-
-    So the wizard writes from here and re-reads Settings afterwards. Persisting cannot
-    inherit, and what a ``BISMUTH_*`` variable still outranks on the way back is the
-    documented precedence.
+    Provider-specific dictionaries must be replaced rather than inherited when the
+    selected provider changes. The wizard writes from here and re-reads Settings so
+    environment variables retain their documented precedence.
     """
 
     vault_path: Path

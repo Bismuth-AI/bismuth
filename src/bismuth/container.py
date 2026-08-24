@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from agentkit import ChatModel
-
 from bismuth.adapters.catalog import FileCatalog
 from bismuth.adapters.journal import JOURNAL_FILENAME, JsonlJournal
 from bismuth.adapters.ledger import LEDGER_FILENAME, JsonlSpendLedger
@@ -14,6 +12,7 @@ from bismuth.adapters.llm import LiteLLMAdapter
 from bismuth.adapters.llm.chat import LiteLLMChatModel
 from bismuth.adapters.parsers import build_registry
 from bismuth.adapters.vault import FileSystemVault
+from bismuth.agentkit import ChatModel
 from bismuth.config import Settings
 from bismuth.ports.catalog import Catalog
 from bismuth.ports.journal import JournalStore
@@ -28,10 +27,7 @@ from bismuth.services.conversation import ConversationService
 from bismuth.services.deletion import DeletionService
 from bismuth.services.ingest import IngestService
 from bismuth.services.move import MoveService
-from bismuth.services.placement import PlacementService
-from bismuth.services.redesign import RedesignService
 from bismuth.services.simple import SimpleFiler
-from bismuth.services.subdivision import LibraryMaintenanceService
 from bismuth.services.transactor import Transactor
 
 
@@ -42,34 +38,25 @@ class Bismuth:
     settings: Settings
     llm: LLM
     chat: ChatModel
-    """The agent's model. Exposed so its calls can be counted too -- a spend total that
-    omits the post-upload review is wrong, not just incomplete."""
+    """The model used by the question-answering agent."""
     vault: Vault
     catalog: Catalog
     journal: JournalStore
     ledger: SpendLedger
-    """What this vault has cost so far. Survives the tab that spent it."""
+    """Persistent model usage for this vault."""
     parsers: ParserRegistry
     transactor: Transactor
     cards: CardService
     charters: CharterService
-    placement: PlacementService
-    maintenance: LibraryMaintenanceService
-    """The librarian that may change the classification tree after filing."""
-    subdivision: LibraryMaintenanceService
-    """Compatibility name for :attr:`maintenance`."""
     ingest: IngestService
     deletion: DeletionService
     move: MoveService
     agent: AgentService
     conversation: ConversationService
-    """Multi-turn questions answered by walking the tree the rest of this builds."""
+    """Multi-turn questions answered by walking the vault tree."""
 
     simple: SimpleFiler
-    """The two-question pipeline: file a batch, and look at the whole tree when it grows."""
-    redesign: RedesignService
-    """The whole-collection pass. Runs itself when the collection has doubled since the
-    top of it was last drawn; the button is a way to ask for it early."""
+    """The active filing pipeline."""
 
     def recover(self) -> int:
         """Roll back anything a crash left half-done. Returns the number of batches reversed."""
@@ -79,7 +66,10 @@ class Bismuth:
 def build(
     settings: Settings, *, llm: LLM | None = None, chat_model: ChatModel | None = None
 ) -> Bismuth:
-    """Wire an engine over ``settings.vault_path``. Pass a fake ``llm``/``chat_model`` to run offline."""
+    """Wire an engine over ``settings.vault_path``.
+
+    Pass both injected model implementations when the complete engine must run offline.
+    """
     vault = FileSystemVault(settings.vault_path)
     state = Path(vault.root) / STATE_DIR
 
@@ -109,6 +99,7 @@ def build(
         api_key=asking.api_key,
         api_base=asking.api_base,
         timeout=settings.llm_timeout_seconds,
+        absolute_timeout=settings.llm_absolute_timeout_seconds,
         max_concurrency=settings.llm_max_concurrency,
         headers=asking.headers,
         body=asking.body,
@@ -121,20 +112,7 @@ def build(
         max_windows=settings.card_max_windows,
     )
     charters = CharterService(vault, model, catalog)
-    placement = PlacementService(model)
     move = MoveService(vault=vault, transactor=transactor, charters=charters)
-    maintenance = LibraryMaintenanceService(
-        vault=vault, catalog=catalog, charters=charters, transactor=transactor, llm=model
-    )
-    # Reading a folder as cards rather than as bytes already exists; the redesign pass
-    # borrows it rather than growing a second answer to the same question.
-    redesign = RedesignService(
-        vault=vault,
-        charters=charters,
-        transactor=transactor,
-        llm=model,
-        read_folder=maintenance.read,
-    )
 
     return Bismuth(
         settings=settings,
@@ -148,26 +126,18 @@ def build(
         transactor=transactor,
         cards=cards,
         charters=charters,
-        placement=placement,
-        maintenance=maintenance,
-        subdivision=maintenance,
         ingest=IngestService(
             vault=vault,
             catalog=catalog,
             parsers=parsers,
             cards=cards,
-            placement=placement,
-            charters=charters,
             transactor=transactor,
-            subdivision=maintenance,
-            redesign=redesign,
             extraction_max_chars=settings.extraction_max_chars,
         ),
         deletion=DeletionService(
             vault=vault, catalog=catalog, transactor=transactor, charters=charters
         ),
         move=move,
-        redesign=redesign,
         agent=AgentService(model=chat, vault=vault, charters=charters),
         conversation=ConversationService(
             model=chat,
@@ -176,5 +146,11 @@ def build(
             context_tokens=settings.chat_context_tokens,
             budget_tokens=settings.chat_budget_tokens,
         ),
-        simple=SimpleFiler(vault=vault, charters=charters, transactor=transactor, llm=model),
+        simple=SimpleFiler(
+            vault=vault,
+            catalog=catalog,
+            charters=charters,
+            transactor=transactor,
+            llm=model,
+        ),
     )
