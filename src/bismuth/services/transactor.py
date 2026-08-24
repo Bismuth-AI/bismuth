@@ -81,10 +81,7 @@ class Transactor:
             raise VaultError(
                 f"entry {entry_id} is {entry.status.value}, not applied -- nothing to undo"
             )
-        # An entry is only reversible while nothing has moved what it moved. Subdivision
-        # keeps re-filing documents as more arrive, so an older entry's sources are
-        # usually somewhere else by now: the inverse then fails partway with "cannot move
-        # missing file", rolls back, and says nothing about why. Say it here instead.
+        # Refuse an inverse whose source paths no longer match the journal entry.
         if missing := self._moved_since(entry):
             raise VaultError(
                 f"entry {entry_id} cannot be undone: {len(missing)} of the files it moved "

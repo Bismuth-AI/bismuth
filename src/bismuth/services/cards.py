@@ -3,8 +3,8 @@
 The whole document is read, not its opening. Text is cut by length into windows,
 the card is revised window by window in reading order, facts accumulate as a union,
 and a final pass pulls the facts that matter into the summary. No step asks the
-document to have headings, pages or a table of contents, so a scanned memo and a
-300-page contract go down the same path.
+document to have headings, pages or a table of contents, so documents of different
+lengths and formats follow the same path.
 """
 
 from __future__ import annotations
@@ -35,21 +35,12 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Both fields are NonEmptyStr, so a fallback has to say something -- and whatever it says
-# goes on the card and into every later prompt as evidence. A Korean word here taught a
-# German archive that its unparsed documents were 문서, against a card prompt that asks
-# for the document's own language. A punctuation mark belongs to no language.
+# These required fields use a language-neutral fallback.
 _EMPTY_SUMMARY = "—"
 _UNKNOWN_TYPE = "—"
 
 CARD_OUTPUT_TOKENS = 2048
-"""What one window may spend saying what it found.
-
-The only budget left on this path. Nothing constrains the shape of the reply any more --
-a grammar compiled from the schema was measured to empty the entities of 21 replies in 36
-and to cut eleven labels mid-word at its own ceiling (docs/prior-art.md), so the shape is
-asked for in the prompt and read back by :func:`~bismuth.prompts.cards.parse_card`.
-"""
+"""Maximum output available to one document window."""
 
 
 def _labels(values: Iterable[str], *, limit: int) -> tuple[list[str], list[str]]:
@@ -58,7 +49,7 @@ def _labels(values: Iterable[str], *, limit: int) -> tuple[list[str], list[str]]
     Overlong entries are dropped rather than truncated. Asked for topics, a model handed a
     bibliography returns the whole bibliography as one; the first 40 characters of that is
     not a worse label, it is a wrong one, and it would then be shown, filed, and weighed in
-    every later placement decision.
+    every later filing decision.
     """
     kept: list[str] = []
     rejected: list[str] = []
@@ -171,8 +162,7 @@ class CardService:
             extraction_truncated=extraction.truncated,
         )
         if len(selected) < len(windows):
-            # A budget cap that silently ate the middle of a document would read as
-            # full coverage. Say which parts were dropped, in the log and on the card.
+            # Record omitted windows so partial coverage stays visible.
             read_indices = {w.index for w in selected}
             log_trace(
                 "card.windows_skipped",
@@ -203,8 +193,7 @@ class CardService:
             )
 
         step(1)
-        # Each window is its own scope: a window that loops or fails has to be findable
-        # without inferring which call it was from line order.
+        # Keep every model call attributable to its source window.
         with log_context(stage="card.first", window_id=f"{document_id}:window-001"):
             card = await self._first(
                 selected[0],
@@ -224,9 +213,7 @@ class CardService:
             card = folded.card
             contributed += int(folded.contributed)
             failed += int(folded.failed)
-            # Reported again after the call: the first report moves the bar, this one says
-            # what the window actually turned up. A bar with nothing behind it is the thing
-            # we are trying to get rid of.
+            # Report what the completed window contributed.
             step(position, found=folded.found)
 
         coverage = Coverage(
@@ -363,11 +350,7 @@ class CardService:
         keywords = _added(card.keywords, facts.keywords)
         questions = _added(card.answers_questions, facts.questions)
         summary = update.summary.strip() or card.summary
-        # New facts, not the model's self-report: asked whether it learned something, a
-        # model says yes about a page of boilerplate. Both go to the trace so the
-        # disagreement stays visible.
-        # Topics and entity names, not keywords or questions: this is what gets shown
-        # while the user waits, and it should read as things, not as prose.
+        # Derive contributions from new topics and entities.
         found = tuple(topics) + tuple(e.name for e in entities)
         added = bool(topics or entities or keywords or questions)
 

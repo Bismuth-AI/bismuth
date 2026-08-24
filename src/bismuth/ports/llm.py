@@ -11,17 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 CURRENT_DOCUMENT: ContextVar[str] = ContextVar("current_document", default="")
-"""Which document the call being made is for.
-
-Cost is reported per document, and once reading runs for several documents at a time a
-drain-before/drain-after bracket attributes whatever finished in the window rather than
-whatever belongs to the document. A context variable rides with the task instead, so the
-attribution stays right however the caller schedules the work.
-"""
+"""Document identifier associated with model calls in the current task."""
 
 
 class Prompt(BaseModel):
-    """A single-turn instruction. Bismuth has no use for conversation."""
+    """A single-turn model instruction."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -29,12 +23,7 @@ class Prompt(BaseModel):
     user: str
     cache_hint: bool = Field(
         default=False,
-        description=(
-            "Marks a large, stable prefix (the folder tree and its notes) as "
-            "worth caching. Placement re-sends the same tree context for every "
-            "document in a batch; providers that support prompt caching make that "
-            "nearly free, and those that do not ignore this."
-        ),
+        description="Whether the prompt contains a stable prefix suitable for provider caching.",
     )
 
 
@@ -52,21 +41,12 @@ class Usage(BaseModel):
     cost_usd: float | None = None
     retries: int = Field(
         default=0,
-        description=(
-            "Schema-repair attempts. Persistently non-zero means the "
-            "model behind it is too small for the task -- a diagnostic worth "
-            "surfacing rather than swallowing."
-        ),
+        description="Schema-repair attempts made for this call.",
     )
 
 
 CURRENT_USAGE: ContextVar[list[Usage] | None] = ContextVar("current_usage", default=None)
-"""Optional per-task collector for calls reported as one piece of work.
-
-Adapters still retain every usage for the vault ledger. The collector is a second,
-task-local view used when a streamed answer needs its own bill without draining calls
-made concurrently by another tab or an ingest batch.
-"""
+"""Optional task-local usage collector."""
 
 
 class Spend(BaseModel):
@@ -84,10 +64,7 @@ class Spend(BaseModel):
     )
     priced_calls: int = Field(
         default=0,
-        description=(
-            "How many of `calls` LiteLLM could price. Fewer than `calls` means the total "
-            "is a floor, not a figure -- local and unlisted models have no published rate."
-        ),
+        description="Calls with price data. Fewer than calls means the total is incomplete.",
     )
 
     @property
@@ -134,10 +111,10 @@ class LLM(Protocol):
         schema: type[SchemaT],
         temperature: float = 0.0,
     ) -> SchemaT:
-        """Return a validated instance of ``schema``, retrying with the validation error on failure.
+        """Return a validated instance of ``schema``.
 
         Raises:
-            StructuredOutputError: if no attempt produced a valid instance.
+            StructuredOutputError: if validation does not succeed.
         """
         ...
 
@@ -148,17 +125,7 @@ class LLM(Protocol):
         max_tokens: int,
         temperature: float = 0.0,
     ) -> str:
-        """Return whatever the model wrote, with no format imposed on the way out.
-
-        For the one task that asks for several open fields at once. A JSON schema
-        compiled into a decoding grammar was measured to cost the answer rather than
-        shape it: over twelve documents it emptied a nested array in 21 of 36 replies and
-        cut eleven labels mid-word at the schema's own ceiling. The caller states the
-        shape in the prompt and parses what comes back, which is what a small model does
-        best (ADR-0013 reached the same conclusion for placement).
-
-        Unlike :meth:`choose`, the length is not known in advance, so the caller must
-        give a budget.
+        """Return unstructured model text within the caller-provided output budget.
 
         Raises:
             ModelRequestError: if the model returned nothing usable.
@@ -172,16 +139,7 @@ class LLM(Protocol):
         choices: Sequence[str],
         temperature: float = 0.0,
     ) -> str:
-        """Return exactly one member of a closed request-local choice set.
-
-        This is deliberately not JSON. Small routing decisions should not inherit
-        the failure surface of open-ended structured generation.
-
-        No output budget: the answer is one of the listed literals, so its length is
-        already known and a caller here cannot size a budget for a model it knows
-        nothing about. Six callers asked for eight tokens, which is generous for
-        ``F003`` and less than one served model spends before it starts speaking.
-        """
+        """Return exactly one member of a closed request-local choice set."""
         ...
 
     def drain_usage(self) -> list[Usage]:

@@ -1,4 +1,4 @@
-"""The filesystem boundary. Paths crossing it are vault-relative :class:`PurePosixPath`, even on Windows."""
+"""Filesystem boundary using vault-relative POSIX paths."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ class Vault(Protocol):
 
     @property
     def root(self) -> Path:
-        """Absolute path of the vault root. The only absolute path in the system."""
+        """Return the absolute vault root."""
         ...
 
     def exists(self, rel: PurePosixPath) -> bool: ...
@@ -31,7 +31,7 @@ class Vault(Protocol):
     def read_bytes(self, rel: PurePosixPath) -> bytes: ...
 
     def iter_folders(self) -> Iterator[PurePosixPath]:
-        """Every folder in the vault, depth-first, excluding ``.bismuth/``; root is an empty path."""
+        """Yield folders depth-first, excluding internal state."""
         ...
 
     def iter_files(self, rel: PurePosixPath, *, recursive: bool = False) -> Iterator[PurePosixPath]:
@@ -49,7 +49,7 @@ class Vault(Protocol):
         ...
 
     def stash(self, rel: PurePosixPath) -> str | None:
-        """Copy the current content of ``rel`` into the attic and return its key, or ``None`` if absent."""
+        """Back up a path and return its key, or ``None`` if absent."""
         ...
 
     def unstash(self, backup_ref: str) -> bytes:
@@ -57,5 +57,5 @@ class Vault(Protocol):
         ...
 
     def unique_target(self, folder: PurePosixPath, filename: str) -> PurePosixPath:
-        """A free (case-insensitively) path for ``filename`` in ``folder``, disambiguating if needed."""
+        """Return a collision-free target path for a filename."""
         ...

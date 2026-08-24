@@ -1,11 +1,10 @@
-"""Agents over the vault, built on the standalone ``agentkit`` library.
+"""Agents over the vault, built on Bismuth's internal agent loop.
 
 Two shapes, same tools underneath:
 - ``ask``: read-only navigation (ls/tree/read/grep/note) to answer a question.
 - ``organize``: the same plus an approval-gated ``move`` to reshape the folder tree.
 
-bismuth supplies the model, the tools (thin wrappers over the vault/services), and
-the prompt; agentkit runs the loop.
+Bismuth supplies the model, tools, and prompt to the loop.
 """
 
 from __future__ import annotations
@@ -17,78 +16,21 @@ import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from agentkit import Agent, ChatModel, FunctionTool, RunResult, Tool, subagent_tool
-from agentkit.loop import OnEvent
 from pydantic import BaseModel, Field
 
+from bismuth.agentkit import Agent, ChatModel, FunctionTool, RunResult, Tool, subagent_tool
+from bismuth.agentkit.loop import OnEvent
 from bismuth.domain.charter import CHARTER_FILENAME
 from bismuth.domain.document import sidecar_name
 from bismuth.ports.vault import INBOX, Vault
+from bismuth.prompts.agent import (
+    DEFAULT_ORGANIZE_INSTRUCTION,
+    SYSTEM_ASK,
+    SYSTEM_ORGANIZE,
+    SYSTEM_VERIFIER,
+)
 from bismuth.services.charters import CharterService
 from bismuth.services.sidecar import read_sidecar_meta
-
-DEFAULT_ORGANIZE_INSTRUCTION = (
-    "Review the vault's structure and propose any reorganisation it needs."
-)
-
-SYSTEM_ASK = """\
-You are a librarian answering questions from a vault of real folders and files.
-
-Every document has a greppable Markdown sidecar next to it (``<name>.md``) holding \
-its extracted text and a header (title, topics, entities, summary). Every folder \
-has a ``_folder.md`` note describing what it holds.
-
-Work by navigating: `tree` to see the shape, `read_note` to learn what a folder is \
-for, `grep` to find where something is said, `read` to read a document's sidecar. \
-Prefer grep/read_note over reading every file. When you answer, cite the folders \
-and files you used. If the vault does not contain the answer, say so plainly.\
-"""
-
-SYSTEM_ORGANIZE = """\
-You are an archivist keeping a document vault well organised, so an agent (or a \
-person) can navigate it. Real folders, real files; each document has a `.md` \
-sidecar with its text, each folder a `_folder.md` note.
-
-FIRST look, THEN judge, THEN act:
-1. Use `tree`, `read_note`, `grep`, and `read` to understand what is actually here \
--- what each folder holds and how it is (or isn't) organised. Do not decide from \
-folder names alone.
-2. Judge whether the structure genuinely needs work. A folder is fine if it is \
-navigable -- even a large one, if its contents are uniform. Only act where a person \
-would struggle: a pile of unlike documents at one level, near-duplicate folders for \
-one idea, or a folder whose NAME no longer describes what is inside.
-   Treat a folder's `_folder.md` as evidence of its intended stable boundary, not \
-as proof that the current contents still satisfy it. Judge that sign together with \
-the documents' ACTUAL types (shown in `ls` as `[type]`) and the folder's name. When \
-the actual documents no longer satisfy the recorded boundary, \
-the folder may need splitting or renaming.
-3. When you act, choose the lighter fix:
-   - If the grouping is fine but the folder's NAME no longer fits its contents, \
-`rename` the folder. Do not split what does not need splitting.
-   - If genuinely different things are piled together, PROPOSE `move`s: group \
-documents into subfolders by one distinction supported by the documents and useful \
-for ruling alternatives out, in the documents' own language. Reuse the right existing \
-branch; do not invent a parallel one. Move the EXISTING documents, not just future \
-ones.
-Nothing is applied until the user approves your whole plan, so propose every move \
-and rename you would make.
-
-Before finalising a non-trivial plan, delegate it to the `verifier` sub-agent \
-(via `task`) to catch churn or mistakes, and drop whatever it rejects.
-
-There is no size rule -- judge by whether the structure helps someone find things. \
-If it is already good, say so and propose nothing. End with a short summary of the \
-plan (or why nothing needs changing).\
-"""
-
-SYSTEM_VERIFIER = """\
-You review a proposed folder reorganisation before a person sees it. You are given \
-the plan (which documents move where) and can inspect the vault with the read \
-tools. Judge honestly: does the plan make the vault easier to navigate, or is it \
-churn or a mistake -- splitting a folder that was already fine, wrong groupings, \
-names that do not match the documents' language? Reply with a short verdict for \
-each part: keep, drop, or reject, with one reason each.\
-"""
 
 _TEXT_SUFFIXES = {
     ".md",
@@ -119,14 +61,8 @@ _WHITESPACE = re.compile(r"\s+")
 def _unwrapped(pattern: str) -> re.Pattern[str] | None:
     """The same pattern, to be matched against text with every space taken out.
 
-    A sidecar is text pulled out of a PDF, so it is hard-wrapped at whatever width the
-    page had, and a phrase lands on two lines often enough to matter: 방문판매법 시행령
-    holds `연 100분` / `의 15를 말한다`, which a line-at-a-time search cannot see. Over
-    this corpus a whitespace-blind pass finds documents the line-based one misses for
-    one search phrase in three.
-
-    Returns None when removing the whitespace would change what the pattern means --
-    ``^`` and ``$`` are per-line, and there are no lines left to anchor to.
+    Extracted text may wrap phrases across lines. Anchored patterns are left unchanged
+    because removing line boundaries would alter their meaning.
     """
     if "^" in pattern or "$" in pattern:
         return None
@@ -151,9 +87,7 @@ def _matching_lines(
     for number, line in enumerate(lines, start=1):
         if pattern.search(line):
             hit[number] = line
-    # Most documents hold no match at all, so ask the cheap question first: strip the
-    # whole text in one pass and look. Only a document that answers yes pays for the
-    # line map that turns a position back into a line number.
+    # Build the line map only when whitespace-insensitive matching finds a hit.
     if wrapped is not None and wrapped.search(_WHITESPACE.sub("", text)):
         packed, ends = _flatten(lines)
         for match in wrapped.finditer(packed):
@@ -245,14 +179,7 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
         return "\n".join(lines) or "(empty)"
 
     async def _tree(args: _TreeArgs) -> str:
-        """The shape of the vault, one folder per line, each line a usable path.
-
-        Indentation alone used to carry the nesting, so a caller wanting to look inside
-        a folder had to rebuild its path by counting spaces up the whole listing. That
-        is a step at which to be wrong, and it was: an agent asked for
-        ``산업 진흥/1인 창조기업`` when the folder was under ``창업 지원``, got a bare
-        "no such folder", and spent its entire budget without ever opening a document.
-        """
+        """Return one usable folder path per line."""
         base = _folder(args.path)
         rows: list[str] = []
         for folder in vault.iter_folders():
@@ -289,8 +216,7 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
             files = list(vault.iter_files(base, recursive=True))
             per_file = _GREP_HITS_PER_FILE
         elif vault.exists(base):
-            # One document: the caller wants every place inside it, not a sample --
-            # comparing what a file contains is impossible from five lines and a count.
+            # A single-file search returns every matching line.
             files, per_file = [base], _GREP_HITS_ALONE
         else:
             return _missing(args.path)
@@ -313,17 +239,15 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
         if not found:
             return "(no matches)"
 
-        # Grouped by file, because a hit is a pointer to a place -- repeating the path
-        # for every line spends the result's whole budget saying the same thing, and
-        # what the reader needs first is which documents to look in.
+        # Group hits by file to keep paths and passages readable.
         rows: list[str] = []
         for file, lines in found[:_GREP_FILE_LIMIT]:
             rows.append(str(file))
             rows.extend(lines[:per_file])
             if len(lines) > per_file:
-                rows.append(f"  … 이 문서에서 {len(lines)} 곳")
+                rows.append(f"  … {len(lines)} matches in this document")
         if len(found) > _GREP_FILE_LIMIT:
-            rows.append("… 다른 문서에도 더 있다. 폴더나 표현을 좁혀서 다시 찾아라.")
+            rows.append("… More documents match. Narrow the folder or search expression.")
         return "\n".join(rows)
 
     async def _read_note(args: _NoteArgs) -> str:

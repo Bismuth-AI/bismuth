@@ -1,10 +1,10 @@
 """Reading and writing the folder notes.
 
-Two audiences, and the second is the point of the product: placement reads them to
-see the structure it is filing into, and whoever searches this vault later reads
+Two audiences, and the second is the point of the product: filing reads them to
+see the structure it is working with, and whoever searches this vault later reads
 them to decide which folders to open. For that second reader a note has to be a
 discriminator -- why here rather than the folder next to it -- not only a
-description of what is inside (SPEC.md 3.6).
+description of what is inside.
 """
 
 from __future__ import annotations
@@ -96,9 +96,9 @@ class CharterService:
         it byte-for-byte and spend no model call.  Boundary creation/replacement writes
         its own audited signs in the same structural transaction.
         """
-        history = self._history(folder)
-        if history is not None:
-            return history
+        existing = self._existing(folder)
+        if existing is not None:
+            return existing
         fallback = folder.name or "Vault root"
         try:
             draft = await self._llm.structured(
@@ -112,25 +112,17 @@ class CharterService:
             )
             purpose = routing_purpose(draft.purpose, fallback=fallback)
         except Exception as exc:
-            # A routing sign is useful metadata, never part of file safety.  A missing
-            # note gets a deterministic sign and can be reviewed with the structure later.
+            # Use a deterministic note when generation is unavailable.
             logger.warning("could not draft folder sign at %s; using its name: %s", folder, exc)
             purpose = routing_purpose("", fallback=fallback)
         return Charter(
             path=folder,
             title=fallback,
             purpose=purpose,
-            # Kept readable for old notes, but no longer generated: neither field is
-            # used for routing and both became verbose, quickly stale metadata.
-            holds=(),
-            answers=(),
             managed=True,
-            split_basis="",
-            split_question="",
-            split_at_documents=0,
         )
 
-    def _history(self, folder: PurePosixPath) -> Charter | None:
+    def _existing(self, folder: PurePosixPath) -> Charter | None:
         try:
             return self.load(folder)
         except BismuthError:
@@ -162,7 +154,7 @@ class CharterService:
                 continue
             if not self._vault.is_dir(folder) or not self.is_managed(folder):
                 continue
-            if self._history(folder) is not None:
+            if self._existing(folder) is not None:
                 continue
             cards = self._folder_cards(folder)
             children = self._child_views(folder)
