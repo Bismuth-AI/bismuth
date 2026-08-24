@@ -1,23 +1,20 @@
-"""Run-scoped, joinable diagnostics for model traffic and pipeline decisions.
+"""Run-scoped diagnostics for model traffic and pipeline decisions.
 
-The top-level files in ``logs/`` are a compact view of the current run. Durable,
-potentially large evidence lives below ``logs/runs/<run_id>/`` so a debugger can read a
-small timeline first and open exact request, response, tool-result, or raw-stream
-artifacts only when needed.
-
-One run put 129.8 MB into a single ``llm.jsonl`` with lines as large as 8.32 MB, because
-provider chunks, repeated prompts and tool schemas all shared one record. Splitting them
-is what makes the index readable; keeping them is what makes a cause provable.
+Current-run indexes stay compact. Exact requests, responses, tool results and compressed
+provider streams are stored under ``logs/runs/<run_id>/`` for local troubleshooting.
 """
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import gzip
 import hashlib
 import json
 import logging
+import os
 import platform
+import stat
 import sys
 import threading
 import uuid
@@ -114,7 +111,7 @@ def configure_logging(
     log_dir: Path | None = None,
     continue_active_run: bool = False,
 ) -> Path:
-    """Start one diagnostic run: compact current-run files plus a durable run directory.
+    """Start one diagnostic run.
 
     ``continue_active_run`` reopens the run this process already started instead of
     creating a second, near-empty one -- the server configures logging twice (once at
@@ -124,6 +121,7 @@ def configure_logging(
 
     logs = (log_dir or LOG_DIR).resolve()
     logs.mkdir(parents=True, exist_ok=True)
+    _restrict_permissions(logs, stat.S_IRWXU)
     reuse = bool(
         continue_active_run
         and logs == _ACTIVE_LOG_ROOT
@@ -134,8 +132,13 @@ def configure_logging(
     run_id = _ACTIVE_RUN_ID if reuse else _new_run_id()
     run_dir = _ACTIVE_RUN_DIR if reuse else logs / "runs" / run_id
     assert run_dir is not None
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _restrict_permissions(run_dir.parent, stat.S_IRWXU)
+    _restrict_permissions(run_dir, stat.S_IRWXU)
     for child in ("calls", "streams", "tools"):
-        (run_dir / child).mkdir(parents=True, exist_ok=True)
+        directory = run_dir / child
+        directory.mkdir(parents=True, exist_ok=True)
+        _restrict_permissions(directory, stat.S_IRWXU)
 
     root = logging.getLogger("bismuth")
     # Must not stack handlers, or lines get logged multiple times.
@@ -160,6 +163,7 @@ def configure_logging(
         (run_dir / "bismuth.log", "a" if reuse else "w"),
     ):
         handler = logging.FileHandler(path, mode=mode, encoding="utf-8")
+        _restrict_permissions(path, stat.S_IRUSR | stat.S_IWUSR)
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(fmt)
         root.addHandler(handler)
@@ -219,6 +223,7 @@ def _attach_jsonl(logger_name: str, *targets: tuple[Path, str]) -> None:
     logger.propagate = False
     for path, mode in targets:
         handler = logging.FileHandler(path, mode=mode, encoding="utf-8")
+        _restrict_permissions(path, stat.S_IRUSR | stat.S_IWUSR)
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(_JsonlFormatter())
         logger.addHandler(handler)
@@ -227,8 +232,18 @@ def _attach_jsonl(logger_name: str, *targets: tuple[Path, str]) -> None:
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(path)
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _restrict_permissions(temporary, stat.S_IRUSR | stat.S_IWUSR)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _restrict_permissions(path: Path, mode: int) -> None:
+    """Restrict diagnostic artifacts where the platform supports POSIX-style modes."""
+    with contextlib.suppress(OSError):
+        os.chmod(path, mode)
 
 
 def update_run_manifest(**fields: Any) -> None:
@@ -338,6 +353,7 @@ def _write_chunks(path: Path, chunks: list[dict[str, Any]]) -> None:
         for chunk in chunks:
             stream.write(json.dumps(chunk, ensure_ascii=False))
             stream.write("\n")
+    _restrict_permissions(path, stat.S_IRUSR | stat.S_IWUSR)
 
 
 def log_llm_call(record: dict[str, Any]) -> str:
@@ -372,10 +388,7 @@ def log_llm_call(record: dict[str, Any]) -> str:
             "t": timestamp,
             **_envelope(call_id=call_id),
             "event": "llm.call",
-            # The folder is the join from a defect in the finished tree back to the calls
-            # that made it. Without it, "this folder is wrong" and "here is what the model
-            # was shown" were two piles of evidence with nothing linking them, and the
-            # exact request/response artifacts went unopened for eighteen tuning rounds.
+            # Link a folder decision to the model call that produced it.
             "folder": enriched.get("folder"),
             "operation": enriched.get("operation") or "structured",
             "model": enriched.get("model"),
@@ -429,14 +442,10 @@ def log_trace(event: str, **fields: Any) -> None:
     ``t`` is stamped here rather than left to line order, which stopped meaning
     chronological order when reading went concurrent.
 
-    ``document_id`` is filled in from the document being worked on unless the caller
-    passes one. Filtering by it is meant to reconstruct a whole run, and the lines that
-    did not carry it -- every subdivision decision -- were exactly the ones worth
-    reading when a document ends up somewhere surprising.
+    ``document_id`` defaults to the document currently being processed so a complete
+    filing run can be reconstructed from the trace.
 
-    A tool result is written out whole and referenced; the timeline keeps a preview.
-    A 200-character preview was all there used to be, which is not enough to say what
-    the model actually saw.
+    Tool results are stored separately while the timeline keeps a short preview.
     """
     payload = dict(fields)
     if event.startswith("agent.tool_") and payload.get("id"):
