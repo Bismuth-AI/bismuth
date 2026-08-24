@@ -30,8 +30,8 @@ def _reads(llm: FakeLLM, *, later: bool = False) -> list[Prompt]:
         prompt
         for prompt, schema in llm.calls
         if schema is None
-        and "일반 텍스트 줄" in prompt.system
-        and ("SUMMARY 는 반드시 있어야 한다" in prompt.system) is later
+        and "Return plain tagged lines" in prompt.system
+        and ("SUMMARY is required" in prompt.system) is later
     ]
 
 
@@ -71,9 +71,7 @@ class TestWindows:
 
 
 class TestOneLineSeveralItems:
-    """Asked for one item per line, the model sometimes writes the list on one. Read
-    whole, that line is past what fits on a folder tab and the filter drops it -- eight
-    items were lost that way in one 300-document run."""
+    """A comma-separated response still represents several labels."""
 
     def test_a_comma_separated_line_is_several_items(self) -> None:
         card = card_prompts.parse_card(
@@ -158,15 +156,15 @@ class TestDescribe:
         # The point of striding: the end of the document is read, not just the top.
         read = [p.user for p in _reads(llm, later=True)]
         last = coverage.windows_total
-        assert f"이번은 {last}/{last} 부분이다" in read[-1]
-        assert f"이번은 2/{last} 부분이다" not in read[0]
+        assert f"This section is {last}/{last}." in read[-1]
+        assert f"This section is 2/{last}." not in read[0]
 
     async def test_a_failed_window_keeps_the_card_built_so_far(self, llm: FakeLLM) -> None:
         calls = {"n": 0}
         script = ScriptedModel()
 
         def flaky(prompt, schema):  # type: ignore[no-untyped-def]
-            if "SUMMARY 는 반드시 있어야 한다" in prompt.system:
+            if "SUMMARY is required" in prompt.system:
                 calls["n"] += 1
                 if calls["n"] == 2:
                     raise StructuredOutputError("scripted failure")
@@ -191,13 +189,13 @@ class TestDescribe:
         await CardService(llm, context_chars=10_000).describe(
             _extraction("잘린 문서", truncated=True), filename="잘린.pdf"
         )
-        assert "추출기가 파일 끝에 닿기 전에 멈췄다" in _reads(llm)[0].user
+        assert "Extraction stopped before the end of the file" in _reads(llm)[0].user
 
     async def test_later_windows_are_announced_as_parts(self, llm: FakeLLM) -> None:
         await CardService(llm, context_chars=100).describe(
             _extraction(_long(500)), filename="긴문서.pdf"
         )
-        assert "부분 중 첫 부분" in _reads(llm)[0].user
+        assert "This is the first of" in _reads(llm)[0].user
 
     async def test_extraction_truncation_is_still_reported(self, llm: FakeLLM) -> None:
         card = await CardService(llm, context_chars=10_000).describe(
@@ -209,21 +207,10 @@ class TestDescribe:
 
 
 class TestLabelHygiene:
-    """A real run put a whole bibliography into `topics`; that lands in the sidecar and in
-    every later placement prompt, so it is filtered at the source rather than in the UI.
-
-    Two layers, deliberately. The schema caps a label at 80 characters so the decoder stops
-    a runaway while it is being written -- one keyword came back as
-    옥외광고물관리법규제특례법규제특례… until the repetition breaker cut the stream, and 79 of
-    300 cards needed a retry in one run. The service then drops anything past
-    LABEL_MAX_CHARS (40), which is where the honest values end. The cap sits above the
-    filter on purpose: everything the schema could truncate is something the filter would
-    have dropped, so a truncation can never leave a mangled label in the card.
-    """
+    """Labels that cannot serve as compact metadata are rejected."""
 
     async def test_an_entry_too_long_to_be_a_label_is_dropped(self, script: ScriptedModel) -> None:
-        # model_construct: past the schema cap, which is what a reply from before the cap
-        # existed looks like, and what any non-schema source could still deliver.
+        # Bypass schema validation to exercise the service boundary.
         script.set(
             card_prompts.CardDraft,
             card_prompts.CardDraft.model_construct(

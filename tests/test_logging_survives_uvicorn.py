@@ -47,18 +47,18 @@ def test_our_handlers_are_closed_by_a_dictconfig(tmp_path: Path) -> None:
 
     written = (logs / "bismuth.log").read_text(encoding="utf-8")
     assert "before" in written
-    assert "after" not in written  # silent, and that is the whole problem
+    assert "after" not in written
 
 
 def test_the_server_logs_once_it_is_serving(tmp_path: Path, monkeypatch) -> None:
-    """The regression: configure after uvicorn, not before."""
+    """Application logging remains active after server logging is configured."""
     monkeypatch.chdir(tmp_path)  # LOG_DIR is relative; keep it out of the repo
     settings = Settings(vault_path=tmp_path / "vault")
     app = create_app(settings)
     app.state.engine = build(settings, llm=FakeLLM(handler=lambda *_: None))
 
     with TestClient(app):
-        # Whatever the server does from here has to be recoverable from the logs.
+        # Simulate Uvicorn replacing the logging configuration.
         logging.config.dictConfig(
             {"version": 1, "disable_existing_loggers": False, "handlers": {}, "loggers": {}}
         )

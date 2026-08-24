@@ -20,13 +20,9 @@ def test_no_open_is_supported() -> None:
     assert _parser().parse_args(["--no-open"]).open_browser is False
 
 
-@pytest.mark.parametrize(
-    "former_command",
-    ["version", "doctor", "add", "scan", "tree", "replay", "status", "log", "undo", "serve"],
-)
-def test_former_subcommands_are_rejected(former_command: str) -> None:
+def test_positional_commands_are_rejected() -> None:
     with pytest.raises(SystemExit) as stopped:
-        _parser().parse_args([former_command])
+        _parser().parse_args(["unexpected-command"])
 
     assert stopped.value.code == 2
 

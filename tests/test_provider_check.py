@@ -91,9 +91,9 @@ class TestCompatibleEndpoint:
             catalog, "_get", lambda url, headers: seen.update(headers) or {"data": []}
         )
 
-        catalog.list_models("custom", api_key="sk-secret", api_base="https://gateway/v1")
+        catalog.list_models("custom", api_key="test-key-secret", api_base="https://gateway/v1")
 
-        assert seen["Authorization"] == "Bearer sk-secret"
+        assert seen["Authorization"] == "Bearer test-key-secret"
 
     def test_no_credential_means_no_authorization_header(
         self, monkeypatch: pytest.MonkeyPatch
@@ -144,13 +144,13 @@ class TestSecrets:
         is a credential too. The first one anybody wrote was a session cookie, and it
         went into bismuth.log in full."""
         redacted = Settings(
-            api_key="sk-supersecret",
-            api_headers={"Cookie": "appproxy_permit=ZjAyMTE0YmJiOTBmNmRkZA=="},
+            api_key="test-key-supersecret",
+            api_headers={"Cookie": "test-session-value"},
         ).redacted()
 
         assert "supersecret" not in str(redacted)
         assert "ZjAyMTE0" not in str(redacted)
-        assert redacted["api_headers"] == {"Cookie": "…ZA=="}  # still tells two apart
+        assert redacted["api_headers"] == {"Cookie": "…alue"}
 
 
 class TestRequestBody:
@@ -223,13 +223,13 @@ class TestSchemaSupport:
         assert catalog.supports_response_schema(
             api_base="https://gateway/v1",
             model="qwen3.6-35b",
-            api_key="sk-x",
+            api_key="test-key-x",
             headers={"Cookie": "c"},
         )
         assert seen["url"] == "https://gateway/v1/chat/completions"
         assert seen["payload"]["response_format"]["type"] == "json_schema"
         # Both credentials: the gateway wants the cookie, the model server the bearer.
-        assert seen["headers"]["Authorization"] == "Bearer sk-x"
+        assert seen["headers"]["Authorization"] == "Bearer test-key-x"
         assert seen["headers"]["Cookie"] == "c"
 
     def test_an_endpoint_that_ignores_the_schema_is_not_supported(

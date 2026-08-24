@@ -1,12 +1,11 @@
-"""The librarian agent driving the real vault tools (agentkit loop, scripted model)."""
+"""The librarian agent driving real vault tools with a scripted model."""
 
 from __future__ import annotations
 
-from agentkit.testing import FakeModel, call, says
-
+from bismuth.agentkit.testing import FakeModel, call, says
 from bismuth.container import Bismuth
 from bismuth.services.agent import AgentService, build_read_tools
-from tests.test_ingest import add
+from tests.helpers import add
 
 
 def _svc(engine: Bismuth, model: FakeModel) -> AgentService:
@@ -69,13 +68,11 @@ async def test_grep_groups_hits_under_one_path_per_document(engine: Bismuth) -> 
 
     paths = [line for line in hits.splitlines() if not line.startswith("  ")]
     assert len(paths) == 1, f"the path should appear once, not per hit: {hits}"
-    assert "이 문서에서" in hits, "a document with more hits than shown must say so"
+    assert "matches in this document" in hits
 
 
 async def test_tree_prints_paths_that_can_be_used(engine: Bismuth) -> None:
-    # Indentation alone made the caller rebuild a path by counting spaces, and it got
-    # one wrong: it asked for a folder under the wrong parent, got a bare refusal, and
-    # spent its whole budget without opening a document.
+    # Every displayed folder path must be directly reusable by another tool.
     await add(engine, "contract.txt")
     tools = {t.name: t for t in build_read_tools(engine.vault, engine.charters)}
 
@@ -98,14 +95,11 @@ async def test_a_wrong_path_names_the_ones_it_could_have_meant(engine: Bismuth) 
 
 
 async def test_grep_finds_a_phrase_split_across_a_line_break(engine: Bismuth) -> None:
-    # A sidecar is text pulled out of a PDF, hard-wrapped at the page's width. A phrase
-    # lands on two lines often enough to matter: the real corpus holds
-    # "연 100분" / "의 15를 말한다", which a line-at-a-time search cannot see, and the
-    # agent then answers -- correctly, from what it was shown -- that it is not there.
-    await add(engine, "contract.txt", "지연배상금의 이율은 연 100분\n의 15로 한다.")
+    # Extracted PDF text may wrap a phrase across lines.
+    await add(engine, "contract.txt", "The delivery period is thirty\ncalendar days.")
     grep = next(t for t in build_read_tools(engine.vault, engine.charters) if t.name == "grep")
 
-    hits = await grep.run(grep.params(pattern="연 100분의 15"))  # type: ignore[attr-defined]
+    hits = await grep.run(grep.params(pattern="thirty calendar days"))  # type: ignore[attr-defined]
 
     assert "contract.txt" in hits, f"the phrase was there, split over two lines: {hits}"
 
@@ -125,8 +119,7 @@ async def test_grep_still_honours_a_line_anchor(engine: Bismuth) -> None:
 async def test_grep_on_one_file_lists_its_matches_instead_of_counting_them(
     engine: Bismuth,
 ) -> None:
-    # Asking about one document is asking what is in it. Answering "…이 문서에서 40 곳"
-    # makes the obvious next question -- which articles does it have? -- unanswerable.
+    # A file-scoped search must return matches, not only an aggregate count.
     body = "\n".join(f"제{i}조(어떤 조문) 내용." for i in range(1, 41))
     await add(engine, "contract.txt", body)
     grep = next(t for t in build_read_tools(engine.vault, engine.charters) if t.name == "grep")
@@ -173,7 +166,7 @@ class TestConversation:
         return ConversationService(model=model, vault=engine.vault, charters=engine.charters)
 
     async def test_a_follow_up_is_asked_with_what_came_before(self, engine) -> None:  # type: ignore[no-untyped-def]
-        from agentkit.testing import FakeModel, says
+        from bismuth.agentkit.testing import FakeModel, says
 
         seen: list[list[str]] = []
 
@@ -189,7 +182,7 @@ class TestConversation:
         assert seen[1] == ["user:금융 문서 있어?", "assistant:답변", "user:그중 최신은?"]
 
     async def test_each_conversation_is_its_own_transcript(self, engine) -> None:  # type: ignore[no-untyped-def]
-        from agentkit.testing import FakeModel, says
+        from bismuth.agentkit.testing import FakeModel, says
 
         service = self._service(FakeModel(handler=lambda *_: says("답변")), engine)
         one, _ = await service.ask("첫 질문")
@@ -199,7 +192,7 @@ class TestConversation:
         assert len(two.messages) == 2, "a new conversation starts empty"
 
     async def test_forgetting_a_conversation_starts_over(self, engine) -> None:  # type: ignore[no-untyped-def]
-        from agentkit.testing import FakeModel, says
+        from bismuth.agentkit.testing import FakeModel, says
 
         service = self._service(FakeModel(handler=lambda *_: says("답변")), engine)
         conversation, _ = await service.ask("질문")

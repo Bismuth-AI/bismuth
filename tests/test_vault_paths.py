@@ -23,7 +23,7 @@ def test_a_path_under_the_root_needs_no_second_look_at_the_disk(tmp_path: Path) 
     vault = FileSystemVault(tmp_path / "vault")
     gone = vault.root / "폴더" / "사라진 문서.pdf"
 
-    # Never created, so resolving it is exactly the state the live failure was in.
+    # Missing descendants still have a stable vault-relative path.
     assert vault.relative(gone) == PurePosixPath("폴더/사라진 문서.pdf")
 
 

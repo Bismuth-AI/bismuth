@@ -327,7 +327,7 @@ def test_an_entry_whose_files_moved_again_says_so_instead_of_failing_halfway(
             ),
         )
     )
-    # A later pass files it somewhere else, exactly as subdivision does.
+    # A later filing pass moves it again.
     transactor.execute(
         JournalEntry(
             actor=Actor.BISMUTH,

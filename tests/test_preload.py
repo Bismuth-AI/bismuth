@@ -54,7 +54,7 @@ class TestWarm:
 
         assert build_registry().warm() == {}
 
-        # The point of the exercise: after warm() nothing is left to import at request time.
+        # warm() loads every parser dependency before requests arrive.
         assert {"pypdf", "docx", "pptx", "openpyxl"} <= set(sys.modules)
 
     def test_every_registered_parser_can_be_warmed(self) -> None:
@@ -86,15 +86,7 @@ class TestServerPreload:
         tmp_path,
         monkeypatch,  # type: ignore[no-untyped-def]
     ) -> None:
-        """A multi-second import inside the first request makes a started server look hung.
-
-        The deadline is the first request, not the app object: preloading moved into
-        startup so that logging could be set up after uvicorn has had its turn at it,
-        and startup still finishes before any request is accepted.
-
-        Asserts the adapter's own cache rather than sys.modules: another test importing
-        litellm would make the sys.modules version of this pass without preload running.
-        """
+        """The adapter is loaded during application startup."""
         monkeypatch.chdir(tmp_path)  # startup writes ./logs
         monkeypatch.setattr(llm_wire, "_litellm", None)
         assert llm_wire._litellm is None
@@ -107,13 +99,7 @@ class TestServerPreload:
 
 
 class TestStartupMakesNoNetworkCall:
-    """LiteLLM fetches its price list from GitHub while importing, five second timeout.
-
-    On a box that cannot reach raw.githubusercontent.com the import measured 8.5s against
-    3.1s with the bundled copy, and the first thing on screen was a network warning from a
-    tool for local files. A stub stands in for LiteLLM so this asserts the decision rather
-    than paying the timeout to observe it.
-    """
+    """Startup must not fetch remote metadata while importing LiteLLM."""
 
     def _instant_litellm(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setitem(sys.modules, "litellm", types.ModuleType("litellm"))

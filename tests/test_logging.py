@@ -24,7 +24,7 @@ def test_logs_go_to_the_given_dir(tmp_path: Path) -> None:
 
 
 def test_current_files_are_truncated_but_prior_run_is_retained(tmp_path: Path) -> None:
-    """The old contract lost the previous run on restart, which is when it was wanted."""
+    """A recent run remains available after restart."""
     logs = configure_logging(log_dir=tmp_path / "logs")
     first = json.loads((logs / "latest.json").read_text(encoding="utf-8"))
     logging.getLogger("bismuth").warning("from the first run")
@@ -43,7 +43,7 @@ def test_an_llm_call_has_a_compact_index_and_exact_artifacts(tmp_path: Path) -> 
         {
             "call": "#1",
             "model": "ollama/qwen3:8b",
-            "schema": "PlacementDecision",
+            "schema": "CardUpdate",
             "system": "너는 사서다",
             "user": "아폴로 계약서를 분류해줘",
             "attempts": [
@@ -119,7 +119,7 @@ def test_server_reopens_the_cli_run_instead_of_creating_an_empty_duplicate(
 
 
 def test_raw_chunks_are_detached_and_compressed(tmp_path: Path) -> None:
-    """One run put 129.8 MB into llm.jsonl, with single lines of 8.32 MB."""
+    """Raw chunks are kept outside the compact call index."""
     logs = configure_logging(log_dir=tmp_path / "logs")
     log_llm_call(
         {
@@ -145,7 +145,7 @@ def test_raw_chunks_are_detached_and_compressed(tmp_path: Path) -> None:
 def test_timeline_joins_stage_call_and_full_tool_result(tmp_path: Path) -> None:
     logs = configure_logging(log_dir=tmp_path / "logs")
     with log_context(
-        stage="subdivision.review",
+        stage="filing.review",
         window_id="review:docs-001",
         agent_run_id="agent-test",
     ):
@@ -165,7 +165,7 @@ def test_timeline_joins_stage_call_and_full_tool_result(tmp_path: Path) -> None:
     ]
     tool = next(event for event in events if event["event"] == "agent.tool_result")
     assert tool["run_id"]
-    assert tool["stage"] == "subdivision.review"
+    assert tool["stage"] == "filing.review"
     assert tool["window_id"] == "review:docs-001"
     assert tool["agent_run_id"] == "agent-test"
     assert tool["llm_call_id"] == call_id

@@ -48,7 +48,7 @@ def config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def configured(**overrides: object) -> Settings:
     base = {
         "provider_id": "openai",
-        "api_key": "sk-test",
+        "api_key": "test-key-test",
         "model": "gpt-4o",
     }
     return Settings(**{**base, **overrides})  # type: ignore[arg-type]
@@ -59,51 +59,51 @@ def answers(**overrides: object) -> UserConfig:
     base: dict[str, object] = {
         "vault_path": Path.home() / "bismuth-vault",
         "provider_id": "openai",
-        "api_key": "sk-test",
+        "api_key": "test-key-test",
         "model": "gpt-4o",
     }
     return UserConfig(**{**base, **overrides})  # type: ignore[arg-type]
 
 
 class TestAmbientKeysAreIgnored:
-    """The regression, stated as a rule: nothing ambient decides our credentials."""
+    """Only Bismuth-owned settings may supply credentials."""
 
     def test_a_provider_key_in_the_environment_is_not_used(self, clean_env: None) -> None:
-        os.environ["OPENAI_API_KEY"] = "sk-the-dead-one-from-2019"
+        os.environ["OPENAI_API_KEY"] = "ambient-test-key"
         assert Settings().api_key == ""
 
     def test_a_provider_key_in_a_dotenv_is_not_used(self, tmp_path: Path, clean_env: None) -> None:
         # load_dotenv still runs; only BISMUTH_API_KEY is read.
         env_file = tmp_path / ".env"
-        env_file.write_text("OPENAI_API_KEY=sk-also-dead\n", encoding="utf-8")
+        env_file.write_text("OPENAI_API_KEY=ambient-dotenv-key\n", encoding="utf-8")
         load_env_file(env_file)
         assert Settings().api_key == ""
 
     def test_the_prefixed_variable_is_the_one_that_works(self, clean_env: None) -> None:
-        os.environ["BISMUTH_API_KEY"] = "sk-ours"
-        assert Settings().api_key == "sk-ours"
+        os.environ["BISMUTH_API_KEY"] = "test-key-ours"
+        assert Settings().api_key == "test-key-ours"
 
 
 class TestPrecedence:
     """argument > BISMUTH_* env > ./.env > ~/.bismuth/config.json > default."""
 
     def test_config_file_supplies_the_baseline(self, clean_env: None, config_file: Path) -> None:
-        config_file.write_text(json.dumps({"api_key": "sk-from-wizard"}), encoding="utf-8")
-        assert Settings().api_key == "sk-from-wizard"
+        config_file.write_text(json.dumps({"api_key": "test-key-from-wizard"}), encoding="utf-8")
+        assert Settings().api_key == "test-key-from-wizard"
 
     def test_an_env_var_beats_the_config_file(self, clean_env: None, config_file: Path) -> None:
-        config_file.write_text(json.dumps({"api_key": "sk-from-wizard"}), encoding="utf-8")
-        os.environ["BISMUTH_API_KEY"] = "sk-from-docker"
-        assert Settings().api_key == "sk-from-docker"
+        config_file.write_text(json.dumps({"api_key": "test-key-from-wizard"}), encoding="utf-8")
+        os.environ["BISMUTH_API_KEY"] = "test-key-from-docker"
+        assert Settings().api_key == "test-key-from-docker"
 
     def test_a_dotenv_beats_the_config_file(self, clean_env: None, config_file: Path) -> None:
-        config_file.write_text(json.dumps({"api_key": "sk-from-wizard"}), encoding="utf-8")
-        Path(".env").write_text("BISMUTH_API_KEY=sk-from-dotenv\n", encoding="utf-8")
-        assert Settings().api_key == "sk-from-dotenv"
+        config_file.write_text(json.dumps({"api_key": "test-key-from-wizard"}), encoding="utf-8")
+        Path(".env").write_text("BISMUTH_API_KEY=test-key-from-dotenv\n", encoding="utf-8")
+        assert Settings().api_key == "test-key-from-dotenv"
 
     def test_an_argument_beats_everything(self, clean_env: None) -> None:
-        os.environ["BISMUTH_API_KEY"] = "sk-from-env"
-        assert Settings(api_key="sk-explicit").api_key == "sk-explicit"
+        os.environ["BISMUTH_API_KEY"] = "test-key-from-env"
+        assert Settings(api_key="test-key-explicit").api_key == "test-key-explicit"
 
 
 class TestConfigFile:
@@ -117,10 +117,8 @@ class TestConfigFile:
         save_user_config(answers(vault_path=tmp_path / "v"))
 
         saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-        assert saved["api_key"] == "sk-test"
+        assert saved["api_key"] == "test-key-test"
         assert saved["model"] == "gpt-4o"
-        assert "model_fast" not in saved
-        assert "model_reasoning" not in saved
         assert "pressure_folder_size" not in saved
         assert "llm_timeout_seconds" not in saved
         assert "llm_absolute_timeout_seconds" not in saved
@@ -138,14 +136,7 @@ class TestConfigFile:
 
 
 class TestSwitchingProviderLeavesNothingBehind:
-    """A private endpoint's configuration must not travel to a public one.
-
-    Observed: a custom endpoint was set up with a gateway session Cookie and
-    ``chat_template_kwargs`` for a qwen model, then the provider was changed to OpenAI in
-    the wizard. Both survived the change. api.openai.com answered
-    ``400 Unknown parameter: 'chat_template_kwargs'``, and the Cookie had already been
-    sent to it by then.
-    """
+    """A private endpoint's configuration must not travel to another provider."""
 
     def test_an_empty_dict_cannot_clear_one_the_config_file_holds(
         self, tmp_path: Path, clean_env: None, monkeypatch: pytest.MonkeyPatch
@@ -211,7 +202,7 @@ class TestConfigured:
         assert not Settings().is_configured
 
     def test_a_key_without_models_is_not_enough(self, clean_env: None) -> None:
-        assert not Settings(provider_id="openai", api_key="sk-x").is_configured
+        assert not Settings(provider_id="openai", api_key="test-key-x").is_configured
 
     def test_a_hosted_provider_without_a_key_is_not_enough(self, clean_env: None) -> None:
         assert not configured(api_key="").is_configured
@@ -243,15 +234,6 @@ class TestModelNames:
         settings = configured(provider_id="custom", api_key="", model="qwen3.6-35b")
         assert settings.model_for() == "openai/qwen3.6-35b"
 
-    def test_a_legacy_pair_migrates_to_the_judgement_model(self, clean_env: None) -> None:
-        settings = Settings(
-            provider_id="openai",
-            api_key="sk-test",
-            model_fast="gpt-4o-mini",
-            model_reasoning="gpt-4o",
-        )
-        assert settings.model == "gpt-4o"
-
 
 class TestLocality:
     """runs_locally is computed from the endpoint, not assumed."""
@@ -272,12 +254,41 @@ class TestLocality:
     def test_a_hosted_provider_is_not_local(self, clean_env: None) -> None:
         assert not configured().runs_locally
 
+    def test_a_remote_chat_endpoint_makes_the_configuration_nonlocal(self) -> None:
+        settings = configured(
+            provider_id="custom",
+            api_key="",
+            api_base="http://localhost:11434/v1",
+            chat_provider_id="openai",
+            chat_model="gpt-5.6-luna",
+            chat_api_key="test-key-test",
+        )
+
+        assert not settings.runs_locally
+
+    def test_a_hostname_containing_localhost_is_not_local(self, clean_env: None) -> None:
+        assert not configured(
+            provider_id="custom", api_key="", api_base="https://notlocalhost.example/v1"
+        ).runs_locally
+
 
 class TestRedaction:
     def test_the_key_is_never_rendered_in_full(self, clean_env: None) -> None:
-        redacted = configured(api_key="sk-supersecret-abcd").redacted()
+        redacted = configured(api_key="test-key-supersecret-abcd").redacted()
         assert redacted["api_key"] == "…abcd"
         assert "supersecret" not in json.dumps(redacted)
+
+    def test_urls_and_request_bodies_are_safe_to_render(self, clean_env: None) -> None:
+        redacted = configured(
+            api_base="https://user:password@example.com/v1?token=secret",
+            api_body={"access_token": "body-secret", "temperature": 0.2},
+        ).redacted()
+
+        rendered = json.dumps(redacted)
+        assert redacted["api_base"] == "https://example.com"
+        assert redacted["api_body"] == {"access_token": "…", "temperature": "…"}
+        assert "password" not in rendered
+        assert "body-secret" not in rendered
 
 
 class TestProviders:
@@ -395,6 +406,7 @@ class TestTwoModels:
         assert far.chat().api_base == "http://b/v1"
         assert far.chat().api_key == ""
         assert far.chat().headers == {}
+        assert far.chat().body == {}
         assert far.librarian().api_key == "key-a"  # untouched
 
     def test_the_chat_body_is_merged_not_swapped(self) -> None:
@@ -446,7 +458,7 @@ class TestModelRuntimeSettings:
     def test_openai_gpt56_tools_use_responses_and_low_by_default(self) -> None:
         settings = Settings(
             provider_id="openai",
-            api_key="sk-test",
+            api_key="test-key-test",
             model="gpt-5.6-luna",
         )
 
@@ -458,7 +470,7 @@ class TestModelRuntimeSettings:
     def test_filing_does_not_get_the_tool_calling_rule(self) -> None:
         settings = Settings(
             provider_id="openai",
-            api_key="sk-test",
+            api_key="test-key-test",
             model="gpt-5.6-luna",
         )
 
@@ -470,7 +482,7 @@ class TestModelRuntimeSettings:
     def test_chat_completions_tools_turn_reasoning_off(self) -> None:
         settings = Settings(
             provider_id="openai",
-            api_key="sk-test",
+            api_key="test-key-test",
             model="gpt-5.6-luna",
             chat_api_mode="chat_completions",
             chat_api_body={"reasoning_effort": "high"},
@@ -484,7 +496,7 @@ class TestModelRuntimeSettings:
     def test_chat_completions_cannot_be_forced_to_an_incompatible_effort(self) -> None:
         settings = Settings(
             provider_id="openai",
-            api_key="sk-test",
+            api_key="test-key-test",
             model="gpt-5.6-luna",
             chat_api_mode="chat_completions",
             chat_reasoning_effort="high",
@@ -497,7 +509,7 @@ class TestModelRuntimeSettings:
     def test_an_explicit_responses_profile_keeps_its_effort(self) -> None:
         settings = Settings(
             provider_id="openai",
-            api_key="sk-test",
+            api_key="test-key-test",
             model="gpt-5.6-luna",
             chat_api_mode="responses",
             chat_reasoning_effort="high",

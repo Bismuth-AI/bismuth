@@ -6,9 +6,18 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from bismuth.adapters.parsers import CsvParser, HwpxParser, PlainTextParser, build_registry
+from bismuth.adapters.parsers import (
+    CsvParser,
+    HwpxParser,
+    PdfParser,
+    PlainTextParser,
+    build_registry,
+)
 from bismuth.adapters.parsers.office import _sheets
+from bismuth.adapters.parsers.pdf import _pages
 from bismuth.domain.errors import ParserUnavailableError
 
 HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -25,6 +34,90 @@ def make_hwpx(tmp_path: Path, section_xml: str, *, name: str = "doc.hwpx") -> Pa
 def paragraph(*runs: str) -> str:
     inner = "".join(f"<hp:run><hp:t>{text}</hp:t></hp:run>" for text in runs)
     return f"<hp:p>{inner}</hp:p>"
+
+
+def make_pdf(tmp_path: Path, *pages: str, name: str = "document.pdf") -> Path:
+    path = tmp_path / name
+    writer = PdfWriter()
+    for text in pages:
+        page = writer.add_blank_page(width=612, height=792)
+        font = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"),
+                NameObject("/BaseFont"): NameObject("/Helvetica"),
+            }
+        )
+        page[NameObject("/Resources")] = DictionaryObject(
+            {
+                NameObject("/Font"): DictionaryObject(
+                    {NameObject("/F1"): writer._add_object(font)}  # type: ignore[attr-defined]
+                )
+            }
+        )
+        stream = DecodedStreamObject()
+        escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        stream.set_data(f"BT /F1 12 Tf 72 720 Td ({escaped}) Tj ET".encode("latin-1"))
+        page[NameObject("/Contents")] = writer._add_object(stream)  # type: ignore[attr-defined]
+    with path.open("wb") as output:
+        writer.write(output)
+    return path
+
+
+class TestPdf:
+    def test_extracts_text_with_page_numbers(self, tmp_path: Path) -> None:
+        extraction = PdfParser().parse(
+            make_pdf(tmp_path, "Alpha project report", "Beta research notes"), max_chars=10_000
+        )
+
+        assert "Alpha project report" in extraction.text
+        assert "Beta research notes" in extraction.text
+        assert [section.page for section in extraction.sections] == [1, 2]
+        assert extraction.page_count == 2
+        assert extraction.parser == "pypdf"
+
+    def test_respects_the_extraction_limit(self, tmp_path: Path) -> None:
+        extraction = PdfParser().parse(make_pdf(tmp_path, "x" * 500), max_chars=100)
+
+        assert extraction.truncated
+        assert len(extraction.text) <= 100
+
+    def test_rejects_a_pdf_without_extractable_text(self, tmp_path: Path) -> None:
+        writer = PdfWriter()
+        writer.add_blank_page(width=612, height=792)
+        path = tmp_path / "scan.pdf"
+        with path.open("wb") as output:
+            writer.write(output)
+
+        with pytest.raises(ParserUnavailableError, match="no extractable text"):
+            PdfParser().parse(path, max_chars=10_000)
+
+    def test_rejects_a_damaged_pdf(self, tmp_path: Path) -> None:
+        path = tmp_path / "damaged.pdf"
+        path.write_bytes(b"not a pdf")
+
+        with pytest.raises(ParserUnavailableError, match="not a readable PDF"):
+            PdfParser().parse(path, max_chars=10_000)
+
+    def test_one_unreadable_page_marks_the_extraction_incomplete(self) -> None:
+        class Page:
+            def __init__(self, text: str | None = None) -> None:
+                self.text = text
+
+            def extract_text(self) -> str:
+                if self.text is None:
+                    raise ValueError("unreadable")
+                return self.text
+
+        class Reader:
+            def __init__(self) -> None:
+                self.pages = [Page("first"), Page(), Page("third")]
+
+        sections, incomplete = _pages(Reader())
+
+        assert [section.text for section in sections] == ["first", "third"]
+        assert [section.page for section in sections] == [1, 3]
+        assert incomplete
 
 
 class TestHwpx:

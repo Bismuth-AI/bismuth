@@ -8,7 +8,7 @@ import pytest
 
 from bismuth.container import Bismuth
 from bismuth.domain.errors import VaultError
-from tests.test_ingest import add
+from tests.helpers import add
 
 
 class TestMove:

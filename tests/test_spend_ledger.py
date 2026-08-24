@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from bismuth.adapters.ledger import JsonlSpendLedger
@@ -71,16 +72,22 @@ class TestLedger:
 
 class TestReportedToTheUI:
     def test_status_carries_the_vault_total(self, client) -> None:  # type: ignore[no-untyped-def]
-        """It is seeded from here on load, which is what a refresh used to lose."""
+        """Status reports the persisted vault total."""
         before = client.get("/api/status").json()["spend"]
         assert before["calls"] == 0
 
-        client.post(
-            "/api/documents",
+        submitted = client.post(
+            "/api/batches",
             files=[
                 ("files", ("contract.txt", b"\xec\x95\x84\xed\x8f\xb4\xeb\xa1\x9c", "text/plain"))
             ],
-        )
+        ).json()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            batch = client.get(f"/api/batches/{submitted['id']}").json()
+            if batch["status"] == "done":
+                break
+            time.sleep(0.01)
 
         after = client.get("/api/status").json()["spend"]
         assert after["calls"] > 0

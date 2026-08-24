@@ -311,8 +311,10 @@ class TestExplicitKey:
 
     async def test_the_key_is_passed_on_every_call(self, stub: Any) -> None:
         fake = stub(['{"name": "a", "year": 1}'])
-        await adapter(api_key="sk-ours").structured(Prompt(system="s", user="u"), schema=Answer)
-        assert fake.calls[0]["api_key"] == "sk-ours"
+        await adapter(api_key="test-key-ours").structured(
+            Prompt(system="s", user="u"), schema=Answer
+        )
+        assert fake.calls[0]["api_key"] == "test-key-ours"
 
     async def test_no_key_is_sent_when_there_is_none(self, stub: Any) -> None:
         # Sending an empty key is not the same as sending none.
@@ -335,13 +337,13 @@ class TestExplicitKey:
         records: list[dict[str, Any]] = []
         monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
 
-        await adapter(api_key="sk-ours", headers={"Cookie": "session=secret"}).structured(
+        await adapter(api_key="test-key-ours", headers={"Cookie": "test-session"}).structured(
             Prompt(system="s", user="u"), schema=Answer
         )
 
         written = json.dumps(records[-1], default=str)
-        assert "sk-ours" not in written
-        assert "session=secret" not in written
+        assert "test-key-ours" not in written
+        assert "test-session" not in written
 
 
 class TestTransportRetry:
@@ -431,11 +433,11 @@ class TestRecordedParameters:
         records: list[dict[str, Any]] = []
         monkeypatch.setattr(litellm_adapter, "log_llm_call", records.append)
 
-        await adapter(body={"gateway_token": "secret-value"}).structured(
+        await adapter(body={"gateway_token": "test-token-value"}).structured(
             Prompt(system="s", user="u"), schema=Answer
         )
 
-        assert "secret-value" not in json.dumps(records[-1])
+        assert "test-token-value" not in json.dumps(records[-1])
 
 
 class TestClientCleanup:
