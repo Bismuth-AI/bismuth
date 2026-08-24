@@ -9,7 +9,7 @@
 
 ## Checks
 
-- [ ] `ruff check src tests examples` and `ruff format --check src tests examples`
+- [ ] `ruff check src tests` and `ruff format --check src tests`
 - [ ] `mypy`
 - [ ] `pytest -q`
 - [ ] No copyleft dependency added (AGPL/GPL/LGPL)
