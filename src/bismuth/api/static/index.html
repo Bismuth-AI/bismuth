@@ -260,6 +260,8 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
   <h1><img src="/favicon.png" alt="" width="22" height="22"> Bismuth</h1>
   <div class="spacer"></div>
   <span class="hstat"><b id="hs-docs">0</b> 문서 · <b id="hs-folders">0</b> 폴더<span id="hs-inbox"></span></span>
+  <button class="ghost" id="btn-empty-tree" title="문서와 카드는 유지하고 폴더만 비웁니다.">폴더 비우기</button>
+  <button class="ghost" id="btn-refile" title="저장된 카드로 전체 폴더 구조를 다시 만듭니다.">카드로 재배치</button>
   <button class="primary" onclick="location.href='/chat'" title="폴더를 뒤지고 본문을 찾아 근거와 함께 답합니다.">서고에 묻기</button>
   <button class="ghost" onclick="location.href='/trace'" title="모델에 무엇이 들어가고 무엇이 나왔는지, 호출 하나씩">추적</button>
   <button class="ghost" id="btn-settings">설정</button>
@@ -1146,62 +1148,22 @@ async function upload(all) {
   const box = document.createElement("div");
   box.className = "up";
   $("uploads").prepend(box);
-  const isBatch = files.length > 1;
-  const batch = isBatch ? compactBatch(files, box) : null;
-  const summary = isBatch ? null : document.createElement("div");
-  if (summary) box.appendChild(summary);
-  if (batch) {
-    const fd = new FormData();
-    for (const file of files) fd.append("files", file);
-    try {
-      const state = await api("/batches", { method: "POST", body: fd });
-      batch.id = state.id;
-      batchCards.set(state.id, batch);
-      applyBatchState(batch, state);
-      ensureBatchPolling();
-    } catch (err) {
-      batch.status = "failed";
-      batch.failed = batch.total;
-      batch.currentLabel = err.message;
-      box.classList.add("err");
-      drawCompactBatch(batch);
-    }
-    return;
-  }
-
-  const job = ensureJob(files[0].name, box);
-  job.el.querySelector(".steps").innerHTML = `<li class="now"><span class="mark">▸</span><span class="what">올리는 중…</span></li>`;
-
-  const cost = (r) => { const t = spendText(r.spend); return t ? `<div class="spend">${esc(t)}</div>` : ""; };
-  const resultHtml = (r) => r.ok
-    ? (r.duplicate
-        ? `<div><span class="dupflag">⚠ 중복</span> <span class="fn">${esc(r.filename)}</span>
-           <div class="muted" style="font-size:12px">같은 내용이 이미 <code>${esc(r.destination)}/</code> 에 있어 넣지 않았습니다.</div></div>`
-        : r.placed
-          ? `<div><span class="fn">${esc(r.filename)}</span> → <span class="dest">${esc(r.destination)}/</span>${r.created_folder ? ' <span class="muted">(새 폴더)</span>' : ""}${cost(r)}</div>`
-          : `<div><span class="fn">${esc(r.filename)}</span> <span class="muted">— 인박스 (${esc(r.reason)})</span>${cost(r)}</div>`)
-    : `<div class="err-line"><span class="fn">실패: ${esc(r.filename)}</span> <span class="muted">${esc(r.reason)}</span>${cost(r)}</div>`;
-
-  const f = files[0];
+  const batch = compactBatch(files, box);
   const fd = new FormData();
-  fd.append("files", f);
+  for (const file of files) fd.append("files", file);
   try {
-    const [result] = await api("/documents", { method: "POST", body: fd });
-    jobs.delete(f.name);
-    box.querySelectorAll(".job").forEach((el) => {
-      if (el.querySelector(".fn")?.textContent === f.name) el.remove();
-    });
-    summary.insertAdjacentHTML("beforeend", resultHtml(result));
-    if (!result.ok) box.classList.add("err");
-    else if (result.duplicate) box.classList.add("dup");
-    await refreshAfterDocument();
+    const state = await api("/batches", { method: "POST", body: fd });
+    batch.id = state.id;
+    batchCards.set(state.id, batch);
+    applyBatchState(batch, state);
+    ensureBatchPolling();
   } catch (err) {
-    jobs.delete(f.name);
+    batch.status = "failed";
+    batch.failed = batch.total;
+    batch.currentLabel = err.message;
     box.classList.add("err");
-    summary.insertAdjacentHTML("beforeend", `<div class="err-line"><span class="fn">실패: ${esc(f.name)}</span> <span class="muted">${esc(err.message)}</span></div>`);
-    await refreshAfterDocument();
+    drawCompactBatch(batch);
   }
-  setTimeout(() => box.remove(), box.classList.contains("err") ? 8000 : 6000);
 }
 
 const drop = $("drop");
@@ -1250,6 +1212,42 @@ function setupStep(picking) {
   $("s-cancel").classList.toggle("hidden", !picking || !state.configured);
 }
 $("btn-settings").addEventListener("click", () => openSetup(true));
+$("btn-empty-tree").addEventListener("click", async () => {
+  if (!confirm("문서와 카드는 남기고 폴더 구조만 비울까요?\n\n문서는 루트로 이동하며 실행 기록에서 되돌릴 수 있습니다.")) return;
+  const button = $("btn-empty-tree");
+  button.disabled = true;
+  try {
+    const result = await api("/tree/empty", { method: "POST" });
+    selected = ROOT;
+    expanded.clear();
+    await refresh();
+    alert(`문서 ${result.documents}개를 루트로 옮기고 폴더 ${result.folders}개를 비웠습니다.`);
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+$("btn-refile").addEventListener("click", async () => {
+  if (!confirm("현재 폴더 구조를 비우고 저장된 카드로 전체 문서를 다시 배치할까요?")) return;
+  const button = $("btn-refile");
+  button.disabled = true;
+  try {
+    const state = await api("/refile-all", { method: "POST" });
+    const box = document.createElement("div");
+    box.className = "up";
+    $("uploads").prepend(box);
+    const batch = compactBatch(state.filenames, box);
+    batch.id = state.id;
+    batchCards.set(state.id, batch);
+    applyBatchState(batch, state);
+    ensureBatchPolling();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
 const closeSetup = () => { if (state.configured) $("setup").classList.add("hidden"); };
 $("s-cancel").addEventListener("click", closeSetup);
 $("s-close").addEventListener("click", closeSetup);

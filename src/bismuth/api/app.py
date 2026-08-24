@@ -40,17 +40,17 @@ from bismuth.config import (
     save_user_config,
 )
 from bismuth.container import Bismuth, build
-from bismuth.domain.document import sidecar_name
+from bismuth.domain.document import DocumentCard, sidecar_name
 from bismuth.domain.errors import BismuthError
 from bismuth.domain.journal import Actor, JournalEntry
 from bismuth.domain.progress import Progress, Stage
 from bismuth.logging_setup import configure_logging, finish_run_manifest, update_run_manifest
 from bismuth.ports.llm import CURRENT_USAGE, Spend, Usage
 from bismuth.ports.vault import INBOX
+from bismuth.prompts.agent import DEFAULT_ORGANIZE_INSTRUCTION
 from bismuth.services import replay as replay_service
 from bismuth.services import simple as simple_service
-from bismuth.services.agent import DEFAULT_ORGANIZE_INSTRUCTION
-from bismuth.services.ingest import IngestResult, Prepared
+from bismuth.services.ingest import Prepared
 from bismuth.services.sidecar import read_sidecar_meta
 
 logger = logging.getLogger(__name__)
@@ -361,7 +361,7 @@ def create_app(
         app.state.settings = updated
         update_run_manifest(**_diagnostic_settings(updated))
         app.state.engine = build(updated)
-        # Warm the replacement engine before returning control to the UI.
+        # Warm the new engine before returning control to the UI.
         _preload(app.state.engine)
         logger.info("configuration updated: %s", updated.redacted())
         return setup_state()
@@ -522,20 +522,6 @@ def create_app(
             },
         )
 
-    @app.post("/api/documents", response_model=list[IngestOut])
-    async def upload(files: list[UploadFile], engine: Engine) -> list[IngestOut]:
-        """Accept files and file them. Each is journalled into the inbox before anything clever."""
-        _accept(files, accepted_uploads & engine.parsers.supported_extensions())
-        await _validate_upload_contents(files)
-        results: list[IngestOut] = []
-        async with app.state.ingest_lock:
-            for upload_file in files:
-                data = await _read_upload(upload_file)
-                name = Path(upload_file.filename or "untitled").name
-                rel = engine.ingest.stage(data, name)
-                results.append(await _process(engine, rel))
-        return results
-
     async def run_batch(batch_id: str, staged: list[PurePosixPath], engine: Bismuth) -> None:
         """Process already-safe inbox files independently of the browser connection."""
         batch: BatchOut = app.state.batches[batch_id]
@@ -587,7 +573,8 @@ def create_app(
                 # Filed in tens, because a class is only visible in several: asked about
                 # one document the only honest answer is its title, and a tree of titles is
                 # the list the folders were supposed to replace.
-                pending: list[tuple[PurePosixPath, Any, Any]] = []
+                pending: list[tuple[PurePosixPath, DocumentCard, Prepared]] = []
+                seen_hashes: set[str] = set()
 
                 async def flush() -> None:
                     if not pending:
@@ -626,10 +613,14 @@ def create_app(
                         batch.completed += 1
                         batch.failed += 1
                         continue
-                    if outcome.duplicate_of or outcome.card is None:
+                    duplicate = bool(outcome.duplicate_of) or outcome.source.sha256 in seen_hashes
+                    if duplicate or outcome.card is None:
+                        if duplicate:
+                            engine.ingest.discard_duplicate(outcome.rel)
                         batch.completed += 1
                         batch.duplicate += 1
                         continue
+                    seen_hashes.add(outcome.source.sha256)
                     pending.append((outcome.rel, outcome.card, outcome))
                     if len(pending) >= simple_service.BATCH:
                         await flush()
@@ -668,6 +659,79 @@ def create_app(
                 batch.current = ""
                 batch.current_stage = "done"
                 batch.current_label = "모든 파일 정리 완료"
+
+    async def run_refile(batch_id: str, engine: Bismuth) -> None:
+        """Rebuild the tree from saved cards using the normal filing workflow."""
+        batch: BatchOut = app.state.batches[batch_id]
+        batch.status = "queued"
+        update_run_manifest(
+            status="running",
+            activity_status="refiling",
+            active_batch={"id": batch_id, "documents": batch.total, "status": "queued"},
+        )
+        try:
+            async with app.state.ingest_lock:
+                batch.status = "running"
+                emptied = replay_service.emptying(engine.vault, into=INBOX)
+                if emptied.operations:
+                    engine.transactor.execute(
+                        JournalEntry(
+                            actor=Actor.USER,
+                            reason="rebuild folders from saved cards",
+                            operations=emptied.operations,
+                        )
+                    )
+                prepared = replay_service.read_prepared(engine.vault, engine.catalog, under=INBOX)
+                batch.total = len(prepared)
+                engine.simple.forget_reviews()
+
+                for start in range(0, len(prepared), simple_service.BATCH):
+                    chunk = prepared[start : start + simple_service.BATCH]
+                    filing = [
+                        (item.rel, item.card, item) for item in chunk if item.card is not None
+                    ]
+                    await engine.simple.file(filing)
+                    batch.completed += len(filing)
+                    batch.current = filing[-1][0].name if filing else ""
+                    _drain(engine)
+                    await engine.simple.regroup()
+                    _drain(engine)
+                    app.state.progress.publish(
+                        Progress(
+                            stage=Stage.PLACED,
+                            filename=batch.current,
+                            note=f"{batch.completed}/{batch.total} 재배치",
+                        )
+                    )
+                    if engine.simple.due():
+                        await engine.simple.review()
+                        _drain(engine)
+
+                if engine.simple.due(settling=True):
+                    await engine.simple.review(ending=True)
+                    _drain(engine)
+                else:
+                    await engine.simple.regroup(ending=True)
+                    _drain(engine)
+                batch.status = "done"
+        except asyncio.CancelledError:
+            batch.status = "interrupted"
+            raise
+        except Exception:
+            batch.status = "failed"
+            logger.exception("refile %s stopped unexpectedly", batch_id)
+        finally:
+            batch.finished_at = time.time()
+            batch.current = "" if batch.status == "done" else batch.current
+            batch.current_stage = "done" if batch.status == "done" else batch.current_stage
+            batch.current_label = (
+                "카드 기반 재배치 완료" if batch.status == "done" else batch.current_label
+            )
+            update_run_manifest(
+                status="idle" if batch.status == "done" else batch.status,
+                activity_status="idle",
+                active_batch=None,
+            )
 
     @app.post("/api/batches", response_model=BatchOut, status_code=202)
     async def create_batch(files: list[UploadFile], engine: Engine) -> BatchOut:
@@ -716,11 +780,40 @@ def create_app(
             raise HTTPException(404, "그런 업로드 작업이 없습니다.")
         return batch
 
-    @app.post("/api/scan", response_model=list[IngestOut])
-    async def scan(engine: Engine) -> list[IngestOut]:
-        """Read whatever is sitting unprocessed in the inbox, including hand-dropped files."""
+    @app.post("/api/tree/empty")
+    async def empty_tree(engine: Engine) -> dict[str, int]:
+        """Move filed documents to the root while preserving their sidecars."""
         async with app.state.ingest_lock:
-            return [await _process(engine, rel) for rel in engine.ingest.pending_inbox()]
+            emptied = replay_service.emptying(engine.vault)
+            if emptied.operations:
+                engine.transactor.execute(
+                    JournalEntry(
+                        actor=Actor.USER,
+                        reason="empty folder tree for testing",
+                        operations=emptied.operations,
+                    )
+                )
+            engine.simple.forget_reviews()
+        return {"documents": emptied.documents, "folders": emptied.folders}
+
+    @app.post("/api/refile-all", response_model=BatchOut, status_code=202)
+    async def refile_all(engine: Engine) -> BatchOut:
+        """Queue a clean rebuild using cards stored in document sidecars."""
+        prepared = replay_service.read_prepared(engine.vault, engine.catalog)
+        if not prepared:
+            raise HTTPException(400, "저장된 카드가 있는 문서가 없습니다.")
+        batch_id = uuid.uuid4().hex[:12]
+        batch = BatchOut(
+            id=batch_id,
+            total=len(prepared),
+            filenames=[item.rel.name for item in prepared],
+            created_at=time.time(),
+        )
+        app.state.batches[batch_id] = batch
+        task = asyncio.create_task(run_refile(batch_id, engine), name=f"bismuth-refile-{batch_id}")
+        app.state.batch_tasks.add(task)
+        task.add_done_callback(app.state.batch_tasks.discard)
+        return batch.model_copy(deep=True)
 
     @app.get("/api/progress")
     async def progress_stream() -> StreamingResponse:
@@ -732,26 +825,11 @@ def create_app(
             headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
         )
 
-    async def _process(
-        engine: Bismuth,
-        rel: PurePosixPath,
-        *,
-        on_progress: Callable[[Progress], None] | None = None,
-    ) -> IngestOut:
-        publish = on_progress or app.state.progress.publish
-        _drain(engine)  # anything left from an earlier document is not this one's bill
-        try:
-            result = await engine.ingest.process(rel, on_progress=publish)
-        except BismuthError as exc:
-            publish(Progress(stage=Stage.FAILED, filename=rel.name, note=str(exc)))
-            return IngestOut(filename=rel.name, ok=False, reason=str(exc), spend=_drain(engine))
-        return _result_of(result, spend=_drain(engine))
-
     def _drain(engine: Bismuth) -> Spend:
         """Collect model usage and attribute it to the current operation."""
         spend = Spend.of(engine.llm.drain_usage())
         chat_drain = getattr(engine.chat, "drain_usage", None)
-        if chat_drain is not None:  # agentkit's ChatModel protocol does not require it
+        if chat_drain is not None:  # Optional adapter cleanup hook.
             spend = spend + Spend.of(chat_drain())
         engine.ledger.record(spend)
         return spend
@@ -797,28 +875,6 @@ def create_app(
             raise HTTPException(400, str(exc)) from exc
         return {"target": result.target, "moved": result.moved}
 
-    @app.post("/api/redesign")
-    async def redesign(engine: Engine) -> dict[str, Any]:
-        """Redraw the top of the tree from the whole collection, in one transaction.
-
-        The only operation that can see two folders on the same subject in different
-        branches, because it is the only one not asked from inside a folder.
-        """
-        try:
-            result = await engine.redesign.redesign()
-        except BismuthError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        return {
-            "applied": result.applied,
-            "question": result.question,
-            "axis": result.axis,
-            "classes": [{"name": name, "sign": sign} for name, sign in result.classes],
-            "moved_folders": list(result.moved_folders),
-            "moved_documents": result.moved_documents,
-            "unsound": list(result.unsound),
-            "refused": result.refused,
-        }
-
     @app.post("/api/organize/propose")
     async def organize_propose(body: OrganizeIn, engine: Engine) -> dict[str, Any]:
         """Let the agent inspect the vault and return a reorganisation plan. Moves nothing."""
@@ -848,114 +904,6 @@ def create_app(
         except BismuthError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {"applied": applied}
-
-    @app.post("/api/tree/empty")
-    def empty_tree(engine: Engine) -> dict[str, Any]:
-        """Take the folder tree apart. Documents and their cards stay where they can be re-filed."""
-        emptied = replay_service.emptying(engine.vault)
-        if not emptied.operations:
-            return {"documents": 0, "folders": 0}
-        engine.transactor.execute(
-            JournalEntry(
-                actor=Actor.USER,
-                reason=f"폴더 구조 비우기: 문서 {emptied.documents}건을 루트로",
-                operations=emptied.operations,
-            )
-        )
-        return {"documents": emptied.documents, "folders": emptied.folders}
-
-    @app.post("/api/refile-all", response_model=BatchOut, status_code=202)
-    async def refile_all(engine: Engine) -> BatchOut:
-        """File the collection again from existing sidecars."""
-        pinned = replay_service.read_pinned(engine.vault.root)
-        if not pinned:
-            raise HTTPException(400, "다시 배치할 문서가 없습니다. 사이드카가 있어야 합니다.")
-        batch_id = uuid.uuid4().hex[:12]
-        batch = BatchOut(
-            id=batch_id,
-            total=len(pinned),
-            filenames=[one.name for one in pinned],
-            created_at=time.time(),
-        )
-        app.state.batches[batch_id] = batch
-        task = asyncio.create_task(
-            run_refile(batch_id, pinned, engine), name=f"bismuth-refile-{batch_id}"
-        )
-        app.state.batch_tasks.add(task)
-        task.add_done_callback(app.state.batch_tasks.discard)
-        return batch.model_copy(deep=True)
-
-    async def run_refile(batch_id: str, pinned: list[Any], engine: Bismuth) -> None:
-        """Empty the tree, then file every card into it again, in tens, reviewing as it grows."""
-        batch: BatchOut = app.state.batches[batch_id]
-        batch.status = "running"
-        update_run_manifest(
-            status="running",
-            activity_status="refiling",
-            active_batch={"id": batch_id, "documents": len(pinned), "status": "running"},
-        )
-        try:
-            async with app.state.ingest_lock:
-                # Refiling starts from the inbox, matching the normal upload path.
-                emptied = replay_service.emptying(engine.vault, into=INBOX)
-                if emptied.operations:
-                    engine.transactor.execute(
-                        JournalEntry(
-                            actor=Actor.BISMUTH,
-                            reason="다시 배치를 위해 폴더 구조 비우기",
-                            operations=emptied.operations,
-                        )
-                    )
-                engine.simple.forget_reviews()
-                # Reload paths after moving documents into the inbox.
-                flat = replay_service.read_pinned(engine.vault.root, under=INBOX.parts[0])
-                batch.total = len(flat)
-                taken: list[tuple[PurePosixPath, Any, Any]] = []
-                for one in flat:
-                    taken.append(replay_service.here(one, engine.vault))
-                    if len(taken) < simple_service.BATCH:
-                        continue
-                    await engine.simple.file(taken)
-                    batch.completed += len(taken)
-                    batch.current = taken[-1][0].name
-                    taken.clear()
-                    await engine.simple.regroup()
-                    app.state.progress.publish(
-                        Progress(
-                            stage=Stage.PLACED,
-                            filename="",
-                            note=f"{batch.completed}/{batch.total} 배치",
-                        )
-                    )
-                    if engine.simple.due():
-                        app.state.progress.publish(
-                            Progress(stage=Stage.DIVIDING, filename="", note="전체 구조 점검")
-                        )
-                        await engine.simple.review()
-                if taken:
-                    await engine.simple.file(taken)
-                    batch.completed += len(taken)
-                if engine.simple.due(settling=True):
-                    app.state.progress.publish(
-                        Progress(stage=Stage.DIVIDING, filename="", note="마지막 구조 점검")
-                    )
-                    await engine.simple.review(ending=True)
-                else:
-                    await engine.simple.regroup(ending=True)
-            batch.status = "done"
-        except asyncio.CancelledError:
-            batch.status = "interrupted"
-            raise
-        except Exception:
-            batch.status = "failed"
-            logger.exception("refile %s stopped unexpectedly", batch_id)
-        finally:
-            batch.finished_at = time.time()
-            update_run_manifest(
-                status="idle" if batch.status == "done" else batch.status,
-                activity_status="idle",
-                active_batch=None,
-            )
 
     @app.post("/api/chat")
     async def chat(body: ChatIn, engine: Engine) -> StreamingResponse:
@@ -1146,18 +1094,6 @@ class FolderDetailOut(BaseModel):
     documents: list[DocumentOut]
 
 
-class IngestOut(BaseModel):
-    filename: str
-    ok: bool
-    document_id: str = ""
-    destination: str = ""
-    placed: bool = False
-    created_folder: bool = False
-    reason: str = ""
-    duplicate: bool = False
-    spend: Spend = Spend()
-
-
 class BatchOut(BaseModel):
     id: str
     total: int
@@ -1276,17 +1212,3 @@ class SetupIn(BaseModel):
     chat_model: str = ""
     """Empty means the same model files documents and answers questions."""
     vault_path: str
-
-
-def _result_of(result: IngestResult, *, spend: Spend) -> IngestOut:
-    return IngestOut(
-        spend=spend,
-        filename=result.filename,
-        ok=True,
-        document_id=result.document_id,
-        destination=str(result.destination),
-        placed=result.placement.is_placed,
-        created_folder=result.placement.created_folder,
-        reason=result.placement.rationale,
-        duplicate=result.duplicate,
-    )
