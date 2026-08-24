@@ -1,4 +1,4 @@
-"""File-backed cards and placements under ``.bismuth/``."""
+"""File-backed document cards under ``.bismuth/``."""
 
 from __future__ import annotations
 
@@ -9,20 +9,17 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from bismuth.domain.document import DocumentCard, SourceRef
-from bismuth.domain.placement import Placement
 
 
 class FileCatalog:
-    """Cards and placements, one file at a time."""
+    """Document cards stored one file at a time."""
 
     def __init__(self, state_dir: Path) -> None:
         self._cards = state_dir / "cards"
-        self._placements = state_dir / "placements"
-        for directory in (self._cards, self._placements):
-            directory.mkdir(parents=True, exist_ok=True)
+        self._cards.mkdir(parents=True, exist_ok=True)
 
     def load_card(self, document_id: str) -> DocumentCard | None:
         data = _read_json(self._card_path(document_id))
@@ -72,22 +69,9 @@ class FileCatalog:
 
     def forget(self, document_id: str) -> None:
         self._card_path(document_id).unlink(missing_ok=True)
-        (self._placements / f"{_safe_id(document_id)}.json").unlink(missing_ok=True)
 
     def _card_path(self, document_id: str) -> Path:
         return self._cards / f"{_safe_id(document_id)}.json"
-
-    def save_placement(self, placement: Placement) -> None:
-        _write_json(self._placements / f"{_safe_id(placement.document_id)}.json", placement)
-
-    def load_placement(self, document_id: str) -> Placement | None:
-        data = _read_json(self._placements / f"{_safe_id(document_id)}.json")
-        if data is None:
-            return None
-        try:
-            return Placement.model_validate(data)
-        except ValidationError:
-            return None
 
 
 def _safe_id(value: str) -> str:
@@ -102,10 +86,6 @@ def _read_json(path: Path) -> Any | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return None
-
-
-def _write_json(path: Path, model: BaseModel) -> None:
-    _atomic_write_text(path, model.model_dump_json(indent=2))
 
 
 def _write_json_raw(path: Path, data: dict[str, Any]) -> None:

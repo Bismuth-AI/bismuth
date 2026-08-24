@@ -116,12 +116,7 @@ class FakeLLM:
         else:
             raise StructuredOutputError("FakeLLM ran out of scripted choice responses")
 
-        from bismuth.prompts.placement import PlacementDecision
-
-        if isinstance(response, PlacementDecision):
-            raw = response.folder_id
-            selected = "UNREADABLE" if raw is None else (raw or "STAY")
-        elif isinstance(response, str):
+        if isinstance(response, str):
             selected = response.strip().upper()
         else:
             raise StructuredOutputError(f"FakeLLM choice needs str, got {type(response).__name__}")
@@ -132,14 +127,14 @@ class FakeLLM:
         drained, self._usage = self._usage, []
         return drained
 
+    def set_handler(self, handler: Handler) -> None:
+        """Replace the response handler for subsequent calls."""
+        self._handler = handler
+
     @property
     def call_count(self) -> int:
         return len(self.calls)
 
     def prompts_for(self, schema: type[BaseModel] | None) -> list[Prompt]:
         """Return prompts sent for ``schema``."""
-        from bismuth.prompts.placement import PlacementDecision
-
-        if schema is PlacementDecision:
-            schema = None
         return [p for p, s in self.calls if s is schema]

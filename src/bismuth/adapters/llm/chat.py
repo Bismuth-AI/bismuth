@@ -1,4 +1,4 @@
-"""LiteLLM-backed :class:`agentkit.ChatModel`: native tool-calling for the agent loop."""
+"""LiteLLM-backed chat model for Bismuth's tool-calling agent loop."""
 
 from __future__ import annotations
 
@@ -9,14 +9,6 @@ import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
-from agentkit import (
-    AssistantMessage,
-    ContextWindowExceededError,
-    Message,
-    ToolCall,
-    ToolSpec,
-)
-
 from bismuth.adapters.llm.body import _drop_unsupported, apply_body
 from bismuth.adapters.llm.litellm_adapter import usage_of
 from bismuth.adapters.llm.wire import (
@@ -26,12 +18,19 @@ from bismuth.adapters.llm.wire import (
     _open_stream,
     _shared_aiohttp_session,
 )
+from bismuth.agentkit import (
+    AssistantMessage,
+    ContextWindowExceededError,
+    Message,
+    ToolCall,
+    ToolSpec,
+)
 from bismuth.logging_setup import log_llm_call
 from bismuth.ports.llm import CURRENT_USAGE, Usage
 
 
 class LiteLLMChatModel:
-    """Drives one model with tool-calling, adapting agentkit's neutral types to LiteLLM."""
+    """Adapt provider-neutral agent messages to LiteLLM tool calls."""
 
     def __init__(
         self,
