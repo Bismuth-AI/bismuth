@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from agentkit.messages import ToolSpec
-from agentkit.tool import Tool, tool_spec
+from bismuth.agentkit.messages import ToolSpec
+from bismuth.agentkit.tool import Tool, tool_spec
 
 
 class ToolRegistry:

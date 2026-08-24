@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Protocol, runtime_checkable
 
-from agentkit.messages import AssistantMessage, Message, ToolSpec
+from bismuth.agentkit.messages import AssistantMessage, Message, ToolSpec
 
 
 class ContextWindowExceededError(Exception):

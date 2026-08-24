@@ -8,7 +8,7 @@ from typing import Any, Protocol, get_type_hints, runtime_checkable
 
 from pydantic import BaseModel
 
-from agentkit.messages import ToolSpec
+from bismuth.agentkit.messages import ToolSpec
 
 
 class Permission(enum.Enum):

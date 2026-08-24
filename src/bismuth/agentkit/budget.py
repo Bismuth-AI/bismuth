@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from agentkit.messages import Message, ToolSpec
+from bismuth.agentkit.messages import Message, ToolSpec
 
 CLEARED = "[Old tool result cleared to save context. Call the tool again if you need it.]"
 

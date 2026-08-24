@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from agentkit.messages import AssistantMessage, Message, ToolCall, ToolSpec
+from bismuth.agentkit.messages import AssistantMessage, Message, ToolCall, ToolSpec
 
 Handler = Callable[[str, list[Message], list[ToolSpec]], AssistantMessage]
 

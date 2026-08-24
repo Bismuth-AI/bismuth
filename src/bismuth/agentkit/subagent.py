@@ -7,8 +7,8 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, Field
 
-from agentkit.loop import Agent, AgentEvent, OnEvent
-from agentkit.tool import FunctionTool, Tool
+from bismuth.agentkit.loop import Agent, AgentEvent, OnEvent
+from bismuth.agentkit.tool import FunctionTool, Tool
 
 _DEFAULT_DESCRIPTION = """\
 Delegate a self-contained task to a specialist sub-agent. Give it a full, \

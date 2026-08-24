@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel, Field
 
-from agentkit.tool import FunctionTool
+from bismuth.agentkit.tool import FunctionTool
 
 STATUSES = ("pending", "in_progress", "completed", "dropped")
 

@@ -8,12 +8,12 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel, ValidationError
 
-from agentkit import budget
-from agentkit.messages import AssistantMessage, Message, ToolCall, ToolSpec
-from agentkit.model import ChatModel, ContextWindowExceededError
-from agentkit.registry import ToolRegistry
-from agentkit.selfaware import Plan, Spend, budget_tool, plan_tool
-from agentkit.tool import Permission, Tool
+from bismuth.agentkit import budget
+from bismuth.agentkit.messages import AssistantMessage, Message, ToolCall, ToolSpec
+from bismuth.agentkit.model import ChatModel, ContextWindowExceededError
+from bismuth.agentkit.registry import ToolRegistry
+from bismuth.agentkit.selfaware import Plan, Spend, budget_tool, plan_tool
+from bismuth.agentkit.tool import Permission, Tool
 
 OnAsk = Callable[[Tool, BaseModel], Awaitable[Permission]]
 OnEvent = Callable[["AgentEvent"], None]
