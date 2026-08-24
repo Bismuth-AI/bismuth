@@ -7,6 +7,13 @@ that below `1.0.0` the interface may break between minor versions.
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-08-24
+
+### Fixed
+
+- GitHub Actions installs the bundled agent loop from the root package and no longer
+  checks removed example paths. Official setup actions now use their Node 24 releases.
+
 ## [0.2.0] — 2026-08-24
 
 ### Added
@@ -112,7 +119,8 @@ built yet.
 - Quality on small local models is **not measured**. "Local works" is an argument
   from the design (task decomposition and schema constraints), not a result.
 
-[Unreleased]: https://github.com/Bismuth-AI/bismuth/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Bismuth-AI/bismuth/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Bismuth-AI/bismuth/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Bismuth-AI/bismuth/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/Bismuth-AI/bismuth/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Bismuth-AI/bismuth/releases/tag/v0.1.0
