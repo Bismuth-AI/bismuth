@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from agentkit import ChatModel
-
 from bismuth.adapters.catalog import FileCatalog
 from bismuth.adapters.journal import JOURNAL_FILENAME, JsonlJournal
 from bismuth.adapters.ledger import LEDGER_FILENAME, JsonlSpendLedger
@@ -14,21 +12,22 @@ from bismuth.adapters.llm import LiteLLMAdapter
 from bismuth.adapters.llm.chat import LiteLLMChatModel
 from bismuth.adapters.parsers import build_registry
 from bismuth.adapters.vault import FileSystemVault
+from bismuth.agentkit import ChatModel
 from bismuth.config import Settings
 from bismuth.ports.catalog import Catalog
 from bismuth.ports.journal import JournalStore
 from bismuth.ports.ledger import SpendLedger
-from bismuth.ports.llm import LLM, ModelProfile
+from bismuth.ports.llm import LLM
 from bismuth.ports.parser import ParserRegistry
 from bismuth.ports.vault import STATE_DIR, Vault
 from bismuth.services.agent import AgentService
 from bismuth.services.cards import CardService
 from bismuth.services.charters import CharterService
+from bismuth.services.conversation import ConversationService
 from bismuth.services.deletion import DeletionService
 from bismuth.services.ingest import IngestService
 from bismuth.services.move import MoveService
-from bismuth.services.placement import PlacementService
-from bismuth.services.subdivision import SubdivisionService
+from bismuth.services.simple import SimpleFiler
 from bismuth.services.transactor import Transactor
 
 
@@ -39,23 +38,25 @@ class Bismuth:
     settings: Settings
     llm: LLM
     chat: ChatModel
-    """The agent's model. Exposed so its calls can be counted too -- a spend total that
-    omits the post-upload review is wrong, not just incomplete."""
+    """The model used by the question-answering agent."""
     vault: Vault
     catalog: Catalog
     journal: JournalStore
     ledger: SpendLedger
-    """What this vault has cost so far. Survives the tab that spent it."""
+    """Persistent model usage for this vault."""
     parsers: ParserRegistry
     transactor: Transactor
     cards: CardService
     charters: CharterService
-    placement: PlacementService
-    subdivision: SubdivisionService
     ingest: IngestService
     deletion: DeletionService
     move: MoveService
     agent: AgentService
+    conversation: ConversationService
+    """Multi-turn questions answered by walking the vault tree."""
+
+    simple: SimpleFiler
+    """The active filing pipeline."""
 
     def recover(self) -> int:
         """Roll back anything a crash left half-done. Returns the number of batches reversed."""
@@ -65,7 +66,10 @@ class Bismuth:
 def build(
     settings: Settings, *, llm: LLM | None = None, chat_model: ChatModel | None = None
 ) -> Bismuth:
-    """Wire an engine over ``settings.vault_path``. Pass a fake ``llm``/``chat_model`` to run offline."""
+    """Wire an engine over ``settings.vault_path``.
+
+    Pass both injected model implementations when the complete engine must run offline.
+    """
     vault = FileSystemVault(settings.vault_path)
     state = Path(vault.root) / STATE_DIR
 
@@ -74,27 +78,31 @@ def build(
     catalog = FileCatalog(state)
     parsers = build_registry()
 
+    # Filing and answering are separate jobs and may be separate models; when nothing
+    # is set for the second, both of these resolve to the same endpoint.
+    filing = settings.librarian().for_workload(uses_tools=False)
+    asking = settings.chat().for_workload(uses_tools=True)
     model: LLM = llm or LiteLLMAdapter(
-        model_fast=settings.model_for(ModelProfile.FAST),
-        model_reasoning=settings.model_for(ModelProfile.REASONING),
-        api_key=settings.api_key,
-        api_base=settings.api_base,
+        model=filing.model,
+        api_key=filing.api_key,
+        api_base=filing.api_base,
         timeout=settings.llm_timeout_seconds,
+        absolute_timeout=settings.llm_absolute_timeout_seconds,
         max_schema_retries=settings.llm_max_schema_retries,
         max_concurrency=settings.llm_max_concurrency,
-        reasoning_effort=settings.reasoning_effort,
-        headers=settings.api_headers,
-        body=settings.api_body,
+        headers=filing.headers,
+        body=filing.body,
         native_schema=settings.native_schema,
     )
     chat: ChatModel = chat_model or LiteLLMChatModel(
-        model=settings.model_for(ModelProfile.REASONING),
-        api_key=settings.api_key,
-        api_base=settings.api_base,
+        model=asking.model,
+        api_key=asking.api_key,
+        api_base=asking.api_base,
         timeout=settings.llm_timeout_seconds,
+        absolute_timeout=settings.llm_absolute_timeout_seconds,
         max_concurrency=settings.llm_max_concurrency,
-        headers=settings.api_headers,
-        body=settings.api_body,
+        headers=asking.headers,
+        body=asking.body,
     )
 
     transactor = Transactor(vault, journal)
@@ -104,11 +112,7 @@ def build(
         max_windows=settings.card_max_windows,
     )
     charters = CharterService(vault, model, catalog)
-    placement = PlacementService(model)
     move = MoveService(vault=vault, transactor=transactor, charters=charters)
-    subdivision = SubdivisionService(
-        vault=vault, catalog=catalog, charters=charters, transactor=transactor, llm=model
-    )
 
     return Bismuth(
         settings=settings,
@@ -122,17 +126,12 @@ def build(
         transactor=transactor,
         cards=cards,
         charters=charters,
-        placement=placement,
-        subdivision=subdivision,
         ingest=IngestService(
             vault=vault,
             catalog=catalog,
             parsers=parsers,
             cards=cards,
-            placement=placement,
-            charters=charters,
             transactor=transactor,
-            subdivision=subdivision,
             extraction_max_chars=settings.extraction_max_chars,
         ),
         deletion=DeletionService(
@@ -140,4 +139,18 @@ def build(
         ),
         move=move,
         agent=AgentService(model=chat, vault=vault, charters=charters),
+        conversation=ConversationService(
+            model=chat,
+            vault=vault,
+            charters=charters,
+            context_tokens=settings.chat_context_tokens,
+            budget_tokens=settings.chat_budget_tokens,
+        ),
+        simple=SimpleFiler(
+            vault=vault,
+            catalog=catalog,
+            charters=charters,
+            transactor=transactor,
+            llm=model,
+        ),
     )

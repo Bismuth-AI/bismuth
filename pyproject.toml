@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "The Bismuth authors" }]
-keywords = ["knowledge-base", "rag", "agents", "document-management", "llm", "faceted-classification"]
+keywords = ["knowledge-base", "agents", "document-management", "llm", "document-organization"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -21,8 +21,6 @@ classifiers = [
     "Topic :: Text Processing :: Indexing",
 ]
 
-# Permissive licences only (MIT/BSD/Apache-2.0); see docs/licensing.md.
-# PyMuPDF is avoided on purpose: AGPL-3.0 would relicense this project.
 dependencies = [
     "pydantic>=2.7,<3",           # MIT
     "pydantic-settings>=2.3,<3",  # MIT
@@ -30,8 +28,6 @@ dependencies = [
     # MIT. 1.92.0 excluded (not capped): it shipped without a wheel, so pip falls
     # back to the sdist and needs a Rust toolchain, breaking `pip install`.
     "litellm>=1.55,!=1.92.0",
-    "typer>=0.12",                # MIT
-    "rich>=13.7",                 # MIT
     "python-frontmatter>=1.1",    # MIT
     "pyyaml>=6.0",                # MIT
     "anyio>=4.4",                 # MIT
@@ -59,22 +55,34 @@ dev = [
     "mypy>=1.13",
     "types-PyYAML>=6.0",
 ]
-all = ["bismuth-kb[parsers,server]"]
+all = [
+    "pypdf>=5.1",
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
+    "openpyxl>=3.1",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.12",
+    "watchfiles>=0.24",
+]
 
 [project.scripts]
 bismuth = "bismuth.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/Bismuth-AI/bismuth"
-Documentation = "https://github.com/Bismuth-AI/bismuth/tree/main/docs"
 Issues = "https://github.com/Bismuth-AI/bismuth/issues"
 
 [tool.hatch.build.targets.wheel]
-# The UI is a single file with no build step, so it ships as package data.
-# agentkit is a separate installable package under packages/agentkit (bismuth
-# imports it as an installed library); it is not vendored into this wheel.
+# Ship only the public UI assets. Local demo pages are intentionally excluded.
 packages = ["src/bismuth"]
-artifacts = ["src/bismuth/api/static/*"]
+artifacts = [
+    "src/bismuth/api/static/index.html",
+    "src/bismuth/api/static/chat.html",
+    "src/bismuth/api/static/trace.html",
+    "src/bismuth/api/static/favicon.ico",
+    "src/bismuth/api/static/favicon.png",
+]
 
 [tool.ruff]
 line-length = 100
@@ -95,13 +103,11 @@ ignore = ["E501"]
 "src/bismuth/api/*" = ["TID251"]
 "src/bismuth/adapters/*" = ["TID251"]
 "tests/*" = ["TID251"]
-"examples/*" = ["TID251"]  # examples exist to show embedding, which means wiring adapters
-"scripts/*" = ["TID251"]   # measurement tools read a real vault, so they wire a real adapter
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
-packages = ["bismuth", "agentkit"]
+packages = ["bismuth"]
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
@@ -110,5 +116,5 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests", "packages/agentkit/tests"]
+testpaths = ["tests"]
 pythonpath = ["src"]

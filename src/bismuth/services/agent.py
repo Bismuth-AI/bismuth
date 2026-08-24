@@ -1,94 +1,36 @@
-"""Agents over the vault, built on the standalone ``agentkit`` library.
+"""Agents over the vault, built on Bismuth's internal agent loop.
 
 Two shapes, same tools underneath:
 - ``ask``: read-only navigation (ls/tree/read/grep/note) to answer a question.
 - ``organize``: the same plus an approval-gated ``move`` to reshape the folder tree.
 
-bismuth supplies the model, the tools (thin wrappers over the vault/services), and
-the prompt; agentkit runs the loop.
+Bismuth supplies the model, tools, and prompt to the loop.
 """
 
 from __future__ import annotations
 
+import bisect
+import difflib
+import itertools
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from agentkit import Agent, ChatModel, FunctionTool, RunResult, Tool, subagent_tool
-from agentkit.loop import OnEvent
 from pydantic import BaseModel, Field
 
+from bismuth.agentkit import Agent, ChatModel, FunctionTool, RunResult, Tool, subagent_tool
+from bismuth.agentkit.loop import OnEvent
 from bismuth.domain.charter import CHARTER_FILENAME
 from bismuth.domain.document import sidecar_name
 from bismuth.ports.vault import INBOX, Vault
+from bismuth.prompts.agent import (
+    DEFAULT_ORGANIZE_INSTRUCTION,
+    SYSTEM_ASK,
+    SYSTEM_ORGANIZE,
+    SYSTEM_VERIFIER,
+)
 from bismuth.services.charters import CharterService
 from bismuth.services.sidecar import read_sidecar_meta
-
-DEFAULT_ORGANIZE_INSTRUCTION = (
-    "Review the vault's structure and propose any reorganisation it needs."
-)
-
-SYSTEM_ASK = """\
-You are a librarian answering questions from a vault of real folders and files.
-
-Every document has a greppable Markdown sidecar next to it (``<name>.md``) holding \
-its extracted text and a header (title, topics, entities, summary). Every folder \
-has a ``_folder.md`` note describing what it holds.
-
-Work by navigating: `tree` to see the shape, `read_note` to learn what a folder is \
-for, `grep` to find where something is said, `read` to read a document's sidecar. \
-Prefer grep/read_note over reading every file. When you answer, cite the folders \
-and files you used. If the vault does not contain the answer, say so plainly.\
-"""
-
-SYSTEM_ORGANIZE = """\
-You are an archivist keeping a document vault well organised, so an agent (or a \
-person) can navigate it. Real folders, real files; each document has a `.md` \
-sidecar with its text, each folder a `_folder.md` note.
-
-FIRST look, THEN judge, THEN act:
-1. Use `tree`, `read_note`, `grep`, and `read` to understand what is actually here \
--- what each folder holds and how it is (or isn't) organised. Do not decide from \
-folder names alone.
-2. Judge whether the structure genuinely needs work. A folder is fine if it is \
-navigable -- even a large one, if its contents are uniform. Only act where a person \
-would struggle: a pile of unlike documents at one level, near-duplicate folders for \
-one idea, or a folder whose NAME no longer describes what is inside.
-   Do NOT trust a folder's `_folder.md` note to decide it is fine -- the note is \
-regenerated to fit whatever the folder currently holds, so it always seems to \
-match. Judge from the documents' ACTUAL types (shown in `ls` as `[type]`) and the \
-folder's name. A folder named e.g. "사업추진현황 보고" that in fact holds financial \
-statements, audit reports, and board minutes has a name that no longer fits and \
-several distinct types piled together -- that wants splitting or renaming.
-3. When you act, choose the lighter fix:
-   - If the grouping is fine but the folder's NAME no longer fits its contents, \
-`rename` the folder (e.g. a folder called "사업추진현황 보고" that holds many kinds of \
-project documents could become "라자스탄 태양광 문서" or similar). Do not split what \
-does not need splitting.
-   - If genuinely different things are piled together, PROPOSE `move`s: group \
-documents into subfolders by a distinction a person would browse by -- document \
-type, period, sub-topic -- in the documents' own language. Reuse the right existing \
-branch; do not invent a parallel one. Move the EXISTING documents, not just future \
-ones.
-Nothing is applied until the user approves your whole plan, so propose every move \
-and rename you would make.
-
-Before finalising a non-trivial plan, delegate it to the `verifier` sub-agent \
-(via `task`) to catch churn or mistakes, and drop whatever it rejects.
-
-There is no size rule -- judge by whether the structure helps someone find things. \
-If it is already good, say so and propose nothing. End with a short summary of the \
-plan (or why nothing needs changing).\
-"""
-
-SYSTEM_VERIFIER = """\
-You review a proposed folder reorganisation before a person sees it. You are given \
-the plan (which documents move where) and can inspect the vault with the read \
-tools. Judge honestly: does the plan make the vault easier to navigate, or is it \
-churn or a mistake -- splitting a folder that was already fine, wrong groupings, \
-names that do not match the documents' language? Reply with a short verdict for \
-each part: keep, drop, or reject, with one reason each.\
-"""
 
 _TEXT_SUFFIXES = {
     ".md",
@@ -102,7 +44,57 @@ _TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
-_GREP_MATCH_LIMIT = 100
+_GREP_FILE_LIMIT = 20
+"""How many documents one grep names. Sized so the whole result fits in a tool result
+without being clipped -- a result cut in the middle loses hits silently, while a tool
+that stops on its own boundary can say what it left out."""
+_GREP_HITS_PER_FILE = 5
+_GREP_HITS_ALONE = 60
+"""Hits shown when the search is aimed at one document rather than a folder. Asking about
+one file is asking what is in it, and a sample cannot answer that."""
+_GREP_LINE_CHARS = 200
+
+
+_WHITESPACE = re.compile(r"\s+")
+
+
+def _unwrapped(pattern: str) -> re.Pattern[str] | None:
+    """The same pattern, to be matched against text with every space taken out.
+
+    Extracted text may wrap phrases across lines. Anchored patterns are left unchanged
+    because removing line boundaries would alter their meaning.
+    """
+    if "^" in pattern or "$" in pattern:
+        return None
+    try:
+        return re.compile(_WHITESPACE.sub("", pattern))
+    except re.error:
+        return None
+
+
+def _flatten(lines: list[str]) -> tuple[str, list[int]]:
+    """All the non-space characters, and where each line ends in that string."""
+    packed = ["".join(line.split()) for line in lines]
+    return "".join(packed), list(itertools.accumulate(len(p) for p in packed))
+
+
+def _matching_lines(
+    text: str, pattern: re.Pattern[str], wrapped: re.Pattern[str] | None
+) -> list[str]:
+    """Lines that match, including where the match is split across a line ending."""
+    lines = text.splitlines()
+    hit: dict[int, str] = {}
+    for number, line in enumerate(lines, start=1):
+        if pattern.search(line):
+            hit[number] = line
+    # Build the line map only when whitespace-insensitive matching finds a hit.
+    if wrapped is not None and wrapped.search(_WHITESPACE.sub("", text)):
+        packed, ends = _flatten(lines)
+        for match in wrapped.finditer(packed):
+            number = bisect.bisect_right(ends, match.start()) + 1
+            if number <= len(lines):
+                hit.setdefault(number, lines[number - 1])
+    return [f"  {number}: {hit[number].strip()[:_GREP_LINE_CHARS]}" for number in sorted(hit)]
 
 
 class _LsArgs(BaseModel):
@@ -121,7 +113,10 @@ class _ReadArgs(BaseModel):
 
 class _GrepArgs(BaseModel):
     pattern: str = Field(description="Regular expression to search for.")
-    path: str = Field(default="", description="Folder to search under, or empty for the root.")
+    path: str = Field(
+        default="",
+        description="Folder or a single file to search under; empty searches the whole vault.",
+    )
 
 
 class _NoteArgs(BaseModel):
@@ -144,10 +139,27 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
     def _folder(path: str) -> PurePosixPath:
         return PurePosixPath(path) if path not in ("", "/") else PurePosixPath()
 
+    def _missing(path: str) -> str:
+        """Say a folder is not there, and name the ones it might have been meant for.
+
+        A bare refusal leaves the caller guessing, and guessing again costs another
+        turn. Names are matched on the last segment too, since a path is usually wrong
+        in its parent rather than in the folder actually wanted.
+        """
+        wanted = PurePosixPath(path).name or path
+        known = [str(f) for f in vault.iter_folders() if f.parts and f.parts[0] != INBOX.parts[0]]
+        near = [k for k in known if PurePosixPath(k).name == wanted]
+        near += [
+            k for k in difflib.get_close_matches(path, known, n=3, cutoff=0.5) if k not in near
+        ]
+        if not near:
+            return f"No such folder: {path or '/'}. Use `tree` to see the real paths."
+        return f"No such folder: {path or '/'}. Did you mean: " + ", ".join(near[:3])
+
     async def _ls(args: _LsArgs) -> str:
         folder = _folder(args.path)
         if not vault.is_dir(folder):
-            return f"No such folder: {args.path or '/'}"
+            return _missing(args.path)
         depth = len(folder.parts)
         subfolders = [
             f.name
@@ -167,6 +179,7 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
         return "\n".join(lines) or "(empty)"
 
     async def _tree(args: _TreeArgs) -> str:
+        """Return one usable folder path per line."""
         base = _folder(args.path)
         rows: list[str] = []
         for folder in vault.iter_folders():
@@ -174,8 +187,7 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
                 continue
             if base.parts and folder.parts[: len(base.parts)] != base.parts:
                 continue
-            indent = "  " * (len(folder.parts) - 1)
-            rows.append(f"{indent}{folder.name}/  ({vault.count_files(folder)})")
+            rows.append(f"{folder}/  ({vault.count_files(folder)})")
         return "\n".join(rows) or "(no folders yet)"
 
     async def _read(args: _ReadArgs) -> str:
@@ -200,10 +212,17 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
         except re.error as exc:
             return f"Invalid regex: {exc}"
         base = _folder(args.path)
-        if not vault.is_dir(base):
-            return f"No such folder: {args.path or '/'}"
-        hits: list[str] = []
-        for file in vault.iter_files(base, recursive=True):
+        if vault.is_dir(base):
+            files = list(vault.iter_files(base, recursive=True))
+            per_file = _GREP_HITS_PER_FILE
+        elif vault.exists(base):
+            # A single-file search returns every matching line.
+            files, per_file = [base], _GREP_HITS_ALONE
+        else:
+            return _missing(args.path)
+        wrapped = _unwrapped(args.pattern)
+        found: list[tuple[PurePosixPath, list[str]]] = []
+        for file in files:
             sidecar = file.parent / sidecar_name(file.name)
             target = (
                 sidecar
@@ -212,17 +231,31 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
             )
             if target is None:
                 continue
-            for lineno, line in enumerate(vault.read_text(target).splitlines(), start=1):
-                if pattern.search(line):
-                    hits.append(f"{file}:{lineno}: {line.strip()[:200]}")
-                    if len(hits) >= _GREP_MATCH_LIMIT:
-                        return "\n".join(hits) + f"\n… (stopped at {_GREP_MATCH_LIMIT} matches)"
-        return "\n".join(hits) or "(no matches)"
+            lines = _matching_lines(vault.read_text(target), pattern, wrapped)
+            if lines:
+                found.append((file, lines))
+            if len(found) > _GREP_FILE_LIMIT:
+                break
+        if not found:
+            return "(no matches)"
+
+        # Group hits by file to keep paths and passages readable.
+        rows: list[str] = []
+        for file, lines in found[:_GREP_FILE_LIMIT]:
+            rows.append(str(file))
+            rows.extend(lines[:per_file])
+            if len(lines) > per_file:
+                rows.append(f"  … {len(lines)} matches in this document")
+        if len(found) > _GREP_FILE_LIMIT:
+            rows.append("… More documents match. Narrow the folder or search expression.")
+        return "\n".join(rows)
 
     async def _read_note(args: _NoteArgs) -> str:
         folder = _folder(args.folder)
         note = folder / CHARTER_FILENAME
         if not vault.exists(note):
+            if not vault.is_dir(folder):
+                return _missing(args.folder)
             return f"{args.folder or '/'} has no folder note."
         return vault.read_text(note)
 
@@ -247,7 +280,10 @@ def build_read_tools(vault: Vault, charters: CharterService) -> list[Tool]:
         ),
         FunctionTool(
             name="grep",
-            description="Regex-search the text of documents' sidecars under a folder.",
+            description=(
+                "Regex-search document text. Give a folder to search everything under it, "
+                "or one file to find where in that document a thing is said."
+            ),
             params=_GrepArgs,
             handler=_grep,
         ),

@@ -3,8 +3,8 @@
 The whole document is read, not its opening. Text is cut by length into windows,
 the card is revised window by window in reading order, facts accumulate as a union,
 and a final pass pulls the facts that matter into the summary. No step asks the
-document to have headings, pages or a table of contents, so a scanned memo and a
-300-page contract go down the same path.
+document to have headings, pages or a table of contents, so documents of different
+lengths and formats follow the same path.
 """
 
 from __future__ import annotations
@@ -15,29 +15,32 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TypeVar
 
-from bismuth.domain.document import Coverage, DocumentCard, Entity, Extraction, Window
-from bismuth.domain.errors import StructuredOutputError
+from bismuth.domain.document import (
+    LABEL_MAX_CHARS,
+    NAME_MAX_CHARS,
+    QUESTION_MAX_CHARS,
+    Coverage,
+    DocumentCard,
+    Entity,
+    Extraction,
+    Window,
+)
+from bismuth.domain.errors import ModelRequestError, StructuredOutputError
 from bismuth.domain.progress import Progress, ProgressSink, Stage, report
-from bismuth.logging_setup import log_trace
-from bismuth.ports.llm import LLM, ModelProfile
+from bismuth.logging_setup import log_context, log_trace
+from bismuth.ports.llm import LLM
 from bismuth.prompts import cards as card_prompts
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-_EMPTY_SUMMARY = "(요약 없음)"
-_UNKNOWN_TYPE = "문서"
+# These required fields use a language-neutral fallback.
+_EMPTY_SUMMARY = "—"
+_UNKNOWN_TYPE = "—"
 
-LABEL_MAX_CHARS = 40
-"""How long a topic or keyword may be. These are filing labels: they go on the card, into
-the sidecar, and into every placement prompt afterwards."""
-
-NAME_MAX_CHARS = 60
-"""How long an entity name may be. Longer than a label because organisations have long
-legal names, short enough that a pasted author list is not one."""
-
-QUESTION_MAX_CHARS = 200
+CARD_OUTPUT_TOKENS = 2048
+"""Maximum output available to one document window."""
 
 
 def _labels(values: Iterable[str], *, limit: int) -> tuple[list[str], list[str]]:
@@ -46,7 +49,7 @@ def _labels(values: Iterable[str], *, limit: int) -> tuple[list[str], list[str]]
     Overlong entries are dropped rather than truncated. Asked for topics, a model handed a
     bibliography returns the whole bibliography as one; the first 40 characters of that is
     not a worse label, it is a wrong one, and it would then be shown, filed, and weighed in
-    every later placement decision.
+    every later filing decision.
     """
     kept: list[str] = []
     rejected: list[str] = []
@@ -159,8 +162,7 @@ class CardService:
             extraction_truncated=extraction.truncated,
         )
         if len(selected) < len(windows):
-            # A budget cap that silently ate the middle of a document would read as
-            # full coverage. Say which parts were dropped, in the log and on the card.
+            # Record omitted windows so partial coverage stays visible.
             read_indices = {w.index for w in selected}
             log_trace(
                 "card.windows_skipped",
@@ -191,26 +193,27 @@ class CardService:
             )
 
         step(1)
-        card = await self._first(
-            selected[0],
-            filename=filename,
-            document_id=document_id,
-            truncated=extraction.truncated,
-        )
+        # Keep every model call attributable to its source window.
+        with log_context(stage="card.first", window_id=f"{document_id}:window-001"):
+            card = await self._first(
+                selected[0],
+                filename=filename,
+                document_id=document_id,
+                truncated=extraction.truncated,
+            )
         contributed = 1  # the window the card was built from, by definition
         failed = 0
 
         for position, window in enumerate(selected[1:], start=2):
             step(position)
-            folded = await self._fold(
-                window, card=card, filename=filename, document_id=document_id, read=position
-            )
+            with log_context(stage="card.update", window_id=f"{document_id}:window-{position:03d}"):
+                folded = await self._fold(
+                    window, card=card, filename=filename, document_id=document_id, read=position
+                )
             card = folded.card
             contributed += int(folded.contributed)
             failed += int(folded.failed)
-            # Reported again after the call: the first report moves the bar, this one says
-            # what the window actually turned up. A bar with nothing behind it is the thing
-            # we are trying to get rid of.
+            # Report what the completed window contributed.
             step(position, found=folded.found)
 
         coverage = Coverage(
@@ -234,7 +237,8 @@ class CardService:
                     steps=len(selected),
                 ),
             )
-            card = await self._densify(card, filename=filename, document_id=document_id)
+            with log_context(stage="card.densify", window_id=f"{document_id}:densify"):
+                card = await self._densify(card, filename=filename, document_id=document_id)
 
         card = card.model_copy(update={"coverage": coverage})
         log_trace(
@@ -262,16 +266,16 @@ class CardService:
     ) -> DocumentCard:
         """The opening window. A failure here is fatal: there is no card to fall back on."""
         started = time.perf_counter()
-        draft = await self._llm.structured(
+        reply = await self._llm.text(
             card_prompts.build(filename=filename, window=window, truncated=truncated),
-            schema=card_prompts.CardDraft,
-            profile=ModelProfile.FAST,
+            max_tokens=CARD_OUTPUT_TOKENS,
         )
+        draft = card_prompts.parse_card(reply)
         facts = _sift(
             topics=draft.topics,
             entities=draft.entities,
             keywords=draft.keywords,
-            questions=draft.answers_questions,
+            questions=draft.questions,
         )
         card = DocumentCard(
             title=draft.title.strip() or filename,
@@ -312,12 +316,12 @@ class CardService:
         """Revise the card with one further window."""
         started = time.perf_counter()
         try:
-            update = await self._llm.structured(
+            reply = await self._llm.text(
                 card_prompts.build_update(filename=filename, window=window, card=card, read=read),
-                schema=card_prompts.CardUpdate,
-                profile=ModelProfile.FAST,
+                max_tokens=CARD_OUTPUT_TOKENS,
             )
-        except StructuredOutputError as exc:
+            update = card_prompts.parse_card(reply)
+        except (StructuredOutputError, ModelRequestError) as exc:
             # One unreadable window must not cost us the windows already read.
             log_trace(
                 "card.window_failed",
@@ -333,10 +337,10 @@ class CardService:
             return _Folded(card=card, found=(), contributed=False, failed=True)
 
         facts = _sift(
-            topics=update.new_topics,
-            entities=update.new_entities,
-            keywords=update.new_keywords,
-            questions=update.new_questions,
+            topics=update.topics,
+            entities=update.entities,
+            keywords=update.keywords,
+            questions=update.questions,
         )
         if facts.any_rejected:
             _report_rejects(document_id, filename, window, facts)
@@ -346,18 +350,14 @@ class CardService:
         keywords = _added(card.keywords, facts.keywords)
         questions = _added(card.answers_questions, facts.questions)
         summary = update.summary.strip() or card.summary
-        # New facts, not the model's self-report: asked whether it learned something, a
-        # model says yes about a page of boilerplate. Both go to the trace so the
-        # disagreement stays visible.
-        # Topics and entity names, not keywords or questions: this is what gets shown
-        # while the user waits, and it should read as things, not as prose.
+        # Derive contributions from new topics and entities.
         found = tuple(topics) + tuple(e.name for e in entities)
         added = bool(topics or entities or keywords or questions)
 
         revised = card.model_copy(
             update={
-                "title": (update.title or "").strip() or card.title,
-                "doc_type": (update.doc_type or "").strip() or card.doc_type,
+                "title": update.title.strip() or card.title,
+                "doc_type": update.doc_type.strip() or card.doc_type,
                 "summary": summary,
                 "topics": card.topics + tuple(topics),
                 "entities": card.entities + tuple(entities),
@@ -373,8 +373,6 @@ class CardService:
             pass_kind="update",
             elapsed_ms=_ms(started),
             contributed=added,
-            model_said_contributed=update.contributed,
-            note=update.note,
             retitled=revised.title if update.title else None,
             summary=revised.summary,
             added={
@@ -399,7 +397,6 @@ class CardService:
             dense = await self._llm.structured(
                 card_prompts.build_densify(card=card),
                 schema=card_prompts.DensifiedSummary,
-                profile=ModelProfile.FAST,
             )
         except StructuredOutputError as exc:
             log_trace(
@@ -422,7 +419,6 @@ class CardService:
             document_id=document_id,
             filename=filename,
             elapsed_ms=_ms(started),
-            absorbed=dense.absorbed,
             before=card.summary,
             after=summary,
             length_delta=len(summary) - len(card.summary),

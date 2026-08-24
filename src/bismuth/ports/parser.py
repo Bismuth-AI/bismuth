@@ -1,4 +1,4 @@
-"""The parsing boundary. Synchronous and CPU-bound; services run it off the event loop."""
+"""Document parsing boundaries."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ class DocumentParser(Protocol):
 
     @property
     def name(self) -> str:
-        """Recorded on every :class:`~bismuth.domain.document.Extraction`."""
+        """Return the parser name recorded on each extraction."""
         ...
 
     @property
@@ -34,14 +34,10 @@ class DocumentParser(Protocol):
         ...
 
     def warm(self) -> None:
-        """Import this parser's third-party dependency now.
-
-        Parsers import lazily because they are an optional extra, but a server that
-        finds out on the first upload is a server that said it was ready too early.
-        Called once at startup so a missing extra is a boot-time line in the log.
+        """Verify that the parser is ready for use.
 
         Raises:
-            ParserUnavailableError: if the optional dependency is missing.
+            ParserUnavailableError: if the parser cannot be loaded.
         """
         ...
 
@@ -55,10 +51,9 @@ class ParserRegistry(Protocol):
         ...
 
     def supported_extensions(self) -> frozenset[str]:
-        """Used by the CLI and the upload form, so the two cannot disagree."""
+        """Return every file extension handled by the registry."""
         ...
 
     def warm(self) -> dict[str, str]:
-        """Import every registered parser's dependency. Returns parser name -> why it is
-        unavailable, for the ones that are; an empty mapping means everything loaded."""
+        """Return unavailable parser names mapped to their load errors."""
         ...

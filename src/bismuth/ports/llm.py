@@ -1,10 +1,9 @@
-"""The model boundary: services request a profile, not a model, and every call is structured."""
+"""The model boundary: services send structured tasks to one configured model."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from contextvars import ContextVar
-from enum import StrEnum
 from typing import Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -12,29 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 CURRENT_DOCUMENT: ContextVar[str] = ContextVar("current_document", default="")
-"""Which document the call being made is for.
-
-Cost is reported per document, and once reading runs for several documents at a time a
-drain-before/drain-after bracket attributes whatever finished in the window rather than
-whatever belongs to the document. A context variable rides with the task instead, so the
-attribution stays right however the caller schedules the work.
-"""
-
-
-class ModelProfile(StrEnum):
-    """What a call is worth, expressed as intent rather than as a model name."""
-
-    FAST = "fast"
-    """Runs once per document: reading it and cataloguing what it is. Cheap and
-    frequent; the budget lives or dies here."""
-
-    REASONING = "reasoning"
-    """The decisions worth paying for: placing a document into the tree, and
-    drafting a folder's note. Fewer calls than FAST, higher stakes each."""
+"""Document identifier associated with model calls in the current task."""
 
 
 class Prompt(BaseModel):
-    """A single-turn instruction. Bismuth has no use for conversation."""
+    """A single-turn model instruction."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -42,12 +23,7 @@ class Prompt(BaseModel):
     user: str
     cache_hint: bool = Field(
         default=False,
-        description=(
-            "Marks a large, stable prefix (the folder tree and its notes) as "
-            "worth caching. Placement re-sends the same tree context for every "
-            "document in a batch; providers that support prompt caching make that "
-            "nearly free, and those that do not ignore this."
-        ),
+        description="Whether the prompt contains a stable prefix suitable for provider caching.",
     )
 
 
@@ -65,12 +41,12 @@ class Usage(BaseModel):
     cost_usd: float | None = None
     retries: int = Field(
         default=0,
-        description=(
-            "Schema-repair attempts. Persistently non-zero for a profile means the "
-            "model behind it is too small for the task -- a diagnostic worth "
-            "surfacing rather than swallowing."
-        ),
+        description="Schema-repair attempts made for this call.",
     )
+
+
+CURRENT_USAGE: ContextVar[list[Usage] | None] = ContextVar("current_usage", default=None)
+"""Optional task-local usage collector."""
 
 
 class Spend(BaseModel):
@@ -88,10 +64,7 @@ class Spend(BaseModel):
     )
     priced_calls: int = Field(
         default=0,
-        description=(
-            "How many of `calls` LiteLLM could price. Fewer than `calls` means the total "
-            "is a floor, not a figure -- local and unlisted models have no published rate."
-        ),
+        description="Calls with price data. Fewer than calls means the total is incomplete.",
     )
 
     @property
@@ -136,14 +109,37 @@ class LLM(Protocol):
         prompt: Prompt,
         *,
         schema: type[SchemaT],
-        profile: ModelProfile = ModelProfile.FAST,
         temperature: float = 0.0,
     ) -> SchemaT:
-        """Return a validated instance of ``schema``, retrying with the validation error on failure.
+        """Return a validated instance of ``schema``.
 
         Raises:
-            StructuredOutputError: if no attempt produced a valid instance.
+            StructuredOutputError: if validation does not succeed.
         """
+        ...
+
+    async def text(
+        self,
+        prompt: Prompt,
+        *,
+        max_tokens: int,
+        temperature: float = 0.0,
+    ) -> str:
+        """Return unstructured model text within the caller-provided output budget.
+
+        Raises:
+            ModelRequestError: if the model returned nothing usable.
+        """
+        ...
+
+    async def choose(
+        self,
+        prompt: Prompt,
+        *,
+        choices: Sequence[str],
+        temperature: float = 0.0,
+    ) -> str:
+        """Return exactly one member of a closed request-local choice set."""
         ...
 
     def drain_usage(self) -> list[Usage]:

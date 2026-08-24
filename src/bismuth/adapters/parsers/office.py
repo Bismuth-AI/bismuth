@@ -1,4 +1,4 @@
-"""Microsoft Office formats, via the python-openxml family (all MIT)."""
+"""Text extraction for modern Microsoft Office formats."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from bismuth.domain.errors import ParserUnavailableError
 
 
 class DocxParser:
-    """Word documents; tables are rendered as Markdown grids rather than flattened cell runs, to avoid mixing up values across rows."""
+    """Extract paragraphs and tables from Word documents."""
 
     @property
     def name(self) -> str:
@@ -113,7 +113,7 @@ def _slides(presentation: object) -> Iterator[Section]:
 
 
 class XlsxParser:
-    """Spreadsheets, one section per worksheet as a Markdown table; formulas aren't evaluated, ``data_only=True`` reads Excel's last-cached values."""
+    """Extract each worksheet as a Markdown table using cached formula values."""
 
     @property
     def name(self) -> str:
@@ -143,10 +143,10 @@ class XlsxParser:
             workbook.close()
 
 
-def _sheets(workbook: object, *, max_rows: int = 200) -> Iterator[Section]:
+def _sheets(workbook: object) -> Iterator[Section]:
     for order, sheet in enumerate(workbook.worksheets):  # type: ignore[attr-defined]
         rows: list[list[str]] = []
-        for row in sheet.iter_rows(max_row=max_rows, values_only=True):
+        for row in sheet.iter_rows(values_only=True):
             cells = ["" if v is None else str(v).replace("|", "\\|") for v in row]
             if any(cell.strip() for cell in cells):
                 rows.append(cells)

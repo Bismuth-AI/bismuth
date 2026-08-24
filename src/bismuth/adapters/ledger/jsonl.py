@@ -14,11 +14,7 @@ LEDGER_FILENAME = "spend.jsonl"
 
 
 class JsonlSpendLedger:
-    """Appends to a file beside the journal, and holds the running sum.
-
-    Summing on every read would walk the whole file, which grows with the archive; the
-    total is read once and then maintained, because this process is the only writer.
-    """
+    """Append spend records and cache their running total."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -26,9 +22,7 @@ class JsonlSpendLedger:
 
     def record(self, spend: Spend) -> None:
         if not spend.calls:
-            return  # a duplicate, or work that took no model call: nothing to say
-        # Summed before the write, not after: reading the file back once the line is in
-        # it counts this spend twice, and only on the instance that wrote it.
+            return
         running = self.total()
         line = json.dumps(spend.model_dump(mode="json"), ensure_ascii=False)
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -42,8 +36,7 @@ class JsonlSpendLedger:
         return self._total
 
     def _read(self) -> Spend:
-        """Sum the file. A damaged line is skipped rather than fatal -- a wrong total is
-        worth more than a program that will not start."""
+        """Sum valid records and report damaged lines."""
         if not self._path.exists():
             return Spend()
         total = Spend()

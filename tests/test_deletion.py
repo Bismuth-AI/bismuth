@@ -8,8 +8,7 @@ import pytest
 
 from bismuth.container import Bismuth
 from bismuth.domain.errors import VaultError
-from tests.conftest import ScriptedModel
-from tests.test_ingest import add, add_into
+from tests.helpers import add, add_into
 
 
 class TestDeleteFile:
@@ -115,16 +114,14 @@ class TestDeleteFolder:
 
 
 class TestDeleteFolders:
-    async def _three_folders(self, engine: Bismuth, script: ScriptedModel) -> None:
+    async def _three_folders(self, engine: Bismuth) -> None:
         # Distinct bodies: identity is the bytes, so a shared default would make every
         # document after the first a duplicate and place nothing.
         for name, folder in (("a.txt", "법무/계약"), ("b.txt", "재무/2024"), ("c.txt", "인사")):
-            await add_into(engine, script, name, folder)
+            await add_into(engine, name, folder)
 
-    async def test_removes_several_folders_in_one_batch(
-        self, engine: Bismuth, script: ScriptedModel
-    ) -> None:
-        await self._three_folders(engine, script)
+    async def test_removes_several_folders_in_one_batch(self, engine: Bismuth) -> None:
+        await self._three_folders(engine)
 
         result = await engine.deletion.delete_folders(
             [PurePosixPath("법무"), PurePosixPath("재무")]
@@ -135,10 +132,8 @@ class TestDeleteFolders:
         assert not (engine.vault.root / "재무").exists()
         assert (engine.vault.root / "인사/c.txt").is_file()  # untouched
 
-    async def test_one_undo_puts_all_of_them_back(
-        self, engine: Bismuth, script: ScriptedModel
-    ) -> None:
-        await self._three_folders(engine, script)
+    async def test_one_undo_puts_all_of_them_back(self, engine: Bismuth) -> None:
+        await self._three_folders(engine)
         await engine.deletion.delete_folders([PurePosixPath("법무"), PurePosixPath("재무")])
 
         entry = next(e for e in engine.journal.iter_entries() if "delete 2 folder" in e.reason)
@@ -148,10 +143,10 @@ class TestDeleteFolders:
         assert (engine.vault.root / "재무/2024/b.txt").is_file()
 
     async def test_selecting_a_folder_and_its_child_counts_the_child_once(
-        self, engine: Bismuth, script: ScriptedModel
+        self, engine: Bismuth
     ) -> None:
         """Normal in a tree. Counting twice would double the total and queue a doomed RMDIR."""
-        await self._three_folders(engine, script)
+        await self._three_folders(engine)
 
         result = await engine.deletion.delete_folders(
             [PurePosixPath("법무"), PurePosixPath("법무/계약")]
@@ -161,20 +156,16 @@ class TestDeleteFolders:
         assert result.folders == 2  # 법무 and 법무/계약
         assert not (engine.vault.root / "법무").exists()
 
-    async def test_nothing_is_deleted_when_one_path_is_bad(
-        self, engine: Bismuth, script: ScriptedModel
-    ) -> None:
-        await self._three_folders(engine, script)
+    async def test_nothing_is_deleted_when_one_path_is_bad(self, engine: Bismuth) -> None:
+        await self._three_folders(engine)
 
         with pytest.raises(VaultError, match="삭제할 폴더가 없습니다"):
             await engine.deletion.delete_folders([PurePosixPath("법무"), PurePosixPath("없음")])
 
         assert (engine.vault.root / "법무/계약/a.txt").is_file()
 
-    async def test_the_inbox_poisons_the_whole_batch(
-        self, engine: Bismuth, script: ScriptedModel
-    ) -> None:
-        await self._three_folders(engine, script)
+    async def test_the_inbox_poisons_the_whole_batch(self, engine: Bismuth) -> None:
+        await self._three_folders(engine)
 
         with pytest.raises(VaultError, match="인박스는 삭제할 수 없습니다"):
             await engine.deletion.delete_folders([PurePosixPath("법무"), PurePosixPath("_inbox")])
@@ -185,12 +176,10 @@ class TestDeleteFolders:
         result = await engine.deletion.delete_folders([])
         assert (result.files, result.folders) == (0, 0)
 
-    async def test_surviving_parents_get_their_note_redrawn(
-        self, engine: Bismuth, script: ScriptedModel
-    ) -> None:
-        """법무 keeps its note after 법무/계약 goes; a parent being deleted too has none to redraw."""
-        await add_into(engine, script, "a.txt", "법무/계약", "계약 문서")
-        await add_into(engine, script, "b.txt", "법무/소송", "소송 문서")
+    async def test_surviving_parents_get_their_note_redrawn(self, engine: Bismuth) -> None:
+        """A surviving parent keeps its folder note after one child is removed."""
+        await add_into(engine, "a.txt", "법무/계약", "계약 문서")
+        await add_into(engine, "b.txt", "법무/소송", "소송 문서")
 
         await engine.deletion.delete_folders([PurePosixPath("법무/계약")])
 

@@ -71,15 +71,19 @@ class JsonlJournal:
             if not line:
                 continue
             try:
-                yield JournalEntry.model_validate(json.loads(line))
-            except (json.JSONDecodeError, ValidationError) as exc:
+                data = json.loads(line)
+            except json.JSONDecodeError as exc:
                 if number == len(lines):
-                    # A torn final line means a crash mid-append; the record never
-                    # completed, so dropping it is correct, not lossy.
                     return
                 raise JournalCorruptError(
                     f"{self._path}:{number} is unreadable ({exc}). Bismuth will not "
                     f"guess at a history it cannot read. Move this file aside to "
                     f"start a fresh journal -- your documents are untouched, but "
                     f"undo for past changes will be lost."
+                ) from exc
+            try:
+                yield JournalEntry.model_validate(data)
+            except ValidationError as exc:
+                raise JournalCorruptError(
+                    f"{self._path}:{number} contains an invalid journal record ({exc})."
                 ) from exc

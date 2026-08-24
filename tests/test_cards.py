@@ -9,6 +9,7 @@ import pytest
 from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.domain.document import Entity, EntityKind, Extraction, Section
 from bismuth.domain.errors import StructuredOutputError
+from bismuth.ports.llm import Prompt
 from bismuth.prompts import cards as card_prompts
 from bismuth.services.cards import (
     LABEL_MAX_CHARS,
@@ -17,6 +18,21 @@ from bismuth.services.cards import (
 )
 
 from .conftest import ScriptedModel
+
+
+def _reads(llm: FakeLLM, *, later: bool = False) -> list[Prompt]:
+    """The prompts that asked a window to be read.
+
+    Reading is open text now (no schema to key on), so the two kinds are told apart by
+    the contract each one carries: only the update contract makes SUMMARY compulsory.
+    """
+    return [
+        prompt
+        for prompt, schema in llm.calls
+        if schema is None
+        and "Return plain tagged lines" in prompt.system
+        and ("SUMMARY is required" in prompt.system) is later
+    ]
 
 
 def _extraction(text: str, *, truncated: bool = False) -> Extraction:
@@ -52,6 +68,24 @@ class TestWindows:
 
     def test_empty_extraction_has_no_windows(self) -> None:
         assert _extraction("").windows(100) == ()
+
+
+class TestOneLineSeveralItems:
+    """A comma-separated response still represents several labels."""
+
+    def test_a_comma_separated_line_is_several_items(self) -> None:
+        card = card_prompts.parse_card(
+            "SUMMARY: 한 문장.\nKEYWORD: 온누리상품권, 가맹점, 과징금\nTOPIC: 전통시장"
+        )
+
+        assert card.keywords == ("온누리상품권", "가맹점", "과징금")
+        assert card.topics == ("전통시장",)
+
+    def test_a_label_that_contains_a_comma_survives(self) -> None:
+        """Only a separator, never a rewrite: splitting must not leave an empty piece."""
+        card = card_prompts.parse_card("SUMMARY: 한 문장.\nTOPIC: 대ㆍ중소기업 상생협력,")
+
+        assert card.topics == ("대ㆍ중소기업 상생협력,",)
 
 
 class TestDescribe:
@@ -120,21 +154,21 @@ class TestDescribe:
         assert not coverage.whole_document
 
         # The point of striding: the end of the document is read, not just the top.
-        read = [p.user for p in llm.prompts_for(card_prompts.CardUpdate)]
+        read = [p.user for p in _reads(llm, later=True)]
         last = coverage.windows_total
-        assert f"This is part {last}/{last}" in read[-1]
-        assert f"This is part 2/{last}" not in read[0]
+        assert f"This section is {last}/{last}." in read[-1]
+        assert f"This section is 2/{last}." not in read[0]
 
     async def test_a_failed_window_keeps_the_card_built_so_far(self, llm: FakeLLM) -> None:
         calls = {"n": 0}
         script = ScriptedModel()
 
-        def flaky(prompt, schema, profile):  # type: ignore[no-untyped-def]
-            if schema is card_prompts.CardUpdate:
+        def flaky(prompt, schema):  # type: ignore[no-untyped-def]
+            if "SUMMARY is required" in prompt.system:
                 calls["n"] += 1
                 if calls["n"] == 2:
                     raise StructuredOutputError("scripted failure")
-            return script(prompt, schema, profile)
+            return script(prompt, schema)
 
         card = await CardService(FakeLLM(handler=flaky), context_chars=100).describe(
             _extraction(_long(500)), filename="깨진문서.pdf"
@@ -148,22 +182,20 @@ class TestDescribe:
         await CardService(llm, context_chars=10_000).describe(
             _extraction("짧고 온전한 문서"), filename="짧은.pdf"
         )
-        sent = llm.prompts_for(card_prompts.CardDraft)[0].user
-        assert "NOTE:" not in sent
+        sent = _reads(llm)[0].user
+        assert "참고:" not in sent
 
     async def test_a_cut_off_document_says_so_in_the_prompt(self, llm: FakeLLM) -> None:
         await CardService(llm, context_chars=10_000).describe(
             _extraction("잘린 문서", truncated=True), filename="잘린.pdf"
         )
-        assert (
-            "stopped before the end of the file" in llm.prompts_for(card_prompts.CardDraft)[0].user
-        )
+        assert "Extraction stopped before the end of the file" in _reads(llm)[0].user
 
     async def test_later_windows_are_announced_as_parts(self, llm: FakeLLM) -> None:
         await CardService(llm, context_chars=100).describe(
             _extraction(_long(500)), filename="긴문서.pdf"
         )
-        assert "part 1 of" in llm.prompts_for(card_prompts.CardDraft)[0].user
+        assert "This is the first of" in _reads(llm)[0].user
 
     async def test_extraction_truncation_is_still_reported(self, llm: FakeLLM) -> None:
         card = await CardService(llm, context_chars=10_000).describe(
@@ -175,13 +207,13 @@ class TestDescribe:
 
 
 class TestLabelHygiene:
-    """A real run put a whole bibliography into `topics`; that lands in the sidecar and in
-    every later placement prompt, so it is filtered at the source rather than in the UI."""
+    """Labels that cannot serve as compact metadata are rejected."""
 
     async def test_an_entry_too_long_to_be_a_label_is_dropped(self, script: ScriptedModel) -> None:
+        # Bypass schema validation to exercise the service boundary.
         script.set(
             card_prompts.CardDraft,
-            card_prompts.CardDraft(
+            card_prompts.CardDraft.model_construct(
                 title="논문",
                 summary="요약",
                 doc_type="학술논문",
@@ -192,6 +224,7 @@ class TestLabelHygiene:
                     Entity(name="A" * (NAME_MAX_CHARS + 1), kind=EntityKind.PERSON),
                 ],
                 keywords=["ESV", "가" * (LABEL_MAX_CHARS + 1)],
+                answers_questions=[],
             ),
         )
         card = await CardService(FakeLLM(handler=script), context_chars=10_000).describe(
@@ -223,12 +256,15 @@ class TestLabelHygiene:
         logs = configure_logging(log_dir=tmp_path / "logs")
         script.set(
             card_prompts.CardDraft,
-            card_prompts.CardDraft(
+            card_prompts.CardDraft.model_construct(
                 title="t",
                 summary="s",
                 doc_type="문서",
                 language="ko",
                 topics=["참" * 200],
+                entities=[],
+                keywords=[],
+                answers_questions=[],
             ),
         )
         await CardService(FakeLLM(handler=script), context_chars=10_000).describe(

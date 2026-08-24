@@ -2,7 +2,67 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
+
+from bismuth.adapters.llm.fake import FakeLLM
+from bismuth.agentkit import AssistantMessage
+from bismuth.api.app import create_app
+from bismuth.cli.main import _is_loopback_host
+from bismuth.config import Settings
+from bismuth.container import build
+from bismuth.ports.llm import CURRENT_USAGE, Usage
+
+from .conftest import seed_folder
+from .test_ingest import add
+
+
+def _seed_document(
+    client: TestClient, name: str = "contract.txt", body: str = "아폴로 계약서"
+) -> None:
+    asyncio.run(add(client.app.state.engine, name, body))  # type: ignore[attr-defined]
+
+
+class TestIndex:
+    def test_ui_shell_is_not_cached_across_server_upgrades(self, client: TestClient) -> None:
+        response = client.get("/")
+
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store, max-age=0"
+        assert response.headers["pragma"] == "no-cache"
+        assert response.headers["x-frame-options"] == "DENY"
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+
+    def test_batch_success_excludes_duplicates_inbox_and_failures(self, client: TestClient) -> None:
+        page = client.get("/").text
+        assert "batch.completed - batch.failed - batch.duplicate - batch.inbox" in page
+
+    def test_every_picker_upload_uses_the_batch_pipeline(self, client: TestClient) -> None:
+        page = client.get("/").text
+
+        assert 'api("/batches", { method: "POST", body: fd })' in page
+        assert 'api("/documents",' not in page
+
+    def test_rebuild_controls_are_available(self, client: TestClient) -> None:
+        page = client.get("/").text
+
+        assert 'id="btn-empty-tree"' in page
+        assert 'id="btn-refile"' in page
+
+    def test_demo_routes_are_not_part_of_the_product(self, client: TestClient) -> None:
+        assert client.get("/demo").status_code == 404
+        assert client.get("/demo/chat").status_code == 404
+
+    def test_static_html_escapes_attribute_quotes(self, client: TestClient) -> None:
+        assert "/[&<>\"']/g" in client.get("/chat").text
+        assert "/[&<>\"']/g" in client.get("/trace").text
 
 
 class TestStatus:
@@ -12,20 +72,34 @@ class TestStatus:
     def test_status_reports_the_shape_of_the_vault(self, client: TestClient) -> None:
         body = client.get("/api/status").json()
         assert body["documents"] == 0
-        # 아폴로 and 아폴로/2023 are seeded so placement has somewhere to choose.
+        # The seeded parent and child folders provide an existing filing destination.
         assert body["folders"] == 2
         assert "runs_locally" in body
+
+    def test_status_reports_web_upload_formats(self, settings: Settings) -> None:
+        with TestClient(create_app(settings)) as strict:
+            assert strict.get("/api/status").json()["supported_formats"] == [".pdf"]
+
+    def test_status_counts_documents_waiting_at_root(self, client: TestClient) -> None:
+        vault = client.app.state.engine.vault  # type: ignore[attr-defined]
+        (Path(vault.root) / "waiting.txt").write_bytes(b"waiting for a useful class")
+
+        body = client.get("/api/status").json()
+
+        assert body["documents"] == 1
+        assert body["placed"] == 1
+        assert body["inbox"] == 0
 
 
 class TestOpenFile:
     def test_serves_a_documents_bytes(self, client: TestClient) -> None:
-        client.post(
-            "/api/documents",
-            files={"files": ("contract.txt", "아폴로 계약서 2023 고유내용".encode(), "text/plain")},
-        )
+        _seed_document(client, body="아폴로 계약서 2023 고유내용")
         r = client.get("/api/file", params={"path": "아폴로/2023/contract.txt"})
         assert r.status_code == 200
         assert "아폴로 계약서 2023 고유내용" in r.content.decode("utf-8")
+        assert r.headers["content-disposition"].startswith("attachment;")
+        assert r.headers["content-type"].startswith("application/octet-stream")
+        assert r.headers["x-content-type-options"] == "nosniff"
 
     def test_missing_file_is_404(self, client: TestClient) -> None:
         assert client.get("/api/file", params={"path": "아폴로/2023/nope.txt"}).status_code == 404
@@ -36,50 +110,292 @@ class TestOpenFile:
         assert r.status_code == 404
 
 
-class TestUpload:
-    def test_upload_files_a_document(self, client: TestClient) -> None:
-        response = client.post(
-            "/api/documents",
-            files={"files": ("contract.txt", "아폴로 계약서 2023".encode(), "text/plain")},
-        )
-        assert response.status_code == 200, response.text
-        result = response.json()[0]
-        assert result["ok"] is True
-        assert result["placed"] is True
-        assert result["destination"] == "아폴로/2023"
-        assert result["created_folder"] is False  # it was already there
+class TestAcceptedUploads:
+    """Only PDF for now: the other parsers are registered but not yet trusted end to end."""
 
-    def test_upload_shows_up_in_the_tree(self, client: TestClient) -> None:
+    @pytest.fixture
+    def strict(self, settings: Settings, llm: FakeLLM) -> Iterator[TestClient]:
+        app = create_app(settings)  # the product's own list, not the fixture's wider one
+        engine = build(settings, llm=llm)
+        seed_folder(Path(engine.vault.root))
+        app.state.engine = engine
+        with TestClient(app) as test_client:
+            yield test_client
+
+    def test_a_text_file_is_refused(self, strict: TestClient) -> None:
+        r = strict.post(
+            "/api/batches",
+            files={"files": ("contract.txt", "아폴로 계약서".encode(), "text/plain")},
+        )
+
+        assert r.status_code == 400
+        assert ".txt" in r.json()["detail"]
+
+    def test_the_refusal_names_every_kind_it_turned_away(self, strict: TestClient) -> None:
+        r = strict.post(
+            "/api/batches",
+            files=[
+                ("files", ("a.docx", b"x", "application/octet-stream")),
+                ("files", ("b.hwpx", b"x", "application/octet-stream")),
+            ],
+        )
+
+        assert r.status_code == 400
+        assert ".docx" in r.json()["detail"] and ".hwpx" in r.json()["detail"]
+
+    def test_nothing_is_staged_when_a_batch_is_refused(self, strict: TestClient) -> None:
+        engine = strict.app.state.engine  # type: ignore[attr-defined]
+
+        strict.post("/api/batches", files={"files": ("a.txt", b"x", "text/plain")})
+
+        assert not list((Path(engine.vault.root) / "_inbox").glob("*"))
+
+    def test_a_file_renamed_to_pdf_is_refused(self, strict: TestClient) -> None:
+        r = strict.post(
+            "/api/batches", files={"files": ("paper.pdf", b"not really a pdf", "application/pdf")}
+        )
+
+        assert r.status_code == 400
+        assert "올바른 PDF" in r.json()["detail"]
+
+    def test_an_invalid_pdf_batch_stages_nothing(self, strict: TestClient) -> None:
+        engine = strict.app.state.engine  # type: ignore[attr-defined]
+
+        response = strict.post(
+            "/api/batches",
+            files=[
+                ("files", ("valid.pdf", b"%PDF-1.7\n", "application/pdf")),
+                ("files", ("invalid.pdf", b"plain text", "application/pdf")),
+            ],
+        )
+
+        assert response.status_code == 400
+        assert not list((Path(engine.vault.root) / "_inbox").glob("*"))
+
+    def test_an_oversized_file_is_refused(
+        self, strict: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("bismuth.api.app.MAX_UPLOAD_BYTES", 8)
+
+        response = strict.post(
+            "/api/batches",
+            files={"files": ("large.pdf", b"%PDF-1.7\nmore", "application/pdf")},
+        )
+
+        assert response.status_code == 413
+
+    def test_too_many_files_are_refused(
+        self, strict: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("bismuth.api.app.MAX_UPLOAD_FILES", 1)
+
+        response = strict.post(
+            "/api/batches",
+            files=[
+                ("files", ("one.pdf", b"%PDF-1.7\n", "application/pdf")),
+                ("files", ("two.pdf", b"%PDF-1.7\n", "application/pdf")),
+            ],
+        )
+
+        assert response.status_code == 413
+
+    def test_oversized_batch_is_refused_before_staging(
+        self, strict: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine = strict.app.state.engine  # type: ignore[attr-defined]
+        monkeypatch.setattr("bismuth.api.app.MAX_UPLOAD_TOTAL_BYTES", 12)
+
+        response = strict.post(
+            "/api/batches",
+            files=[
+                ("files", ("one.pdf", b"%PDF-1.7\n", "application/pdf")),
+                ("files", ("two.pdf", b"%PDF-1.7\n", "application/pdf")),
+            ],
+        )
+
+        assert response.status_code == 413
+        assert not list((Path(engine.vault.root) / "_inbox").glob("*"))
+
+
+class TestLocalSecurityBoundary:
+    def test_rejects_untrusted_hosts(self, client: TestClient) -> None:
+        assert client.get("/api/status", headers={"host": "example.test"}).status_code == 400
+
+    def test_rejects_external_write_origins(self, client: TestClient) -> None:
+        response = client.post("/api/batches", headers={"origin": "https://example.test"})
+
+        assert response.status_code == 403
+
+    def test_hides_unhandled_exception_details(self, settings: Settings) -> None:
+        app = create_app(settings)
+
+        @app.get("/boom")
+        def boom() -> None:
+            raise RuntimeError("private detail")
+
+        with TestClient(app, raise_server_exceptions=False) as local:
+            response = local.get("/boom")
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Internal server error"}
+
+    @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "::1"])
+    def test_cli_accepts_loopback_hosts(self, host: str) -> None:
+        assert _is_loopback_host(host)
+
+    def test_cli_rejects_external_hosts(self) -> None:
+        assert not _is_loopback_host("0.0.0.0")
+        assert not _is_loopback_host("192.168.1.10")
+
+
+class TestAnsweringSide:
+    """Chat settings own the answering provider, model, and credentials."""
+
+    def _configured(self, client: TestClient) -> None:
         client.post(
-            "/api/documents",
-            files={"files": ("contract.txt", "아폴로 계약서 2023".encode(), "text/plain")},
+            "/api/setup",
+            json={
+                "provider_id": "custom",
+                "api_base": "http://filing/v1",
+                "api_key": "key-filing",
+                "model": "filing-model",
+                "vault_path": str(client.app.state.engine.vault.root),  # type: ignore[attr-defined]
+            },
         )
-        paths = [f["path"] for f in client.get("/api/tree").json()]
-        assert "아폴로/2023" in paths
 
-    def test_re_uploading_the_same_bytes_is_a_no_op(self, client: TestClient) -> None:
-        payload = {"files": ("a.txt", b"same bytes", "text/plain")}
-        client.post("/api/documents", files=payload)
-        second = client.post(
-            "/api/documents", files={"files": ("renamed.txt", b"same bytes", "text/plain")}
-        )
-        assert second.json()[0]["duplicate"] is True
+    def test_a_second_model_on_the_same_server(self, client: TestClient) -> None:
+        self._configured(client)
 
-    def test_a_filename_cannot_escape_the_vault(self, client: TestClient) -> None:
-        client.post(
-            "/api/documents",
-            files={"files": ("../../evil.txt", "아폴로 계약서".encode(), "text/plain")},
+        r = client.post("/api/setup/chat", json={"model": "answering-model"})
+
+        assert r.status_code == 200
+        assert r.json()["chat_model"] == "answering-model"
+        assert r.json()["chat_provider_id"] == ""
+        assert r.json()["chat_is_separate"] is True
+
+    def test_the_same_name_is_not_a_second_model(self, client: TestClient) -> None:
+        """Otherwise the two drift apart the next time the filing model is changed."""
+        self._configured(client)
+
+        r = client.post("/api/setup/chat", json={"model": "filing-model"})
+
+        assert r.json()["chat_model"] == ""
+        assert r.json()["chat_is_separate"] is False
+
+    def test_another_provider_entirely(self, client: TestClient) -> None:
+        self._configured(client)
+
+        r = client.post(
+            "/api/setup/chat",
+            json={"provider_id": "anthropic", "model": "claude-x", "api_key": "key-answering"},
         )
-        root = client.app.state.engine.vault.root  # type: ignore[attr-defined]
-        assert not (root.parent.parent / "evil.txt").exists()
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["chat_provider_id"] == "anthropic"
+        assert body["chat_api_key_tail"].endswith("ring")
+        # and the filing side is exactly as it was
+        assert body["provider_id"] == "custom"
+        assert body["model"] == "filing-model"
+        assert body["api_key_tail"].endswith("ling")
+
+    def test_a_provider_that_needs_a_key_is_refused_without_one(self, client: TestClient) -> None:
+        self._configured(client)
+
+        r = client.post("/api/setup/chat", json={"provider_id": "anthropic", "model": "claude-x"})
+
+        assert r.status_code == 400
+        assert "키" in r.json()["detail"]
+
+    def test_an_unknown_provider_is_refused(self, client: TestClient) -> None:
+        self._configured(client)
+
+        r = client.post("/api/setup/chat", json={"provider_id": "nowhere", "model": "x"})
+
+        assert r.status_code == 400
+
+    def test_the_engine_answers_from_the_new_model_afterwards(self, client: TestClient) -> None:
+        """Updating settings also replaces the running engine."""
+        self._configured(client)
+
+        client.post("/api/setup/chat", json={"model": "answering-model"})
+
+        settings = client.app.state.settings  # type: ignore[attr-defined]
+        assert settings.chat().model.endswith("answering-model")
+        assert settings.librarian().model.endswith("filing-model")
+
+    def test_model_runtime_settings_are_saved_and_applied(self, client: TestClient) -> None:
+        self._configured(client)
+
+        r = client.post(
+            "/api/setup/chat",
+            json={
+                "provider_id": "openai",
+                "model": "gpt-5.6-luna",
+                "api_key": "test-key-answering",
+                "api_mode": "responses",
+                "reasoning_effort": "high",
+            },
+        )
+
+        assert r.status_code == 200
+        assert r.json()["chat_api_mode"] == "responses"
+        assert r.json()["chat_reasoning_effort"] == "high"
+        settings = client.app.state.settings  # type: ignore[attr-defined]
+        endpoint = settings.chat().for_workload(uses_tools=True)
+        assert endpoint.model == "openai/responses/gpt-5.6-luna"
+        assert endpoint.body["reasoning_effort"] == "high"
+
+
+class TestChatSpend:
+    def test_the_final_stream_event_reports_this_answers_tokens_and_cost(
+        self, settings: Settings, llm: FakeLLM
+    ) -> None:
+        class MeteredModel:
+            def __init__(self) -> None:
+                self._usage: list[Usage] = []
+
+            async def complete(self, **_: object) -> AssistantMessage:
+                usage = Usage(
+                    model="test/chat",
+                    input_tokens=1200,
+                    output_tokens=345,
+                    cost_usd=0.0123,
+                )
+                self._usage.append(usage)
+                captured = CURRENT_USAGE.get()
+                if captured is not None:
+                    captured.append(usage)
+                return AssistantMessage(text="근거 있는 답변")
+
+            def drain_usage(self) -> list[Usage]:
+                drained, self._usage = self._usage, []
+                return drained
+
+        app = create_app(settings)
+        app.state.engine = build(settings, llm=llm, chat_model=MeteredModel())
+        with TestClient(app) as test_client:
+            response = test_client.post("/api/chat", json={"message": "질문"})
+
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        answer = next(event for event in events if event["type"] == "answer")
+        assert answer["spend"] == {
+            "calls": 1,
+            "input_tokens": 1200,
+            "output_tokens": 345,
+            "retries": 0,
+            "cost_usd": 0.0123,
+            "priced_calls": 1,
+        }
 
 
 class TestFolder:
     def test_folder_returns_its_note_and_contents(self, client: TestClient) -> None:
-        client.post(
-            "/api/documents",
-            files={"files": ("contract.txt", "아폴로 계약서 2023".encode(), "text/plain")},
-        )
+        _seed_document(client)
         body = client.get("/api/folder", params={"path": "아폴로/2023"}).json()
         assert body["charter"]["purpose"]
         assert body["documents"][0]["title"] == "아폴로 지원 계약서"
@@ -88,31 +404,163 @@ class TestFolder:
         assert client.get("/api/folder", params={"path": "nope"}).status_code == 404
 
 
-class TestUndo:
-    def test_a_filed_document_can_be_put_back(self, client: TestClient) -> None:
-        client.post(
-            "/api/documents",
-            files={"files": ("contract.txt", "아폴로 계약서 2023".encode(), "text/plain")},
+class TestBatchUpload:
+    def test_duplicate_bytes_in_one_batch_are_filed_once(self, client: TestClient) -> None:
+        submitted = client.post(
+            "/api/batches",
+            files=[
+                ("files", ("one.txt", b"same bytes", "text/plain")),
+                ("files", ("copy.txt", b"same bytes", "text/plain")),
+            ],
+        ).json()
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            batch = client.get(f"/api/batches/{submitted['id']}").json()
+            if batch["status"] == "done":
+                break
+            time.sleep(0.01)
+
+        engine = client.app.state.engine  # type: ignore[attr-defined]
+        assert batch["completed"] == 2
+        assert batch["duplicate"] == 1
+        assert engine.catalog.card_count() == 1
+
+    def test_one_file_uses_simple_filing(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine = client.app.state.engine  # type: ignore[attr-defined]
+        filed: list[int] = []
+        original = engine.simple.file
+
+        async def record(batch: list[tuple[object, object, object]]) -> None:
+            filed.append(len(batch))
+            await original(batch)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(engine.simple, "file", record)
+        submitted = client.post(
+            "/api/batches",
+            files={"files": ("one.txt", "단일 문서".encode(), "text/plain")},
+        ).json()
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            batch = client.get(f"/api/batches/{submitted['id']}").json()
+            if batch["status"] == "done":
+                break
+            time.sleep(0.01)
+
+        assert batch["status"] == "done"
+        assert filed == [1]
+
+    def test_batch_keeps_processing_after_the_submit_response(self, client: TestClient) -> None:
+        submitted = client.post(
+            "/api/batches",
+            files=[
+                ("files", ("one.txt", "아폴로 계약서 하나".encode(), "text/plain")),
+                ("files", ("two.txt", "아폴로 계약서 둘".encode(), "text/plain")),
+            ],
         )
+
+        assert submitted.status_code == 202
+        batch = submitted.json()
+        assert batch["total"] == 2
+        assert batch["completed"] <= 2
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            batch = client.get(f"/api/batches/{batch['id']}").json()
+            if batch["status"] == "done":
+                break
+            time.sleep(0.01)
+
+        assert batch["status"] == "done"
+        assert batch["completed"] == 2
+        assert batch["failed"] == 0
+        # A newly loaded page discovers the same server-owned batch.
+        assert batch["id"] in {item["id"] for item in client.get("/api/batches").json()}
+
+    def test_filing_failures_count_as_completed(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine = client.app.state.engine  # type: ignore[attr-defined]
+
+        async def fail_filing(*_: object) -> None:
+            raise RuntimeError("filing failed")
+
+        monkeypatch.setattr(engine.simple, "file", fail_filing)
+        submitted = client.post(
+            "/api/batches",
+            files=[
+                ("files", ("one.txt", b"one", "text/plain")),
+                ("files", ("two.txt", b"two", "text/plain")),
+            ],
+        ).json()
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            batch = client.get(f"/api/batches/{submitted['id']}").json()
+            if batch["status"] == "done":
+                break
+            time.sleep(0.01)
+
+        assert batch["completed"] == 2
+        assert batch["failed"] == 2
+
+
+class TestCardReplay:
+    def test_empty_tree_keeps_documents_and_sidecars(self, client: TestClient) -> None:
+        _seed_document(client)
         vault = client.app.state.engine.vault  # type: ignore[attr-defined]
-        assert (vault.root / "아폴로/2023/contract.txt").is_file()
 
-        entry = next(
-            e for e in client.get("/api/journal").json() if e["reason"].startswith("file ")
-        )
-        assert client.post(f"/api/journal/{entry['id']}/undo").status_code == 200
-        assert (vault.root / "_inbox/contract.txt").is_file()
+        response = client.post("/api/tree/empty")
 
+        assert response.status_code == 200
+        assert response.json() == {"documents": 1, "folders": 2}
+        assert (vault.root / "contract.txt").is_file()
+        assert (vault.root / "contract.txt.md").is_file()
+        assert not (vault.root / "아폴로").exists()
+
+    def test_refile_all_reuses_the_saved_card(self, client: TestClient) -> None:
+        _seed_document(client)
+        vault = client.app.state.engine.vault  # type: ignore[attr-defined]
+        original_sidecar = (vault.root / "아폴로/2023/contract.txt.md").read_bytes()
+        card_files = vault.root / ".bismuth/cards"
+        original_catalog = {path.name: path.read_bytes() for path in card_files.glob("*.json")}
+
+        def refile() -> dict[str, object]:
+            submitted = client.post("/api/refile-all")
+            assert submitted.status_code == 202
+            batch = submitted.json()
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                batch = client.get(f"/api/batches/{batch['id']}").json()
+                if batch["status"] in {"done", "failed"}:
+                    return batch
+                time.sleep(0.01)
+            return batch
+
+        first = refile()
+        second = refile()
+
+        assert first["status"] == second["status"] == "done"
+        assert first["completed"] == second["completed"] == 1
+        assert (vault.root / "contract.txt").is_file()
+        assert (vault.root / "contract.txt.md").read_bytes() == original_sidecar
+        assert {
+            path.name: path.read_bytes() for path in card_files.glob("*.json")
+        } == original_catalog
+        assert not (vault.root / "_inbox/contract.txt").exists()
+
+
+class TestUndo:
     def test_undoing_something_unknown_is_a_clean_400(self, client: TestClient) -> None:
         assert client.post("/api/journal/nope/undo").status_code == 400
 
 
 class TestDelete:
     def _file(self, client: TestClient) -> None:
-        client.post(
-            "/api/documents",
-            files={"files": ("contract.txt", "아폴로 계약서 2023".encode(), "text/plain")},
-        )
+        _seed_document(client)
 
     def test_delete_a_file(self, client: TestClient) -> None:
         self._file(client)
@@ -174,20 +622,100 @@ class TestDelete:
         assert folder["documents"][0]["title"] == "아폴로 지원 계약서"
 
 
-class TestDuplicate:
-    def test_a_duplicate_upload_reports_the_existing_location(self, client: TestClient) -> None:
-        payload = {"files": ("a.txt", "같은 내용 아폴로".encode(), "text/plain")}
-        client.post("/api/documents", files=payload)
-        second = client.post(
-            "/api/documents", files={"files": ("b.txt", "같은 내용 아폴로".encode(), "text/plain")}
-        )
-        result = second.json()[0]
-        assert result["duplicate"] is True
-        assert result["destination"] == "아폴로/2023"
-
-
 class TestUi:
     def test_the_page_is_served(self, client: TestClient) -> None:
         response = client.get("/")
         assert response.status_code == 200
         assert "Bismuth" in response.text
+
+
+class TestBatchReadsAheadButFilesInOrder:
+    def test_documents_are_filed_in_the_order_they_were_submitted(
+        self, client: TestClient, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Reading runs ahead; filing must not. The tree a document lands in is the one the
+        documents before it built, so a reordered batch is a different archive.
+
+        Filing takes a handful at a time now, so what has to hold is that the handfuls
+        arrive in order and each is itself in order."""
+        filed: list[str] = []
+        engine = client.app.state.engine
+        original = engine.simple.file
+
+        async def record(batch, **kwargs):  # type: ignore[no-untyped-def]
+            filed.extend(one.source.filename for _, _, one in batch)
+            return await original(batch, **kwargs)
+
+        monkeypatch.setattr(engine.simple, "file", record)
+        names = [f"doc{index}.txt" for index in range(6)]
+        submitted = client.post(
+            "/api/batches",
+            files=[("files", (name, f"문서 {name} 내용".encode(), "text/plain")) for name in names],
+        )
+
+        batch = submitted.json()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            batch = client.get(f"/api/batches/{batch['id']}").json()
+            if batch["status"] == "done":
+                break
+            time.sleep(0.05)
+
+        assert batch["status"] == "done"
+        assert filed == names
+
+
+class TestTheWizardDoesNotCarryAnEndpointForward:
+    """Provider changes clear endpoint-specific headers and body values."""
+
+    def test_changing_provider_clears_the_previous_headers_and_body(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        vault_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        config = tmp_path / "config.json"
+        monkeypatch.setattr("bismuth.config.CONFIG_DIR", tmp_path)
+        monkeypatch.setattr("bismuth.config.CONFIG_FILE", config)
+        monkeypatch.setitem(Settings.model_config, "json_file", config)
+        monkeypatch.setattr(
+            "bismuth.api.app.supports_response_schema", lambda **_: True, raising=True
+        )
+
+        custom = client.post(
+            "/api/setup",
+            json={
+                "provider_id": "custom",
+                "api_base": "http://gateway.internal/v1",
+                "api_headers": {"Cookie": "gateway-session"},
+                "api_body": {"chat_template_kwargs": {"enable_thinking": False}},
+                "model": "qwen3-32b",
+                "vault_path": str(vault_path),
+            },
+        )
+        assert custom.status_code == 200
+        assert custom.json()["api_headers"] == {"Cookie": "gateway-session"}
+
+        # Hosted providers do not inherit custom endpoint options.
+        hosted = client.post(
+            "/api/setup",
+            json={
+                "provider_id": "openai",
+                "api_key": "test-key-test",
+                "api_base": None,
+                "api_headers": {},
+                "api_body": {},
+                "model": "gpt-4o",
+                "vault_path": str(vault_path),
+            },
+        )
+
+        assert hosted.status_code == 200
+        state = hosted.json()
+        assert state["provider_id"] == "openai"
+        assert state["api_headers"] == {}
+        assert state["api_body"] == {}
+        assert state["api_base"] is None
+        assert state["native_schema"] is None
+        assert json.loads(config.read_text(encoding="utf-8"))["api_headers"] == {}

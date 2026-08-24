@@ -3,13 +3,16 @@ the server is accepting requests."""
 
 from __future__ import annotations
 
+import os
 import sys
+import types
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from bismuth.adapters.llm import litellm_adapter
+from bismuth.adapters.llm import wire as llm_wire
 from bismuth.adapters.parsers import build_registry
 from bismuth.adapters.parsers.registry import ExtensionRegistry, require
 from bismuth.api.app import create_app
@@ -51,7 +54,7 @@ class TestWarm:
 
         assert build_registry().warm() == {}
 
-        # The point of the exercise: after warm() nothing is left to import at request time.
+        # warm() loads every parser dependency before requests arrive.
         assert {"pypdf", "docx", "pptx", "openpyxl"} <= set(sys.modules)
 
     def test_every_registered_parser_can_be_warmed(self) -> None:
@@ -83,21 +86,42 @@ class TestServerPreload:
         tmp_path,
         monkeypatch,  # type: ignore[no-untyped-def]
     ) -> None:
-        """A multi-second import inside the first request makes a started server look hung.
-
-        The deadline is the first request, not the app object: preloading moved into
-        startup so that logging could be set up after uvicorn has had its turn at it,
-        and startup still finishes before any request is accepted.
-
-        Asserts the adapter's own cache rather than sys.modules: another test importing
-        litellm would make the sys.modules version of this pass without preload running.
-        """
+        """The adapter is loaded during application startup."""
         monkeypatch.chdir(tmp_path)  # startup writes ./logs
-        monkeypatch.setattr(litellm_adapter, "_litellm", None)
-        assert litellm_adapter._litellm is None
+        monkeypatch.setattr(llm_wire, "_litellm", None)
+        assert llm_wire._litellm is None
 
         with TestClient(create_app(settings)):
-            assert litellm_adapter._litellm is not None
+            assert llm_wire._litellm is not None
 
     def test_no_parser_import_is_left_for_the_first_upload(self, client) -> None:  # type: ignore[no-untyped-def]
         assert {"pypdf", "docx", "pptx", "openpyxl"} <= set(sys.modules)
+
+
+class TestStartupMakesNoNetworkCall:
+    """Startup must not fetch remote metadata while importing LiteLLM."""
+
+    def _instant_litellm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(sys.modules, "litellm", types.ModuleType("litellm"))
+        monkeypatch.setattr(llm_wire, "_litellm", None)
+
+    def test_the_price_list_comes_from_the_installed_package(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LITELLM_LOCAL_MODEL_COST_MAP", raising=False)
+        self._instant_litellm(monkeypatch)
+
+        litellm_adapter.preload()
+
+        assert os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] == "true"
+
+    def test_asking_for_the_current_list_is_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opting back in has to be possible, or the price list can never be corrected."""
+        monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "false")
+        self._instant_litellm(monkeypatch)
+
+        litellm_adapter.preload()
+
+        assert os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] == "false"

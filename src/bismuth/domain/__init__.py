@@ -25,7 +25,6 @@ from bismuth.domain.journal import (
     OperationKind,
 )
 from bismuth.domain.paths import sanitize_segment
-from bismuth.domain.placement import Placement, Verdict
 
 __all__ = [
     "BismuthError",
@@ -41,12 +40,10 @@ __all__ = [
     "Operation",
     "OperationKind",
     "ParserUnavailableError",
-    "Placement",
     "Section",
     "SourceRef",
     "StructuredOutputError",
     "VaultError",
-    "Verdict",
     "sanitize_segment",
     "sidecar_name",
 ]

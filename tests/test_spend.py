@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
 
 from bismuth.ports.llm import Spend, Usage
 
@@ -51,51 +50,3 @@ class TestSpend:
     def test_adding_to_nothing_changes_nothing(self) -> None:
         spend = Spend.of([_usage(cost=0.01)])
         assert (spend + Spend()).model_dump() == spend.model_dump()
-
-
-class TestSpendOverHttp:
-    def test_an_upload_reports_what_it_cost(self, client: TestClient) -> None:
-        body = client.post(
-            "/api/documents",
-            files={"files": ("계약.txt", "아폴로 계약서".encode(), "text/plain")},
-        ).json()[0]
-
-        # FakeLLM records a Usage per call with no price, so calls are real and cost is not.
-        assert body["spend"]["calls"] > 0
-        assert body["spend"]["cost_usd"] is None
-
-    def test_each_document_is_billed_for_its_own_calls(self, client: TestClient) -> None:
-        """Draining around one document is what attributes the bill. Without it the counts
-        would climb — 4, 7, 10 — as every document inherited its predecessors'."""
-        counts = [
-            client.post(
-                "/api/documents", files={"files": (name, f"문서 {name}".encode(), "text/plain")}
-            ).json()[0]["spend"]["calls"]
-            for name in ("a.txt", "b.txt", "c.txt")
-        ]
-
-        # Per-document cost is not uniform and is not meant to be: the first builds the
-        # tree, and subdivision is asked on a doubling schedule rather than every time.
-        # What must hold is that nobody pays for the documents before them.
-        assert counts[2] < sum(counts[:2])
-        assert counts[2] <= max(counts[:2])
-
-    def test_a_duplicate_costs_almost_nothing(self, client: TestClient) -> None:
-        payload = {"files": ("계약.txt", "같은 바이트".encode(), "text/plain")}
-        client.post("/api/documents", files=payload)
-        again = client.post(
-            "/api/documents",
-            files={"files": ("다른이름.txt", "같은 바이트".encode(), "text/plain")},
-        ).json()[0]
-
-        assert again["duplicate"] is True
-        assert again["spend"]["calls"] == 0  # the hash check happens before any model call
-
-    def test_draining_is_what_stops_usage_piling_up(self, client: TestClient) -> None:
-        """Nothing read the adapters' usage lists before this, so nothing ever emptied them."""
-        engine = client.app.state.engine  # type: ignore[attr-defined]
-        for name in ("a.txt", "b.txt", "c.txt"):
-            client.post(
-                "/api/documents", files={"files": (name, f"문서 {name}".encode(), "text/plain")}
-            )
-        assert engine.llm.drain_usage() == []

@@ -1,4 +1,4 @@
-"""Ingests a file: parse, describe, place, move, and write its sidecar and folder note."""
+"""Stage uploads and prepare them for the filing service."""
 
 from __future__ import annotations
 
@@ -10,11 +10,9 @@ from pathlib import Path, PurePosixPath
 
 import anyio
 
-from bismuth.domain.charter import CHARTER_FILENAME
-from bismuth.domain.document import DocumentCard, Extraction, SourceRef, sidecar_name
+from bismuth.domain.document import DocumentCard, Extraction, SourceRef
 from bismuth.domain.errors import BismuthError
 from bismuth.domain.journal import Actor, JournalEntry, Operation, OperationKind
-from bismuth.domain.placement import Placement
 from bismuth.domain.progress import Progress, ProgressSink, Stage, report
 from bismuth.logging_setup import log_trace
 from bismuth.ports.catalog import Catalog
@@ -22,10 +20,6 @@ from bismuth.ports.llm import CURRENT_DOCUMENT
 from bismuth.ports.parser import ParserRegistry
 from bismuth.ports.vault import INBOX, Vault
 from bismuth.services.cards import CardService
-from bismuth.services.charters import ROOT_NOTE, CharterService
-from bismuth.services.placement import PlacementService
-from bismuth.services.sidecar import render_sidecar
-from bismuth.services.subdivision import SubdivisionService
 from bismuth.services.transactor import Transactor
 
 logger = logging.getLogger(__name__)
@@ -33,35 +27,19 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class Prepared:
-    """A document read and catalogued, not yet filed.
-
-    Produced without reading or writing the tree, which is what makes reading several
-    documents at once safe while filing them stays one at a time.
-    """
+    """A document that has been read but not filed."""
 
     rel: PurePosixPath
     source: SourceRef
     card: DocumentCard | None = None
     extraction: Extraction | None = None
     duplicate_of: str = ""
-    """Set when these bytes were already in the catalog; then nothing was read."""
-
-
-@dataclass(frozen=True, slots=True)
-class IngestResult:
-    """What happened to one document."""
-
-    document_id: str
-    filename: str
-    destination: PurePosixPath
-    placement: Placement
-    card: DocumentCard | None = None
-    duplicate: bool = False
-    """True when we had already ingested this content, under any filename."""
+    preserve_sidecar: bool = False
+    preserve_catalog: bool = False
 
 
 class IngestService:
-    """Accepts a document and files it."""
+    """Persist uploads safely, then parse and describe them."""
 
     def __init__(
         self,
@@ -70,24 +48,18 @@ class IngestService:
         catalog: Catalog,
         parsers: ParserRegistry,
         cards: CardService,
-        placement: PlacementService,
-        charters: CharterService,
         transactor: Transactor,
-        subdivision: SubdivisionService | None = None,
         extraction_max_chars: int = 200_000,
     ) -> None:
-        self._subdivision = subdivision
         self._vault = vault
         self._catalog = catalog
         self._parsers = parsers
         self._cards = cards
-        self._placement = placement
-        self._charters = charters
         self._transactor = transactor
         self._max_chars = extraction_max_chars
 
     def stage(self, data: bytes, filename: str) -> PurePosixPath:
-        """Put an uploaded file into the inbox, journalled."""
+        """Write an upload to the inbox in one journalled operation."""
         target = self._vault.unique_target(INBOX, filename)
         self._transactor.execute(
             JournalEntry(
@@ -99,23 +71,10 @@ class IngestService:
         )
         return PurePosixPath(target)
 
-    async def process(
-        self, rel: PurePosixPath, *, on_progress: ProgressSink | None = None
-    ) -> IngestResult:
-        """The whole loop for one document. Safe to call again on the same file."""
-        prepared = await self.prepare(rel, on_progress=on_progress)
-        return await self.file(prepared, on_progress=on_progress)
-
     async def prepare(
         self, rel: PurePosixPath, *, on_progress: ProgressSink | None = None
     ) -> Prepared:
-        """Read a document and work out what it is. Reads no folder and writes nothing.
-
-        This half depends on the document and nothing else, so a caller may run it for
-        several documents at once; :meth:`file` may not (see there). It is also where
-        the run's time goes -- cataloguing is about two thirds of the calls a document
-        costs and the great majority of its tokens.
-        """
+        """Parse and describe a staged document without changing the folder tree."""
         source = await self._describe_source(rel)
         CURRENT_DOCUMENT.set(source.document_id)
 
@@ -131,17 +90,15 @@ class IngestService:
             )
 
         say(Stage.RECEIVED)
-
         if existing := self._catalog.find_by_hash(source.sha256):
-            logger.info("%s already ingested as %s; leaving it alone", rel, existing)
+            logger.info("%s already ingested as %s", rel, existing)
+            say(Stage.DUPLICATE, note=existing)
             return Prepared(rel=rel, source=source, duplicate_of=existing)
 
         say(Stage.PARSING, note=self._parser_name(rel))
-        began = time.monotonic()
+        started = time.monotonic()
         extraction = await self._extract(rel)
-        parse_ms = round((time.monotonic() - began) * 1000)
-        # The window count rides on the reading events instead of being computed here:
-        # counting means slicing the whole text, and the first reading event is next anyway.
+        parse_ms = round((time.monotonic() - started) * 1000)
         say(Stage.PARSED, note=_extent(extraction))
 
         card = await self._cards.describe(
@@ -155,150 +112,41 @@ class IngestService:
             "document.read",
             filename=source.filename,
             parse_ms=parse_ms,
-            card_ms=round((time.monotonic() - began) * 1000) - parse_ms,
+            card_ms=round((time.monotonic() - started) * 1000) - parse_ms,
             chars=len(extraction.text),
         )
         return Prepared(rel=rel, source=source, card=card, extraction=extraction)
 
-    async def file(
-        self, prepared: Prepared, *, on_progress: ProgressSink | None = None
-    ) -> IngestResult:
-        """Put a prepared document in the tree and let the tree react.
-
-        **This half must run one document at a time.** Placement answers against the
-        folder tree as it stands and subdivision then rewrites it, so two of these at
-        once would decide against the same stale tree and race for the same folders.
-        The order is load-bearing too: which tree a collection produces from a given
-        order is a property the archive is measured on (SPEC.md 3.5).
-        """
-        rel, source = prepared.rel, prepared.source
-        CURRENT_DOCUMENT.set(source.document_id)
-
-        def say(stage: Stage, **fields: object) -> None:
-            report(
-                on_progress,
-                Progress(
-                    stage=stage,
-                    filename=source.filename,
-                    document_id=source.document_id,
-                    **fields,  # type: ignore[arg-type]
-                ),
-            )
-
-        # Re-checked here and not only in prepare(): two copies read at the same time
-        # both miss the catalog, and this is the half that runs alone.
-        if existing := (prepared.duplicate_of or self._catalog.find_by_hash(source.sha256)):
-            prior = self._catalog.load_placement(existing)
-            # Report where the existing copy lives, not where this duplicate landed.
-            where = (
-                prior.target
-                if prior and prior.is_placed and prior.target is not None
-                else PurePosixPath(rel).parent
-            )
-            say(Stage.DUPLICATE, note=str(where) or "/")
-            return IngestResult(
-                document_id=existing,
-                filename=source.filename,
-                destination=where,
-                placement=prior or Placement.to_inbox(existing, reason="already ingested"),
-                duplicate=True,
-            )
-
-        card, extraction = prepared.card, prepared.extraction
-        assert card is not None and extraction is not None  # only a duplicate lacks them
-
-        # Where a document's time went, by stage. Without it a slow run is a wall of
-        # calls with no shape: the first one measured spent 23 seconds on the document
-        # and four minutes on one question put to the root afterwards.
-        clock = _Clock()
-        folders = self._charters.folder_views()
-        say(Stage.PLACING, steps=len(folders))
-        placement = await self._placement.decide(
-            document_id=source.document_id,
-            card=card,
-            folders=folders,
-            existing_paths=frozenset(str(f) for f in self._vault.iter_folders() if f.parts),
-        )
-
-        clock.mark("place")
-        destination = placement.target if placement.is_placed else INBOX
-        assert destination is not None
-        # The full rationale is a paragraph and lives on the placement; a progress line
-        # that long pushes every other step off the panel.
-        if not placement.is_placed:
-            landed = "인박스 — 읽지 못했습니다"
-        elif not destination.parts:
-            landed = "루트 — 아직 나눌 구분이 없습니다"
-        else:
-            landed = f"{destination}{' (새 폴더)' if placement.created_folder else ''}"
-        say(Stage.PLACED, note=landed)
-
-        say(Stage.FILING)
-        await self._commit(
-            rel=rel,
-            destination=destination,
-            source=source,
-            card=card,
-            extraction=extraction,
-            placement=placement,
-        )
-
-        self._catalog.save_card(source.document_id, card, source=source)
-        self._catalog.save_placement(placement)
-        clock.mark("commit")
-
-        say(Stage.NOTES)
-        await self._reconcile_notes(placement)
-        clock.mark("notes")
-
-        # The other half of filing: this document may be the one that makes a
-        # distinction visible in the folder it landed in (SPEC.md 3.4).
-        if self._subdivision is not None:
-            divided = await self._subdivision.consider_with_ancestors(
-                destination, filename=source.filename, on_progress=on_progress
-            )
-            for result in divided:
-                say(Stage.DIVIDED, note=f"{result.folder or '/'} → {len(result.created)}개")
-            # A folder that just gained a child describes something different now, and
-            # the note is what a searcher reads to rule it out (SPEC.md 3.6). Placement
-            # used to trigger this by creating the folder; it no longer creates any, so
-            # subdivision is the only thing left that changes the shape of the tree.
-            if gained := [r.folder for r in divided if r.happened]:
-                await self._redraw_notes(gained, reason="a folder gained a sub-folder")
-        clock.mark("subdivide")
-
-        log_trace(
-            "document.filed",
-            filename=source.filename,
-            destination=str(destination) or "/",
-            total_ms=clock.total_ms,
-            **clock.stages,
-        )
-
-        say(Stage.DONE, note=str(destination) or "/")
-        return IngestResult(
-            document_id=source.document_id,
-            filename=source.filename,
-            destination=destination,
-            placement=placement,
-            card=card,
-        )
-
     def pending_inbox(self) -> list[PurePosixPath]:
-        """Files in the inbox with no card yet -- including any dropped in by hand."""
+        """Return inbox files that have not been catalogued."""
         pending: list[PurePosixPath] = []
         for rel in self._vault.iter_files(INBOX, recursive=True):
-            digest = SourceRef.hash_bytes(self._vault.read_bytes(rel))
+            try:
+                digest = SourceRef.hash_bytes(self._vault.read_bytes(rel))
+            except BismuthError:
+                if not self._vault.exists(rel):
+                    continue
+                raise
             if self._catalog.find_by_hash(digest) is None:
                 pending.append(rel)
         return pending
 
+    def discard_duplicate(self, rel: PurePosixPath) -> None:
+        """Remove a staged copy whose content is already catalogued."""
+        if not self._vault.exists(rel):
+            return
+        self._transactor.execute(
+            JournalEntry(
+                reason=f"discard duplicate {rel.name}",
+                operations=(Operation(kind=OperationKind.REMOVE, target=rel),),
+            )
+        )
+
     def _parser_name(self, rel: PurePosixPath) -> str:
-        """Which parser will read this, for the progress line. Unsupported types fail in _extract."""
         try:
             return self._parsers.for_path(Path(*rel.parts)).name
         except BismuthError:
-            return rel.suffix.lstrip(".") or "알 수 없는 형식"
+            return rel.suffix.lstrip(".") or "unknown format"
 
     async def _describe_source(self, rel: PurePosixPath) -> SourceRef:
         absolute = Path(self._vault.root) / Path(*rel.parts)
@@ -315,121 +163,13 @@ class IngestService:
     async def _extract(self, rel: PurePosixPath) -> Extraction:
         absolute = Path(self._vault.root) / Path(*rel.parts)
         parser = self._parsers.for_path(absolute)
-        # CPU-bound and slow: off the event loop, or a bulk import stalls the server.
         return await anyio.to_thread.run_sync(
             lambda: parser.parse(absolute, max_chars=self._max_chars)
         )
 
-    async def _commit(
-        self,
-        *,
-        rel: PurePosixPath,
-        destination: PurePosixPath,
-        source: SourceRef,
-        card: DocumentCard,
-        extraction: Extraction,
-        placement: Placement,
-    ) -> None:
-        """Move the file, write its sidecar, and note a brand-new folder -- one batch."""
-        operations: list[Operation] = []
-        payloads: dict[PurePosixPath, bytes] = {}
-
-        needs_note = (
-            destination != INBOX
-            and not self._vault.exists(destination / CHARTER_FILENAME)
-            and self._charters.is_managed(destination)
-        )
-        if not self._vault.exists(destination):
-            operations.append(Operation(kind=OperationKind.MKDIR, target=destination))
-
-        if PurePosixPath(rel).parent == destination:
-            final = rel
-        else:
-            final = self._vault.unique_target(destination, source.filename)
-            operations.append(
-                Operation(
-                    kind=OperationKind.MOVE, source=rel, target=final, note=placement.rationale
-                )
-            )
-
-        sidecar = final.parent / sidecar_name(final.name)
-        operations.append(Operation(kind=OperationKind.WRITE, target=sidecar, note="sidecar"))
-        payloads[sidecar] = render_sidecar(
-            source=source, card=card, extraction=extraction, document_id=source.document_id
-        ).encode("utf-8")
-
-        if needs_note:
-            # The root is not a class and must not be described as one: its note is fixed
-            # (see charters.ROOT_NOTE), or the first document becomes what the vault is
-            # "about" for good.
-            charter = (
-                ROOT_NOTE
-                if not destination.parts
-                else await self._charters.draft(destination, cards=[card], total_count=1)
-            )
-            operation, payload = self._charters.write_operation(charter)
-            operations.append(operation)
-            payloads[operation.target] = payload
-
-        self._transactor.execute(
-            JournalEntry(
-                reason=f"file {source.filename} -> {destination or '/'}",
-                operations=tuple(operations),
-                document_id=source.document_id,
-            ),
-            payloads=payloads,
-        )
-
-    async def _reconcile_notes(self, placement: Placement) -> None:
-        """Keep folder notes true after a document landed in one."""
-        if not placement.is_placed or placement.target is None:
-            return
-        await self._redraw_notes([placement.target], reason="refresh folder notes")
-
-    async def _redraw_notes(self, folders: list[PurePosixPath], *, reason: str) -> None:
-        operations = await self._charters.refresh_operations(folders)
-        if not operations:
-            return
-        self._transactor.execute(
-            JournalEntry(reason=reason, operations=tuple(op for op, _ in operations)),
-            payloads={op.target: payload for op, payload in operations},
-        )
-
-
-class _Clock:
-    """Wall time per stage of filing one document, for the trace.
-
-    Marks rather than timers: each stage ends where the next begins, so the parts add
-    up to the whole and a gap cannot hide between them.
-    """
-
-    def __init__(self) -> None:
-        self._began = self._last = time.monotonic()
-        self.stages: dict[str, int] = {}
-
-    def mark(self, stage: str) -> None:
-        now = time.monotonic()
-        self.stages[f"{stage}_ms"] = round((now - self._last) * 1000)
-        self._last = now
-
-    @property
-    def total_ms(self) -> int:
-        return round((time.monotonic() - self._began) * 1000)
-
 
 def _extent(extraction: Extraction) -> str:
-    """How much text came out, in the terms a person thinks in."""
-    size = f"{len(extraction.text):,}자"
+    size = f"{len(extraction.text):,} characters"
     if extraction.page_count:
-        size = f"{extraction.page_count}쪽 · {size}"
-    return f"{size}{' (추출 한도에서 잘림)' if extraction.truncated else ''}"
-
-
-def _ancestors(path: PurePosixPath) -> list[PurePosixPath]:
-    """Every folder above ``path``, nearest first, excluding the root."""
-    result: list[PurePosixPath] = []
-    parent = path.parent
-    while parent.parts:
-        result.append(parent)
-        parent = parent.parent
-    return result
+        size = f"{extraction.page_count} pages, {size}"
+    return f"{size}{' (truncated)' if extraction.truncated else ''}"

@@ -3,7 +3,7 @@
 from bismuth.adapters.llm.catalog import (
     ProviderCheck,
     list_models,
-    suggest_models,
+    suggest_model,
     supports_response_schema,
 )
 from bismuth.adapters.llm.fake import FakeLLM
@@ -14,6 +14,6 @@ __all__ = [
     "LiteLLMAdapter",
     "ProviderCheck",
     "list_models",
-    "suggest_models",
+    "suggest_model",
     "supports_response_schema",
 ]

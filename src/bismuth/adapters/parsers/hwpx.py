@@ -1,10 +1,9 @@
-"""HWPX extraction using only the standard library (``zipfile`` + ``ElementTree``); reads .hwpx, not legacy binary .hwp."""
+"""HWPX text extraction from zipped XML."""
 
 from __future__ import annotations
 
 import re
 import zipfile
-from collections.abc import Iterator
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -17,7 +16,7 @@ _SECTION_FILE = re.compile(r"Contents/section(\d+)\.xml$", re.IGNORECASE)
 
 
 class HwpxParser:
-    """Reads 한글 HWPX documents."""
+    """Read Hancom HWPX documents."""
 
     @property
     def name(self) -> str:
@@ -36,7 +35,7 @@ class HwpxParser:
         except (zipfile.BadZipFile, OSError) as exc:
             hint = ""
             if path.suffix.lower() == ".hwp":
-                hint = " (this looks like a legacy binary .hwp; re-save it as .hwpx from 한글)"
+                hint = " (legacy .hwp is unsupported; re-save it as .hwpx in Hancom Hangul)"
             raise ParserUnavailableError(
                 f"{path.name} is not a readable HWPX file{hint}: {exc}"
             ) from exc
@@ -50,29 +49,34 @@ class HwpxParser:
                 raise ParserUnavailableError(
                     f"{path.name}: no Contents/section*.xml -- not an HWPX document"
                 )
-            sections = list(_sections(archive, names))
+            sections, incomplete = _sections(archive, names)
 
-        return build_extraction(sections, parser=self.name, max_chars=max_chars)
+        extraction = build_extraction(sections, parser=self.name, max_chars=max_chars)
+        return extraction.model_copy(update={"truncated": True}) if incomplete else extraction
 
 
-def _sections(archive: zipfile.ZipFile, names: list[str]) -> Iterator[Section]:
+def _sections(archive: zipfile.ZipFile, names: list[str]) -> tuple[list[Section], bool]:
+    sections: list[Section] = []
+    incomplete = False
     for order, name in enumerate(names):
         try:
             root = ElementTree.fromstring(archive.read(name))
         except ElementTree.ParseError:
-            continue  # one unreadable section must not lose the document
+            incomplete = True
+            continue
         text = _text_of(root).strip()
         if text:
-            yield Section(heading=None, text=text, order=order)
+            sections.append(Section(heading=None, text=text, order=order))
+    return sections, incomplete
 
 
 def _local(tag: str) -> str:
-    """Strip the XML namespace; local-name matching survives namespace URI changes across 한글 versions."""
+    """Strip the XML namespace from an element tag."""
     return tag.rpartition("}")[2]
 
 
 def _text_of(element: ElementTree.Element) -> str:
-    """Recover text with structure, in document order; recursive because HWPX nests table cells inside paragraphs."""
+    """Recover structured text in document order."""
     out: list[str] = []
     _walk(element, out)
     # Collapse the runs of blank lines that per-element emission produces.

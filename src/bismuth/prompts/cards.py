@@ -7,133 +7,130 @@ assumes the document has headings, a table of contents, or any structure at all.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from dataclasses import dataclass
+from typing import Annotated, Any
 
-from bismuth.domain.document import DocumentCard, Entity, Window
+from pydantic import BaseModel, Field, StringConstraints
+
+from bismuth.domain.document import (
+    LABEL_MAX_CHARS,
+    QUESTION_MAX_CHARS,
+    DocumentCard,
+    Entity,
+    EntityKind,
+    Window,
+)
 from bismuth.ports.llm import Prompt
 
+#: Folder-tab labels must stay short enough to scan and index reliably.
+Label = Annotated[str, StringConstraints(max_length=LABEL_MAX_CHARS)]
+
 SYSTEM = """\
-You are a librarian cataloguing a document for a shared archive. You will be \
-shown one document. Describe it.
+You are a librarian cataloging one document for a shared library. Describe what the
+document is.
 
 Rules:
+1. Write `title`, `summary`, `doc_type`, `topics`, and `answers_questions` in the
+   document's own language. If the document is Korean, its summary must also be Korean.
+   Do not translate.
+2. `title` is the title the document gives itself. Find it in the content. If the document
+   has no title, create a descriptive one from the content. Never substitute the filename;
+   a filename such as `final_v3_REAL.pdf` is not a title.
+3. `doc_type` is a short noun phrase naming what kind of document this is. Use the term
+   actually used in the document's field. Do not choose from a predetermined taxonomy.
+4. `topics` are two to five things the document is about: an activity, organization,
+   subject, or period. They are answers to "which drawer would this go in?" Use the
+   document's own vocabulary and do not force it into predefined categories. Each topic
+   is a short folder-tab label, not a sentence, list, explanation, or document title.
+5. `entities` are explicitly named things of the allowed kinds only. Put one name in each
+   item and preserve the document's wording. A references page may contain many names;
+   most documents may contain none worth extracting. Omit anything that is not clearly a
+   proper name. Two correct entities are better than ten incorrect ones.
+6. `answers_questions` are concrete questions a colleague could answer after reading this
+   document, phrased as that colleague might naturally ask them. Do not use vague questions
+   such as "what is this document about?"
+7. If the extracted text is damaged, cut off mid-sentence, or clearly incorrect, state
+   that directly in `summary`. Do not turn extraction noise into a clean invented account.
 
-1. Write `title`, `summary`, `doc_type`, `topics` and `answers_questions` IN THE \
-DOCUMENT'S OWN LANGUAGE. A Korean document gets a Korean summary. Do not translate.
-2. `title` is the document's own title, from its content. If it has none, write \
-one that describes it. Never fall back to the filename -- "final_v3_REAL.pdf" is \
-not a title.
-3. `doc_type` is the genre, as a short noun phrase: contract, proposal, meeting \
-notes, invoice, spec. Use the word this document's own field would use.
-4. `topics` are the few things this document is ABOUT -- a project or engagement, \
-a client or organisation, a subject, a period. What someone would say if asked \
-which drawer it belongs in. Two to five of them, in the document's own words. Do \
-not force a fixed set of categories; report what is actually there. Each one is a \
-FILING LABEL of a few words -- "지연배상", "생태계서비스 평가". Never a sentence, a \
-list, or a description; if it would not fit on a folder tab it is not a topic.
-5. `entities` are named things, and ONLY of the listed kinds. ONE name per entry, \
-written exactly as the document writes it -- a bibliography is many entities or, \
-more often, none worth recording. Skip anything you are not sure is a real named \
-entity -- two right ones beat ten wrong ones.
-6. `answers_questions` are questions a colleague could answer using this document, \
-phrased as they would ask them. Be specific: "아폴로 지원 계약 기간이 얼마인가?" \
-not "이 계약서 내용".
-7. If the text is garbled, truncated mid-sentence, or clearly the wrong \
-extraction, say so plainly in `summary` rather than inventing a clean description \
-of noise.
-
-Base every field on what the document actually says, not on what a document with \
-this filename usually contains.\
+Ground every field in the supplied text, not in assumptions based on the filename.\
 """
 
 _UPDATE_SYSTEM = """\
-You are a librarian cataloguing a long document for a shared archive. You are \
-reading it in order, one part at a time, and you keep one card about the whole \
-document as you go.
+You are cataloging a long document for a shared library. You are reading it from the
+beginning one section at a time while maintaining one card for the whole document.
 
-You will be shown the card as it stands and the NEXT part of the document. Revise \
-the card so that it describes everything read so far, including this part.
+Given the card so far and the next section, update the card to describe everything read
+through this section.
 
 Rules:
+1. Keep all content fields in the document's language. Do not translate them.
+2. Rewrite `summary` for the entire document read so far. It is not a summary of only this
+   section and must not be appended to the old summary. Keep it to three or four sentences.
+   If this section adds something more important, remove weaker details to make room.
+3. Put only genuinely new items in `new_topics`, `new_entities`, `new_keywords`, and
+   `new_questions`. Do not repeat items already on the card. These lists accumulate rather
+   than replace earlier values, so add only items you are confident should remain. Each
+   item is one short label containing one thing. A references page or list of titles is
+   not a topic or entity. Add nothing when a section contains only references, boilerplate,
+   or contact details.
+4. `title` and `doc_type` are usually already correct. Return a replacement only when this
+   section proves the earlier value wrong, such as when the true title appears after a
+   cover page. Otherwise omit them.
 
-1. Same language as the document, for every field. Do not translate.
-2. `summary` is a rewrite covering the whole document so far, not a summary of \
-this part alone and not an append. Keep it to three or four sentences: when this \
-part adds something more important than what is already there, drop the weaker \
-material to make room.
-3. Report only what is NEW in `new_topics`, `new_entities`, `new_keywords` and \
-`new_questions`. Do not repeat anything already on the card -- it is kept, not \
-replaced. Nothing is ever removed, so add only what you are sure of. Each entry is \
-a short label of a few words, one thing per entry: a page of references or a list \
-of headings is not a topic and not an entity. When a part is nothing but \
-bibliography, boilerplate or contact details, add nothing and say so in `note`.
-4. `title` and `doc_type` are usually already right. Set them ONLY if this part \
-shows the earlier guess was wrong -- for instance the real title appears after a \
-cover page. Leave them null otherwise.
-5. `contributed` is false when this part told you nothing new about the document \
--- a page of boilerplate, a signature block, repeated headers, garbled extraction. \
-Say so rather than inventing a difference.
-6. `note` is one short line, in English, for a developer reading the log: what this \
-part actually was. "clause 7-12, payment terms", "blank cover page", "OCR noise".
-
-You cannot see the parts you have not read yet. Never describe them.\
+Unread sections are not visible to you. Never claim anything about them.\
 """
 
 _DENSIFY_SYSTEM = """\
-You are tightening the summary on a librarian's card for a long document.
+Tighten the catalog summary for a long document.
 
-You will be shown the card: a summary, and the lists of topics, entities and \
-questions gathered from reading the whole document. The lists are complete; the \
-summary was written before all of them were known, so it may be missing the most \
-important ones.
+You will receive a card containing a summary plus topics, entities, and questions gathered
+while reading the entire document. The lists are complete, but the summary was written
+before all of them were known and may omit something important.
 
-Rewrite the summary so that it covers what matters most, keeping it AT THE SAME \
-LENGTH. Do not append. To make room for something important, drop something less \
-important. Same language as the card.
+Rewrite the summary so it includes the most important information while keeping the same
+length. Do not append text. Remove weaker details to make room for stronger ones. Write in
+the card's language.
 
-Do not add any fact that is not on the card -- you cannot see the document itself. \
-If the summary is already the best account of these facts, return it unchanged and \
-leave `absorbed` empty.
-
-`absorbed` lists the card items you pulled into the summary, exactly as they are \
-written on the card.\
+Add no fact absent from the card because the document itself is not visible. If the
+current summary is already the best account of these facts, return it unchanged. Return
+only the rewritten summary.\
 """
 
 _USER = """\
 FILENAME: {filename}
 {scope_notice}
---- DOCUMENT BEGINS ---
+--- DOCUMENT START ---
 {text}
---- DOCUMENT ENDS ---\
+--- DOCUMENT END ---\
 """
 
 _UPDATE_USER = """\
 FILENAME: {filename}
-You have read {read} of {total} parts. This is part {label}.
+Read through section {read} of {total}. This section is {label}.
 
 --- CARD SO FAR ---
 {card}
---- CARD ENDS ---
+--- CARD END ---
 
---- NEXT PART BEGINS ---
+--- NEXT SECTION START ---
 {text}
---- NEXT PART ENDS ---\
+--- NEXT SECTION END ---\
 """
 
 _DENSIFY_USER = """\
 --- CARD ---
 {card}
---- CARD ENDS ---\
+--- CARD END ---\
 """
 
 _TRUNCATION_NOTICE = (
-    "NOTE: the extractor stopped before the end of the file, so the text below is "
-    "not the whole document. Describe what you can see and do not guess at the rest.\n"
+    "NOTE: Extraction stopped before the end of the file. Describe only the visible text "
+    "and do not infer the missing content.\n"
 )
 
 _FIRST_OF_MANY_NOTICE = (
-    "NOTE: this is part 1 of {total} of a long document; you will be shown the rest "
-    "in later turns. Describe what you can see here and do not guess at the rest.\n"
+    "NOTE: This is the first of {total} sections. Describe only the visible text; later "
+    "sections will be supplied separately.\n"
 )
 
 
@@ -144,40 +141,171 @@ class CardDraft(BaseModel):
     summary: str = Field(description="Two or three sentences. What it is and what it is for.")
     doc_type: str = Field(description="Short noun phrase for the genre.")
     language: str = Field(description="Language code of the document, e.g. 'ko', 'en'.")
-    topics: list[str] = Field(
+    topics: list[Label] = Field(
         default_factory=list,
         max_length=6,
         description="The few things this document is about, in its own words.",
     )
     entities: list[Entity] = Field(default_factory=list, max_length=20)
-    keywords: list[str] = Field(default_factory=list, max_length=12)
-    answers_questions: list[str] = Field(default_factory=list, max_length=6)
+    keywords: list[Label] = Field(default_factory=list, max_length=12)
+    answers_questions: list[Label] = Field(default_factory=list, max_length=6)
 
 
 class CardUpdate(BaseModel):
     """What one further part of a document changes about the card."""
 
     summary: str = Field(description="The whole document so far, rewritten. Not an append.")
-    contributed: bool = Field(description="False when this part added nothing.")
-    note: str = Field(default="", description="One line for the log: what this part was.")
     title: str | None = Field(
         default=None, description="Only when the earlier title turned out to be wrong."
     )
     doc_type: str | None = Field(
         default=None, description="Only when the earlier genre turned out to be wrong."
     )
-    new_topics: list[str] = Field(default_factory=list, max_length=6)
+    new_topics: list[Label] = Field(default_factory=list, max_length=6)
     new_entities: list[Entity] = Field(default_factory=list, max_length=20)
-    new_keywords: list[str] = Field(default_factory=list, max_length=12)
-    new_questions: list[str] = Field(default_factory=list, max_length=6)
+    new_keywords: list[Label] = Field(default_factory=list, max_length=12)
+    new_questions: list[Label] = Field(default_factory=list, max_length=6)
 
 
 class DensifiedSummary(BaseModel):
     """A summary rewritten to carry the facts that matter, at unchanged length."""
 
     summary: str
-    absorbed: list[str] = Field(
-        default_factory=list, description="Card items pulled into the summary."
+
+
+_TAB = (
+    "A label too long for a folder tab is not a label. TOPIC and KEYWORD must be at most "
+    f"{LABEL_MAX_CHARS} characters; QUESTION must be at most {QUESTION_MAX_CHARS}. "
+    "If an item needs an explanatory clause to make sense, split it into separate items "
+    "or omit it."
+)
+
+
+_LINES = (
+    """\
+Return plain tagged lines, not JSON, Markdown, bullets, or numbering. Use one item per
+line and exactly these tags:
+
+TITLE: <the document's own title>
+DOCTYPE: <short noun phrase>
+LANGUAGE: <language code such as ko or en>
+SUMMARY: <two to four sentences on one line>
+TOPIC: <short reusable folder label>
+ENTITY: <name> | <organization|person|project|product|location|date>
+KEYWORD: <one or two words>
+QUESTION: <a question this document answers>
+
+Repeat TOPIC, ENTITY, KEYWORD, and QUESTION as needed, one item per line. Return nothing
+else: no preface, blank lines, or closing sentence. Stop when there is nothing more to add.
+
+"""
+    + _TAB
+)
+
+_UPDATE_LINES = (
+    """\
+Return plain tagged lines, not JSON, Markdown, bullets, or numbering:
+
+SUMMARY: <the whole document so far, two to four sentences on one line>
+TOPIC: <new reusable folder label from this section>
+ENTITY: <name> | <organization|person|project|product|location|date>
+KEYWORD: <new one- or two-word term from this section>
+QUESTION: <new question enabled by this section>
+TITLE: <only if the earlier title was wrong>
+DOCTYPE: <only if the earlier type was wrong>
+
+SUMMARY is required. Repeat other tags as needed, and omit them entirely when this section
+adds nothing. Return no other lines.
+
+"""
+    + _TAB
+)
+
+_KINDS = {kind.value for kind in EntityKind}
+
+
+def _entity(value: str) -> Entity | None:
+    """Parse one ENTITY line while accepting common separators."""
+    name, kind = value, ""
+    for opener, closer in (("|", ""), ("[", "]"), ("(", ")"), (" - ", "")):
+        if opener in value:
+            name, _, rest = value.partition(opener)
+            kind = rest.strip().rstrip(closer).strip().casefold()
+            break
+    name = name.strip()
+    if not name:
+        return None
+    return Entity(name=name, kind=EntityKind(kind) if kind in _KINDS else EntityKind.ORGANIZATION)
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedCard:
+    """What one reply offered, before anything decides what a missing field means."""
+
+    title: str = ""
+    doc_type: str = ""
+    language: str = ""
+    summary: str = ""
+    topics: tuple[str, ...] = ()
+    entities: tuple[Entity, ...] = ()
+    keywords: tuple[str, ...] = ()
+    questions: tuple[str, ...] = ()
+
+
+def _items(value: str) -> list[str]:
+    """Split a model's comma-separated items when it ignored the line format."""
+    parts = [part.strip() for part in value.split(",")]
+    return [part for part in parts if part] if all(parts) and len(parts) > 1 else [value]
+
+
+def parse_card(text: str) -> ParsedCard:
+    """Read tagged lines into the fields a card is made of.
+
+    The caller decides how to handle missing fields. Unknown lines are ignored.
+    """
+    found: dict[str, Any] = {
+        "title": "",
+        "doc_type": "",
+        "language": "",
+        "summary": "",
+        "topics": [],
+        "entities": [],
+        "keywords": [],
+        "questions": [],
+    }
+    for raw in text.splitlines():
+        line = raw.strip().lstrip("-*\u2022 ").strip()
+        tag, separator, value = line.partition(":")
+        value = value.strip()
+        if not separator or not value:
+            continue
+        match tag.strip().upper():
+            case "TITLE":
+                found["title"] = value
+            case "DOCTYPE" | "DOC_TYPE" | "TYPE":
+                found["doc_type"] = value
+            case "LANGUAGE" | "LANG":
+                found["language"] = value
+            case "SUMMARY":
+                found["summary"] = f"{found['summary']} {value}".strip()
+            case "TOPIC":
+                found["topics"].extend(_items(value))
+            case "KEYWORD":
+                found["keywords"].extend(_items(value))
+            case "QUESTION":
+                found["questions"].append(value)
+            case "ENTITY":
+                if entity := _entity(value):
+                    found["entities"].append(entity)
+    return ParsedCard(
+        title=found["title"],
+        doc_type=found["doc_type"],
+        language=found["language"],
+        summary=found["summary"],
+        topics=tuple(found["topics"]),
+        entities=tuple(found["entities"]),
+        keywords=tuple(found["keywords"]),
+        questions=tuple(found["questions"]),
     )
 
 
@@ -190,7 +318,7 @@ def build(*, filename: str, window: Window, truncated: bool) -> Prompt:
     else:
         notice = ""
     return Prompt(
-        system=SYSTEM,
+        system=SYSTEM + "\n" + _LINES,
         user=_USER.format(filename=filename, scope_notice=notice, text=window.text),
     )
 
@@ -198,7 +326,7 @@ def build(*, filename: str, window: Window, truncated: bool) -> Prompt:
 def build_update(*, filename: str, window: Window, card: DocumentCard, read: int) -> Prompt:
     """Fold one further window into the card built from the earlier ones."""
     return Prompt(
-        system=_UPDATE_SYSTEM,
+        system=_UPDATE_SYSTEM + "\n" + _UPDATE_LINES,
         user=_UPDATE_USER.format(
             filename=filename,
             read=read,

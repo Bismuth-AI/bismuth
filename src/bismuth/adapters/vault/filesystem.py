@@ -1,4 +1,4 @@
-"""The vault, as an actual directory on an actual disk: path-escape checks, atomic writes, cross-platform case-insensitivity, and attic backups before overwrite."""
+"""Filesystem-backed vault with atomic writes and path validation."""
 
 from __future__ import annotations
 
@@ -16,6 +16,18 @@ from bismuth.domain.journal import Operation, OperationKind
 from bismuth.ports.vault import INBOX, STATE_DIR
 
 _ATTIC = "attic"
+_EXTENDED = "\\\\?\\"
+_EXTENDED_UNC = "\\\\?\\UNC\\"
+
+
+def _plain(path: Path) -> Path:
+    """Drop Windows' extended-length prefix so a path can be compared with a plain root."""
+    text = str(path)
+    if text.startswith(_EXTENDED_UNC):
+        return Path("\\\\" + text[len(_EXTENDED_UNC) :])
+    if text.startswith(_EXTENDED):
+        return Path(text[len(_EXTENDED) :])
+    return path
 
 
 class FileSystemVault:
@@ -39,7 +51,12 @@ class FileSystemVault:
         return candidate
 
     def relative(self, absolute: Path) -> PurePosixPath:
-        return PurePosixPath(absolute.resolve().relative_to(self._root).as_posix())
+        """Convert an absolute path to a vault-relative path."""
+        try:
+            return PurePosixPath(absolute.relative_to(self._root).as_posix())
+        except ValueError:
+            pass
+        return PurePosixPath(_plain(absolute.resolve()).relative_to(self._root).as_posix())
 
     def exists(self, rel: PurePosixPath) -> bool:
         return self.resolve(rel).exists()
@@ -87,7 +104,7 @@ class FileSystemVault:
         return sum(1 for _ in self.iter_files(rel, recursive=recursive))
 
     def _is_own_artefact(self, path: Path) -> bool:
-        """Whether this file is Bismuth-generated (sidecar/charter) rather than a document, so counts aren't doubled."""
+        """Return whether a path is a generated sidecar or folder charter."""
         name = path.name
         if name == CHARTER_FILENAME:
             return True
@@ -159,7 +176,7 @@ class FileSystemVault:
         return path.read_bytes()
 
     def unique_target(self, folder: PurePosixPath, filename: str) -> PurePosixPath:
-        """A free filename in ``folder``, checked case-insensitively so ``Report.pdf`` and ``report.pdf`` don't collide across platforms."""
+        """Return a case-insensitively unique filename in ``folder``."""
         taken = (
             {p.name.casefold() for p in self.resolve(folder).iterdir()}
             if self.exists(folder)
@@ -189,7 +206,7 @@ def _same_file(a: Path, b: Path) -> bool:
 
 
 def _atomic_write(target: Path, payload: bytes) -> None:
-    """Write via a temp file in the same directory, then rename; ``os.replace`` is only atomic within a filesystem."""
+    """Write through a same-directory temporary file and atomically replace."""
     target.parent.mkdir(parents=True, exist_ok=True)
     handle, temp_name = tempfile.mkstemp(dir=target.parent, prefix=".bismuth-tmp-")
     try:

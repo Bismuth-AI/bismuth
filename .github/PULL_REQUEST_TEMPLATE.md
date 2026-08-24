@@ -4,16 +4,15 @@
 
 ## Why
 
-<!-- The reason the current behaviour was not good enough. If this contradicts
-     an ADR, say so here and add an ADR superseding it -- that is allowed and
-     interesting. See CONTRIBUTING.md. -->
+<!-- The reason the current behaviour was not good enough. Explain important
+     design tradeoffs here. See CONTRIBUTING.md. -->
 
 ## Checks
 
 - [ ] `ruff check src tests examples` and `ruff format --check src tests examples`
 - [ ] `mypy`
 - [ ] `pytest -q`
-- [ ] No copyleft dependency added (AGPL/GPL/LGPL). See [docs/licensing.md](../docs/licensing.md).
+- [ ] No copyleft dependency added (AGPL/GPL/LGPL)
 - [ ] Dependencies still point inward — no `TID251` suppressed to make this build
 
 ## Notes for the reviewer

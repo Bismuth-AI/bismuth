@@ -8,7 +8,7 @@ import pytest
 
 from bismuth.adapters.journal import JsonlJournal
 from bismuth.adapters.vault import FileSystemVault
-from bismuth.domain.errors import VaultError
+from bismuth.domain.errors import JournalCorruptError, VaultError
 from bismuth.domain.journal import (
     Actor,
     EntryStatus,
@@ -39,6 +39,14 @@ def file_at(vault: FileSystemVault, rel: str, body: str = "hello") -> PurePosixP
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
     return PurePosixPath(rel)
+
+
+def test_invalid_final_journal_record_is_not_treated_as_a_torn_write(tmp_path: Path) -> None:
+    path = tmp_path / "journal.jsonl"
+    path.write_text('{"id":"not-a-complete-entry"}\n', encoding="utf-8")
+
+    with pytest.raises(JournalCorruptError):
+        list(JsonlJournal(path).iter_entries())
 
 
 class TestOperationInversion:
@@ -300,3 +308,43 @@ class TestCrashRecovery:
         assert (vault.root / "Apollo/precious.txt").read_text(
             encoding="utf-8"
         ) == "the user put this here"
+
+
+def test_an_entry_whose_files_moved_again_says_so_instead_of_failing_halfway(
+    vault: FileSystemVault, transactor: Transactor
+) -> None:
+    file_at(vault, "문서.txt")
+    first = transactor.execute(
+        JournalEntry(
+            actor=Actor.BISMUTH,
+            reason="divide",
+            operations=(
+                Operation(
+                    kind=OperationKind.MOVE,
+                    source=PurePosixPath("문서.txt"),
+                    target=PurePosixPath("문학/문서.txt"),
+                ),
+            ),
+        )
+    )
+    # A later filing pass moves it again.
+    transactor.execute(
+        JournalEntry(
+            actor=Actor.BISMUTH,
+            reason="divide again",
+            operations=(
+                Operation(
+                    kind=OperationKind.MOVE,
+                    source=PurePosixPath("문학/문서.txt"),
+                    target=PurePosixPath("문학/소설/문서.txt"),
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(VaultError, match="moved again"):
+        transactor.undo(first.id)
+
+    # And nothing was disturbed by the refusal.
+    assert (vault.root / "문학" / "소설" / "문서.txt").is_file()
+    assert transactor._journal.get(first.id).status is EntryStatus.APPLIED

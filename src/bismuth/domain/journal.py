@@ -104,7 +104,7 @@ class JournalEntry(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     actor: Actor = Actor.BISMUTH
-    reason: str = Field(description="Human-readable. Shown verbatim in `bismuth log`.")
+    reason: str = Field(description="Human-readable operation rationale.")
     operations: tuple[Operation, ...]
     status: EntryStatus = EntryStatus.PENDING
     document_id: str | None = None
