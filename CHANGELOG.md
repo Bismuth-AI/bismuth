@@ -9,30 +9,36 @@ that below `1.0.0` the interface may break between minor versions.
 
 ### Added
 
-- **`grep` searches one file, not only a folder.** Given a document path it reports
-  where inside that document a thing is said, so the next `read` goes straight to the
-  line instead of walking the sidecar a few lines at a time.
-- **Context budgeting in agentkit.**
-  The agent loop sizes its transcript from what the provider counted for the last request
-  plus an estimate of what has happened since, and under pressure clips over-long tool
-  results, clears the oldest ones (keeping the recent), and evicts from the front only as
-  a last resort. One turn's results are bounded together as well as individually, since
-  tools run in parallel. `chat_context_tokens` says how big the window is.
+- **Simple-batch organization.** New uploads and card-based replay now use the same
+  sequential filing path. Each document is evaluated against the structure produced by
+  the documents before it, and mature vaults refile files left at the root.
+- **Bounded structural review.** The organizer may reuse folders, create new folders,
+  move documents, and revise an existing subtree through validated plans.
+- **Agent context budgeting.** The internal agent loop compacts old tool results and
+  finishes with a tool-free answer when its token budget is exhausted.
+- **Run-scoped diagnostics.** Exact model requests, responses, streams, and normalized
+  timeline events are retained under `logs/runs/<run_id>/` for debugging.
+- **File-scoped grep.** Retrieval tools can search one document and report grouped,
+  bounded matches.
 
 ### Changed
 
-- **The CLI now has one job: `bismuth` starts the local web app.** Early maintenance,
-  ingest, inspection, and recovery commands were removed from the public command surface.
-- **A run ends on tokens spent, not on a turn count.** `max_turns` remains only as a
-  backstop against a looping model. A cap on turns says nothing about how big a turn is:
-  it cut off cheap questions with the answer half-found and let expensive ones overflow
-  the window.
-- **A spent run answers instead of falling silent.** When the budget runs out the agent
-  gets one last turn with its tools withdrawn and is told to answer from what it has.
-- **`grep` groups its hits under one path per document** instead of repeating the path
-  on every line. The same whole-vault search went from 11.7k characters to 5.9k, which
-  matters because an over-long result is clipped in the middle — quietly dropping hits.
-  Sized so the tool stops on its own boundary and says what it left out.
+- The CLI now has one public command: `bismuth` starts the local web application.
+- Web uploads are explicitly limited to PDF while other parsers remain experimental.
+- Prompts and prompt-facing schemas use English instructions and avoid corpus-specific
+  examples.
+- The tool-calling loop is now an internal `bismuth.agentkit` module and ships in the
+  `bismuth-kb` wheel instead of requiring a separate local package installation.
+- Runtime logs are never removed by an automatic run-count retention policy.
+- Configuration isolates filing and chat endpoints and redacts credentials in diagnostic
+  output.
+
+### Removed
+
+- The former placement, subdivision, redesign, and maintenance pipelines superseded by
+  simple-batch organization.
+- Early CLI subcommands for direct ingest, inspection, maintenance, and recovery.
+- The offline example and local demo pages from the public distribution.
 
 ## [0.1.1] — 2026-08-02
 

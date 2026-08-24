@@ -1,94 +1,72 @@
 # Contributing
 
-## Getting set up
+Thanks for helping improve Bismuth. Bug reports, parser support, prompt improvements,
+tests, and documentation fixes are all welcome.
+
+## Development setup
 
 ```console
-git clone https://github.com/Bismuth-AI/bismuth
+git clone https://github.com/Bismuth-AI/bismuth.git
 cd bismuth
-python -m venv .venv && . .venv/bin/activate    # Windows: .venv\Scripts\activate
-pip install -e ./packages/agentkit -e ".[parsers,server,dev]"
-pytest -q
+python -m venv .venv
 ```
 
-`agentkit` is installed separately on purpose. It is a standalone package that
-happens to live in this repository, and Bismuth imports it as a library rather
-than vendoring it — so it is not a dependency of the `bismuth-kb` wheel and pip
-will not pull it in for you. Miss it and `bismuth.container` fails to import.
-
-**No API key needed, for anything.** The whole engine runs against a scripted model
-([`FakeLLM`](src/bismuth/adapters/llm/fake.py)). To see what it produces:
+Activate the environment, then install the project:
 
 ```console
-python examples/offline_demo.py
+python -m pip install -e ".[all,dev]"
 ```
 
-## Before you open a PR
+On Windows, activate with `.venv\Scripts\activate`. On macOS or Linux, use
+`source .venv/bin/activate`.
+
+No API key is required for the automated test suite. Tests use scripted model
+adapters and temporary vaults.
+
+## Before opening a pull request
 
 ```console
-ruff check src tests examples --fix
-ruff format src tests examples
+ruff check src tests
+ruff format --check src tests
 mypy
 pytest -q
 ```
 
-## The dependency rule
+Keep each pull request focused. Explain why the change is needed, describe any
+user-visible behavior, and add tests for behavior that changed.
 
+## Architecture
+
+Dependencies point inward:
+
+```text
+domain/       Value objects and pure functions
+ports/        Protocols used by services
+services/     Application use cases
+adapters/     LLM, filesystem, parser, catalog, and journal implementations
+agentkit/     Internal tool-calling agent loop
+container.py  Application composition root
 ```
-domain/     value objects, pure functions. no I/O, no model, no filesystem.
-ports/      Protocols. the only things services may depend on.
-services/   the use cases. know ports, never adapters.
-adapters/   LiteLLM, the filesystem, the parsers, the journal.
-container.py  the one place that knows both halves.
-```
 
-Dependencies point inward. This is enforced by ruff's `banned-api`, not by
-reviewers noticing ??if you get `TID251`, the fix is almost always to move the
-thing you need into `domain/`, not to add an ignore.
+Services must depend on ports rather than adapters. Ruff enforces this boundary.
+When changing FastAPI, CLI, filesystem, or model adapter code, include a test that
+exercises the real boundary rather than only mocking the call site.
 
-## What we would like help with
+Prompts and code comments are written in English. Keep prompt instructions generic:
+do not add examples or rules tailored to one test corpus, industry, organization,
+or document set.
 
-- **Parsers.** Formats we cannot read are documents we cannot organise.
-- **Prompts.** [`src/bismuth/prompts/`](src/bismuth/prompts/) is the highest-leverage
-  code in the repo and it is currently tuned by one person's intuition. If you run
-  Bismuth on a real corpus in your language and the cards come out wrong, that is a
-  valuable bug report even without a fix.
-- **Small-model quality.** The claim "local models work" rests on task decomposition
-  and bounded output contracts. It
-  is an argument about design, not a measurement. Measuring it would be the single
-  most useful contribution available.
-- **Slow-loop signals.** The thresholds in [`config.py`](src/bismuth/config.py) are
-  guesses. They need real vaults over real months.
+## Dependencies and licensing
 
-## Licences: the one hard rule
-
-Runtime dependencies must use an MIT, BSD, or Apache-2.0 compatible licence.
-
-## Tests
-
-Test the decisions, not the plumbing. The interesting rules are the ones about
-restraint ??when Bismuth refuses to place a document, when it escalates to
-judgement, when the slow loop stays quiet ??and they are exactly the rules a real
-model makes untestable. That is what `FakeLLM` is for.
-
-A test asserting that we called the model is not interesting. A test asserting that
-we *declined to guess* when the model gave us half an answer is the product.
-
-If you are touching a framework boundary (such as FastAPI or the CLI), write a test that makes a
-real call. That layer is where type checking stops helping ??a dependency alias in
-the wrong scope once turned every endpoint into a 422 while types, lint and every
-unit test stayed green.
-
-## Changing a decision
-
-Significant design changes should explain their rationale, costs, and alternatives in
-the PR. A change in direction is allowed and interesting; make the reasoning explicit
-so it remains recoverable from the repository history.
+Runtime dependencies must be compatible with Apache-2.0. The project currently
+accepts permissive MIT, BSD, and Apache-2.0 dependencies; discuss any exception
+before adding it.
 
 ## Reporting bugs
 
-Vaults contain documents you probably cannot share, so please include instead: the
-shape (how many files, what formats, roughly what facets), the model you configured,
-the relevant lines from `.bismuth/journal.jsonl`, and what you expected to happen.
+Include the operating system, Python version, Bismuth version, configured provider
+and model, input file formats, and the behavior you expected.
 
-If Bismuth moved a file somewhere wrong, include the matching entry from
-`.bismuth/journal.jsonl`; its rationale is the most useful detail you can paste.
+Run diagnostics may contain full document text, prompts, and model responses. Do not
+upload `logs/` or `.bismuth/` contents without reviewing and redacting sensitive data.
+Prefer a minimal reproduction with synthetic documents whenever possible.

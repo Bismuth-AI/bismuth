@@ -18,49 +18,33 @@ htmlcov/
 # Environment
 .env
 
-# Bismuth runtime state (a vault's own .bismuth/ dir lives with the vault,
-# not in this repo -- this only guards against accidentally committing a
-# scratch vault used during development).
+# Local vaults and runtime state
 /scratch/
 /vault/
 *.bismuth-vault/
 
-# Team operating notes -- ownership map, each member's git identity, and the
-# branch/commit conventions that go with them. Local to this team.
+# Local project notes
 /TEAM.md
-/docs/git-workflow.md
-
-# Local specifications, design notes, experiments, and agent handoffs.
 /SPEC.md
 /docs/
 /CLAUDE.md
 /HANDOFF.md
 /scripts/
-/tests/test_log_analysis.py
-/tests/test_compare_vaults.py
 
 # Editors / OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-/examples/demo-vault/
 
-# Debug logs (per-run, regenerated)
+# Diagnostics and generated output
 /logs/
-
-# Locally rendered product-demo videos and posters
 /artifacts/
 /src/bismuth/api/static/demo.html
 /src/bismuth/api/static/chat-demo.html
 
-# Local agent handoff and one-off experiment process artifacts
+# Local process output
 /NEXT_AGENT_HANDOFF.md
 /.codex-*.err
 /.codex-*.out
 /.codex-*.json
-
-# Replay vaults. The tuning loop files the same collection again from the cards it
-# already has, and an --into path inside the checkout would otherwise be committed.
-/*-replay/
-/replay-*/
