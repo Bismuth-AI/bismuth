@@ -89,6 +89,12 @@ h1 img { width: 22px; height: 22px; }
 }
 #drop.over, #drop:hover { border-color: var(--accent); color: var(--ink); background: var(--accent-soft); }
 #drop .only { margin-top: 6px; font-size: 11.5px; opacity: .75; }
+#searchwrap { position: relative; margin: 0 12px 10px; }
+#searchwrap input { max-width: none; padding: 7px 30px 7px 32px; font-size: 13px; background: var(--bg); }
+#searchwrap .glass { position: absolute; left: 10px; top: 6px; color: var(--dim); pointer-events: none; }
+#search-clear { position: absolute; right: 5px; top: 3px; padding: 2px 7px; border: 0; background: transparent; color: var(--dim); }
+.pathlink { border: 0; background: transparent; color: var(--accent); padding: 0; font-size: 12px; }
+.pathlink:hover { text-decoration: underline; border-color: transparent !important; }
 #treebar {
   display: flex; align-items: center; gap: 6px; padding: 2px 14px 6px;
   color: var(--dim); font-size: 11px;
@@ -271,8 +277,14 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
   <aside id="sidebar">
     <div id="drop">
       <strong>파일 올리기</strong><br>끌어다 놓거나 눌러서 고르기
+      <div class="only">PDF · HWP · HWPX · DOC · DOCX · TXT · MD</div>
     </div>
-    <input type="file" id="picker" multiple accept=".pdf,application/pdf" class="hidden">
+    <input type="file" id="picker" multiple accept=".pdf,.hwp,.hwpx,.doc,.docx,.txt,.md" class="hidden">
+    <div id="searchwrap">
+      <span class="glass">⌕</span>
+      <input type="search" id="vault-search" placeholder="문서와 카드 검색" autocomplete="off" spellcheck="false">
+      <button id="search-clear" class="hidden" title="검색 지우기">×</button>
+    </div>
     <div id="treebar">
       <span class="lbl">폴더</span>
       <button class="mini" id="tree-expand" title="모든 폴더를 폅니다">전체 펴기</button>
@@ -402,6 +414,7 @@ document.documentElement.dataset.uiVersion = UI_VERSION;
 let state = {}, tree = [], selected = ROOT, expanded = new Set();
 let rootInfo = null;   // the root's own entry: its loose documents are the common early case
 let sel = new Set(), selAnchor = null, viewDocs = [], moveTargets = [];
+let searchTimer = null, searchRequest = 0;
 // Folder and document selections are mutually exclusive.
 let fsel = new Set(), fselAnchor = null;
 
@@ -536,6 +549,8 @@ $("tree-collapse").addEventListener("click", () => { expanded.clear(); renderTre
 
 async function renderMain() {
   const el = $("main");
+  const query = $("vault-search").value.trim();
+  if (query) { await renderSearch(el, query); return; }
   if (selected === "_inbox") { renderInbox(el); return; }
   if (!selected) { el.innerHTML = `<div class="empty">왼쪽에서 폴더를 고르세요.</div>`; return; }
 
@@ -589,14 +604,16 @@ function fileIcon(name) {
   return "📄";
 }
 
-function docRow(d) {
+function docRow(d, showFolder = false) {
   const on = sel.has(d.path);
+  const folder = d.path.split("/").slice(0, -1).join("/") || ROOT;
   return `<div class="doc ${on ? "sel" : ""}" data-path="${esc(d.path)}" data-open="${esc(d.path)}" title="눌러서 원본 열기 · 우클릭으로 더보기">
     <div style="display:flex;align-items:flex-start;gap:9px">
       <input type="checkbox" class="chk" data-chk="${esc(d.path)}" ${on ? "checked" : ""} title="선택">
       <div style="flex:1;min-width:0">
         <div class="t">${fileIcon(d.filename)} ${esc(d.title || d.filename)} <span class="openhint">열기 ↗</span></div>
         <div class="meta">${d.doc_type ? esc(d.doc_type) + " · " : ""}<span class="mono">${esc(d.filename)}</span></div>
+        ${showFolder ? `<div class="meta"><button class="pathlink" data-result-folder="${esc(folder)}">📁 ${esc(folder === ROOT ? "전체" : folder)}</button></div>` : ""}
       </div>
       <button class="kebab" data-kebab="${esc(d.path)}" title="더보기">⋮</button>
     </div>
@@ -604,6 +621,40 @@ function docRow(d) {
     ${(d.topics || []).map((t) => `<span class="chip">${esc(t)}</span>`).join("")}
   </div>`;
 }
+
+async function renderSearch(el, query) {
+  const request = ++searchRequest;
+  el.innerHTML = `<div class="empty">“${esc(query)}” 검색 중…</div>`;
+  let docs;
+  try { docs = await api("/search?q=" + encodeURIComponent(query)); }
+  catch (err) { if (request === searchRequest) el.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
+  if (request !== searchRequest || $("vault-search").value.trim() !== query) return;
+  el.innerHTML = `
+    <div class="crumb">전체 서고 검색</div>
+    <h2>“${esc(query)}”</h2>
+    <div class="sect">검색 결과 ${docs.length}개${docs.length === 100 ? " · 상위 100개" : ""}</div>
+    ${docs.length ? docs.map((d) => docRow(d, true)).join("") : `<div class="empty">일치하는 문서가 없습니다.</div>`}`;
+  el.querySelectorAll("[data-result-folder]").forEach((button) => button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    $("vault-search").value = ""; $("search-clear").classList.add("hidden");
+    selected = button.dataset.resultFolder;
+    if (selected !== ROOT) { openAncestors(selected); expanded.add(selected); }
+    renderTree(); renderMain();
+  }));
+  bindDocs(el); syncSel();
+}
+
+$("vault-search").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  $("search-clear").classList.toggle("hidden", !$("vault-search").value);
+  searchTimer = setTimeout(() => renderMain(), 180);
+});
+$("vault-search").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") { $("vault-search").value = ""; $("search-clear").classList.add("hidden"); renderMain(); }
+});
+$("search-clear").addEventListener("click", () => {
+  $("vault-search").value = ""; $("search-clear").classList.add("hidden"); $("vault-search").focus(); renderMain();
+});
 
 async function renderInbox(el) {
   let detail;
@@ -1138,10 +1189,14 @@ function spendText(s) {
 // The picker filters by `accept`; a drag from the desktop does not, so the rule lives
 // here as well. The server refuses either way -- this is only so the refusal arrives
 // before the bytes do.
-const PDF_ONLY = (files) => files.filter((f) => f.name.toLowerCase().endsWith(".pdf"));
+const UPLOAD_EXTENSIONS = new Set([".pdf", ".hwp", ".hwpx", ".doc", ".docx", ".txt", ".md"]);
+const SUPPORTED_ONLY = (files) => files.filter((f) => {
+  const dot = f.name.lastIndexOf(".");
+  return dot >= 0 && UPLOAD_EXTENSIONS.has(f.name.slice(dot).toLowerCase());
+});
 
 async function upload(all) {
-  const files = PDF_ONLY(all);
+  const files = SUPPORTED_ONLY(all);
   const refused = all.length - files.length;
   if (refused) alert(`올릴 수 없는 파일 ${refused}개를 빼고 올립니다.`);
   if (!files.length) return;

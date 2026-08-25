@@ -50,11 +50,24 @@ class TestIndex:
         assert 'api("/batches", { method: "POST", body: fd })' in page
         assert 'api("/documents",' not in page
 
+    def test_picker_lists_every_supported_document_format(self, client: TestClient) -> None:
+        page = client.get("/").text
+
+        assert 'accept=".pdf,.hwp,.hwpx,.doc,.docx,.txt,.md"' in page
+        assert "PDF · HWP · HWPX · DOC · DOCX · TXT · MD" in page
+
     def test_rebuild_controls_are_available(self, client: TestClient) -> None:
         page = client.get("/").text
 
         assert 'id="btn-empty-tree"' in page
         assert 'id="btn-refile"' in page
+
+    def test_search_controls_are_available(self, client: TestClient) -> None:
+        page = client.get("/").text
+
+        assert 'id="vault-search"' in page
+        assert 'api("/search?q=" + encodeURIComponent(query))' in page
+        assert "data-result-folder=" in page
 
     def test_demo_routes_are_not_part_of_the_product(self, client: TestClient) -> None:
         assert client.get("/demo").status_code == 404
@@ -78,7 +91,15 @@ class TestStatus:
 
     def test_status_reports_web_upload_formats(self, settings: Settings) -> None:
         with TestClient(create_app(settings)) as strict:
-            assert strict.get("/api/status").json()["supported_formats"] == [".pdf"]
+            assert strict.get("/api/status").json()["supported_formats"] == [
+                ".doc",
+                ".docx",
+                ".hwp",
+                ".hwpx",
+                ".md",
+                ".pdf",
+                ".txt",
+            ]
 
     def test_status_counts_documents_waiting_at_root(self, client: TestClient) -> None:
         vault = client.app.state.engine.vault  # type: ignore[attr-defined]
@@ -110,8 +131,47 @@ class TestOpenFile:
         assert r.status_code == 404
 
 
+class TestSearch:
+    def test_finds_a_document_by_filename_and_returns_its_folder(self, client: TestClient) -> None:
+        _seed_document(client, name="project-report.txt")
+
+        body = client.get("/api/search", params={"q": "project-report"}).json()
+
+        assert [item["path"] for item in body] == ["아폴로/2023/project-report.txt"]
+
+    def test_finds_card_summary_and_topics_case_insensitively(self, client: TestClient) -> None:
+        _seed_document(client)
+
+        summary = client.get("/api/search", params={"q": "유지보수"}).json()
+        topic = client.get("/api/search", params={"q": "아폴로"}).json()
+
+        assert summary[0]["summary"]
+        assert topic[0]["topics"]
+
+    def test_blank_search_returns_no_documents(self, client: TestClient) -> None:
+        _seed_document(client)
+
+        assert client.get("/api/search", params={"q": "   "}).json() == []
+
+    def test_search_limit_is_bounded(self, client: TestClient) -> None:
+        _seed_document(client, name="one.txt", body="아폴로 첫 번째 계약")
+        _seed_document(client, name="two.txt", body="아폴로 두 번째 계약")
+
+        body = client.get("/api/search", params={"q": "아폴로", "limit": 1}).json()
+
+        assert len(body) == 1
+
+    def test_search_cache_refreshes_when_a_document_is_added(self, client: TestClient) -> None:
+        _seed_document(client, name="first.txt", body="첫 번째 고유 검색어")
+        assert len(client.get("/api/search", params={"q": ".txt"}).json()) == 1
+
+        _seed_document(client, name="second.txt", body="두 번째 고유 검색어")
+
+        assert len(client.get("/api/search", params={"q": ".txt"}).json()) == 2
+
+
 class TestAcceptedUploads:
-    """Only PDF for now: the other parsers are registered but not yet trusted end to end."""
+    """The web flow accepts every document format supported end to end."""
 
     @pytest.fixture
     def strict(self, settings: Settings, llm: FakeLLM) -> Iterator[TestClient]:
@@ -122,33 +182,50 @@ class TestAcceptedUploads:
         with TestClient(app) as test_client:
             yield test_client
 
-    def test_a_text_file_is_refused(self, strict: TestClient) -> None:
+    def test_a_text_file_is_accepted(self, strict: TestClient) -> None:
         r = strict.post(
             "/api/batches",
             files={"files": ("contract.txt", "아폴로 계약서".encode(), "text/plain")},
         )
 
-        assert r.status_code == 400
-        assert ".txt" in r.json()["detail"]
+        assert r.status_code == 202
 
     def test_the_refusal_names_every_kind_it_turned_away(self, strict: TestClient) -> None:
         r = strict.post(
             "/api/batches",
             files=[
-                ("files", ("a.docx", b"x", "application/octet-stream")),
-                ("files", ("b.hwpx", b"x", "application/octet-stream")),
+                ("files", ("a.rtf", b"x", "application/octet-stream")),
+                ("files", ("b.odt", b"x", "application/octet-stream")),
             ],
         )
 
         assert r.status_code == 400
-        assert ".docx" in r.json()["detail"] and ".hwpx" in r.json()["detail"]
+        assert ".rtf" in r.json()["detail"] and ".odt" in r.json()["detail"]
 
     def test_nothing_is_staged_when_a_batch_is_refused(self, strict: TestClient) -> None:
         engine = strict.app.state.engine  # type: ignore[attr-defined]
 
-        strict.post("/api/batches", files={"files": ("a.txt", b"x", "text/plain")})
+        strict.post("/api/batches", files={"files": ("a.rtf", b"x", "text/rtf")})
 
         assert not list((Path(engine.vault.root) / "_inbox").glob("*"))
+
+    @pytest.mark.parametrize(
+        ("filename", "data", "label"),
+        [
+            ("fake.doc", b"not ole", "DOC"),
+            ("fake.hwp", b"not ole", "HWP"),
+            ("fake.docx", b"not zip", "DOCX"),
+            ("fake.hwpx", b"not zip", "HWPX"),
+        ],
+    )
+    def test_a_renamed_office_file_is_refused(
+        self, strict: TestClient, filename: str, data: bytes, label: str
+    ) -> None:
+        response = strict.post(
+            "/api/batches", files={"files": (filename, data, "application/octet-stream")}
+        )
+        assert response.status_code == 400
+        assert f"올바른 {label}" in response.json()["detail"]
 
     def test_a_file_renamed_to_pdf_is_refused(self, strict: TestClient) -> None:
         r = strict.post(
