@@ -7,6 +7,8 @@ that below `1.0.0` the interface may break between minor versions.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-25
+
 ### Added
 
 - Direct HWP 5.x, HWPX, and structured DOCX extraction, plus legacy DOC extraction
@@ -22,6 +24,9 @@ that below `1.0.0` the interface may break between minor versions.
   mature-root refiling. Corpus-neutral prompts treat folder scopes as conjunctive contracts,
   distinguish a document's enduring subject from its production context, and may create a
   new top-level branch instead of forcing the nearest existing topic.
+- The repository now publishes direct dependency and reference-model sources and licenses,
+  an explicit copyright notice, independent open-weight operation instructions, and the
+  exact transitive license inventory produced for each CI run.
 
 ## [0.2.2] — 2026-08-24
 
@@ -143,7 +148,8 @@ built yet.
 - Quality on small local models is **not measured**. "Local works" is an argument
   from the design (task decomposition and schema constraints), not a result.
 
-[Unreleased]: https://github.com/Bismuth-AI/bismuth/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/Bismuth-AI/bismuth/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Bismuth-AI/bismuth/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/Bismuth-AI/bismuth/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Bismuth-AI/bismuth/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Bismuth-AI/bismuth/compare/v0.1.1...v0.2.0
