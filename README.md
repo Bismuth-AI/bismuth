@@ -26,6 +26,10 @@ searchable Markdown sidecars, and folder notes that remains usable without Bismu
 > Bismuth is alpha software. The complete web upload flow supports PDF, HWP, HWPX, DOC,
 > DOCX, TXT, and Markdown files only, and interfaces may change before 1.0.
 
+![Bismuth vault showing an expanded folder tree and folder scope notes](assets/readme/vault-ui.png)
+
+<p align="center"><sub>A local Bismuth vault: ordinary folders on the left, their routing notes on the right.</sub></p>
+
 ## Why Bismuth?
 
 Tool-using LLMs can inspect paths, list folders, grep text, and read only the documents
@@ -41,6 +45,21 @@ Bismuth turns an unstructured collection into an agent-readable library:
 
 There is no fixed category tree and no corpus-specific few-shot taxonomy. The structure
 is inferred from the documents in the vault and the tree that already exists.
+
+### How it differs
+
+| | Flat folders | Basic vector RAG | Bismuth |
+| --- | --- | --- | --- |
+| Primary retrieval signal | Filenames and manual browsing | Similarity-ranked text chunks | Paths, folder scopes, cards, and document text |
+| Organizes the originals | No | No | Yes, through journaled moves |
+| Agent navigation | Broad listing or full-text search | One top-k result set | Iterative `ls` → `grep` → `read` traversal |
+| Human-readable without the service | Files remain readable, but unstructured | Source files remain; the index is separate | Yes: ordinary folders plus Markdown notes |
+| Structure grows with the collection | Manual | The index updates; folder structure does not | Yes, with incremental filing and maintenance |
+| Recovery and undo for file changes | Filesystem-dependent | Not applicable to source placement | Built-in transaction journal |
+
+Bismuth is not a replacement for every RAG system. It creates a durable navigation
+layer that humans and tool-using agents can inspect directly; vector or keyword search
+can still be added on top when a workload benefits from it.
 
 ## How it works
 
@@ -104,6 +123,39 @@ Bismuth.
 - **Live progress and diagnostics** — the local web UI streams ingest progress and offers
   per-run model-call traces and spend information.
 
+## Retrieval benchmark
+
+We compared Bismuth's folder-aware agentic retrieval with an untuned basic vector RAG
+baseline on the same Korean legal corpus, questions, `qwen3.6-35b` answer model, and
+answer-only scorer. The corpus contained 300 documents (4,320 pages, 6.57 million
+characters), and the benchmark contained 88 questions. The RAG baseline used 1,200-character chunks with
+200-character overlap, BGE-M3 embeddings, cosine search, and a single top-k retrieval.
+
+| Metric | Bismuth agentic | Basic RAG top-8 | Basic RAG top-20 |
+| --- | ---: | ---: | ---: |
+| Accuracy | **0.98** | 0.78 | 0.81 |
+| Full-score questions | **81 / 88** | 53 / 88 | 52 / 88 |
+| Zero-score questions | **0 / 88** | 9 / 88 | 3 / 88 |
+| LLM calls per question | 16.6 | **1** | **1** |
+| Time per question | 82 s | **8.0 s** | 11.5 s |
+| Total query time | 41 min | **4.3 min** | 6.0 min |
+
+The methods tied on direct single-fact questions. The largest observed gap was on
+cross-law comparison (0.96 vs 0.59 / 0.56); version-sensitive and multi-document
+questions also favored folder-aware traversal. In the paired 88-question comparison,
+Bismuth minus RAG top-20 was +0.164 ± 0.028 (33 Bismuth wins, 1 RAG win).
+
+> [!CAUTION]
+> This is evidence for this corpus, not a claim that agentic retrieval generally beats
+> RAG. Bismuth was tuned across seven development runs, while the baseline was one
+> deliberately basic setup with two k values—without reranking, hybrid BM25, query
+> rewriting, or provision-aware chunking. Each final configuration was run once, and the
+> same model participated in answering and judging. The repository publishes the
+> protocol and aggregate results, not the benchmark runner or raw provider logs.
+
+See the public [protocol, category results, evidence-coverage analysis, and
+limitations](BENCHMARK.md).
+
 ## Quick start
 
 ### Requirements
@@ -151,6 +203,23 @@ bismuth --port 9000
 bismuth --no-open
 bismuth --help
 ```
+
+### Five-minute walkthrough
+
+1. **Choose a vault and model.** Start `bismuth`, then complete the local setup screen.
+   Use a new or backed-up directory while evaluating alpha software.
+2. **Upload a representative first batch.** Mix several document types and topics so
+   the initial branches reflect the collection instead of one narrow subject.
+3. **Inspect the proposed library.** Expand the tree and read each folder's scope note.
+   Originals remain next to their generated `.md` sidecars.
+4. **Find and ask.** Use card search for a known document, or choose **Ask the library**
+   for a question that requires the agent to traverse several folders and cite evidence.
+5. **Grow or repair the structure.** Add more files incrementally, move a misplaced
+   document manually, rebuild from saved cards, or undo a journaled change.
+
+For a quick smoke test, start with a handful of TXT or Markdown files whose correct
+grouping you already know. Confirm the paths and folder notes before trying a large or
+sensitive collection.
 
 Settings are stored in `~/.bismuth/config.json`. For environment-based configuration,
 copy [`.env.example`](.env.example) to `.env` and use the documented `BISMUTH_*`
