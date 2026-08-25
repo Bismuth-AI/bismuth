@@ -1,0 +1,9 @@
+Bismuth
+Copyright 2026 The Bismuth authors
+
+Bismuth is licensed under the Apache License, Version 2.0. The complete
+license text is in LICENSE.
+
+Third-party libraries, frameworks, tools, and AI models are not covered by
+the Bismuth license. Their sources and license terms are listed in
+THIRD_PARTY_NOTICES.md and in the license inventory produced by CI.

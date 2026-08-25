@@ -23,8 +23,8 @@ searchable Markdown sidecars, and folder notes that remains usable without Bismu
 > Bismuth aims for a practical, navigable library—not a perfect universal taxonomy.
 
 > [!IMPORTANT]
-> Bismuth is alpha software. The complete web upload flow currently supports PDF files
-> only, and interfaces may change before 1.0.
+> Bismuth is alpha software. The complete web upload flow supports PDF, HWP, HWPX, DOC,
+> DOCX, TXT, and Markdown files only, and interfaces may change before 1.0.
 
 ## Why Bismuth?
 
@@ -46,7 +46,9 @@ is inferred from the documents in the vault and the tree that already exists.
 
 1. An upload is validated and staged safely.
 2. Bismuth parses the document and builds a structured card from its contents.
-3. The card is compared with the current folder tree.
+3. The card's title, type, topics, and substantive summary are compared with the current
+   folder tree. Existing scopes are constraints, not a closed taxonomy, so a document may
+   establish a new top-level branch when every current branch conflicts with its purpose.
 4. Documents are filed in order so each decision can use the structure built so far.
 5. As evidence accumulates, Bismuth groups loose files, reshapes overly broad branches,
    and settles files that remain at the root.
@@ -86,6 +88,8 @@ Bismuth.
 - **Corpus-driven organization** — no predefined categories or domain-specific examples.
 - **Growing folder structure** — reuses, creates, groups, and revisits branches as the
   collection changes.
+- **Vault-wide card search** — finds documents by filename, current path, title, type,
+  topic, or summary and links each result back to its folder.
 - **Card-based rebuilds** — clears and rebuilds folder structure from saved cards without
   paying the parsing cost again.
 - **Agentic retrieval** — the library agent inspects paths and folder notes before using
@@ -171,11 +175,36 @@ Provider credentials are stored locally in `~/.bismuth/config.json`, not in an o
 system keychain. The file is created with user-only permissions where the platform
 supports them.
 
+### Model disclosure and independent operation
+
+Bismuth does not contain or train model weights. It uses an existing model unchanged,
+and the model is selected and operated by the user. The open-weight reference deployment
+used for full-pipeline verification is
+[`Qwen/Qwen3.8-27B-FP8`](https://huggingface.co/Qwen/Qwen3.8-27B-FP8), published under
+Apache-2.0. Anthropic and OpenAI are optional hosted providers, not runtime requirements.
+
+For independent operation, serve the reference model with an OpenAI-compatible server
+such as vLLM:
+
+```console
+vllm serve Qwen/Qwen3.8-27B-FP8 --port 8000
+```
+
+Then select **OpenAI-compatible server** in Bismuth, set the endpoint to
+`http://127.0.0.1:8000/v1`, and enter `Qwen/Qwen3.8-27B-FP8` as the model. The model
+proposes semantic decisions; Bismuth's own source code parses documents, validates
+schemas and paths, applies journaled filesystem transactions, and supports recovery and
+undo. The product is therefore not limited to forwarding a hosted model response.
+
+See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for model, library, framework,
+and tool sources and licenses. CI also publishes the exact resolved transitive license
+inventory for every commit.
+
 ## Current scope
 
 Supported in the complete product flow:
 
-- PDF upload and text extraction;
+- PDF, HWP, HWPX, DOC, DOCX, TXT, and Markdown upload and text extraction;
 - up to 500 files per request, 50 MB per file, and 500 MB total;
 - document cards, Markdown sidecars, and folder notes;
 - incremental organization and card-based full refiling;
@@ -241,4 +270,6 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidelines and
 
 ## License
 
-Bismuth is available under the [Apache License 2.0](LICENSE).
+Bismuth is available under the [Apache License 2.0](LICENSE). See [`NOTICE`](NOTICE) for
+the copyright notice and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for software
+and model attribution.

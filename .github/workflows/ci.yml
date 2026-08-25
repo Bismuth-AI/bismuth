@@ -36,9 +36,14 @@ jobs:
       - run: pip install -e ".[all]" pip-licenses
       - name: Fail on copyleft dependencies
         run: |
-          pip-licenses --from=mixed --format=csv > licences.csv
+          pip-licenses --from=mixed --format=csv --with-urls > licences.csv
           cat licences.csv
           if grep -Ei '(^|,)"?(GNU )?(A?GPL|LGPL)' licences.csv; then
             echo "::error::A copyleft dependency was introduced."
             exit 1
           fi
+      - name: Publish the resolved license inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: third-party-licenses
+          path: licences.csv
