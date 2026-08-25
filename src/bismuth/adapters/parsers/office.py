@@ -1,4 +1,4 @@
-"""Text extraction for modern Microsoft Office formats."""
+"""Text extraction for presentation and spreadsheet formats."""
 
 from __future__ import annotations
 
@@ -8,62 +8,6 @@ from pathlib import Path
 from bismuth.adapters.parsers.registry import build_extraction, require
 from bismuth.domain.document import Extraction, Section
 from bismuth.domain.errors import ParserUnavailableError
-
-
-class DocxParser:
-    """Extract paragraphs and tables from Word documents."""
-
-    @property
-    def name(self) -> str:
-        return "python-docx"
-
-    @property
-    def extensions(self) -> frozenset[str]:
-        return frozenset({".docx"})
-
-    def warm(self) -> None:
-        require("docx", "Reading .docx needs python-docx: pip install 'bismuth-kb[parsers]'")
-
-    def parse(self, path: Path, *, max_chars: int) -> Extraction:
-        self.warm()
-        import docx
-
-        try:
-            document = docx.Document(str(path))
-        except Exception as exc:
-            raise ParserUnavailableError(f"{path.name} is not a readable .docx: {exc}") from exc
-
-        return build_extraction(_docx_blocks(document), parser=self.name, max_chars=max_chars)
-
-
-def _docx_blocks(document: object) -> Iterator[Section]:
-    order = 0
-    buffer: list[str] = []
-    heading: str | None = None
-
-    for paragraph in document.paragraphs:  # type: ignore[attr-defined]
-        text = paragraph.text.strip()
-        if not text:
-            continue
-        if paragraph.style is not None and str(paragraph.style.name).startswith("Heading"):
-            if buffer:
-                yield Section(heading=heading, text="\n".join(buffer), order=order)
-                order += 1
-                buffer = []
-            heading = text
-        else:
-            buffer.append(text)
-
-    if buffer:
-        yield Section(heading=heading, text="\n".join(buffer), order=order)
-        order += 1
-
-    for index, table in enumerate(document.tables):  # type: ignore[attr-defined]
-        rows = [[cell.text.strip().replace("|", "\\|") for cell in row.cells] for row in table.rows]
-        if not rows:
-            continue
-        yield Section(heading=f"Table {index + 1}", text=_as_markdown_table(rows), order=order)
-        order += 1
 
 
 class PptxParser:
