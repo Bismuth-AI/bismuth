@@ -71,6 +71,7 @@ def _frontmatter(
         "title": card.title,
         "doc_type": card.doc_type,
         "language": card.language,
+        "summary": card.summary,
         "topics": list(card.topics),
         "entities": [{"name": e.name, "kind": e.kind.value} for e in card.entities],
         "keywords": list(card.keywords),
