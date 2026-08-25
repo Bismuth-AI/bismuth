@@ -7,6 +7,15 @@ that below `1.0.0` the interface may break between minor versions.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-08-25
+
+### Added
+
+- A public retrieval benchmark record covering the fixed comparison protocol, aggregate
+  and category results, evidence coverage, performance tradeoffs, and study limitations.
+- README product evidence in both languages: a real local-vault screenshot, a comparison
+  with flat folders and basic vector RAG, and a five-minute first-use walkthrough.
+
 ## [0.3.0] — 2026-08-25
 
 ### Added
@@ -148,7 +157,8 @@ built yet.
 - Quality on small local models is **not measured**. "Local works" is an argument
   from the design (task decomposition and schema constraints), not a result.
 
-[Unreleased]: https://github.com/Bismuth-AI/bismuth/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Bismuth-AI/bismuth/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Bismuth-AI/bismuth/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Bismuth-AI/bismuth/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/Bismuth-AI/bismuth/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Bismuth-AI/bismuth/compare/v0.2.0...v0.2.1
