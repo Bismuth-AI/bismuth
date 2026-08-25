@@ -32,8 +32,9 @@ CHECK 2 — Does any folder hold more documents directly than all of its childre
 together? Its children are not filtering most of the contents. A large folder without
 children also fails this check.
 
-CHECK 3 — Are at least 10 documents still loose at the root? The root pile is a list the
-reader must scan instead of using the tree.
+CHECK 3 — Are documents still loose at the root? Before the collection reaches 50
+documents, fewer than 10 may remain there. At 50 documents or more, even one loose root
+document must be refiled because the collection has an established tree.
 
 CHECK 4 — Is any top-level folder actually a narrower branch of another top-level folder?
 If one purpose describes a branch of another purpose, they are parent and child, not
@@ -76,7 +77,8 @@ CHECK7: <folders whose names do not describe their contents, or NONE>
 CHECK8: <children that conflict with their parents, or NONE>
 CHECK9: <separate folder pairs that cover the same subject, or NONE>
 
-If every check passes — CHECK3 is below 10 and CHECK5 is at most 20 — append only:
+If every check passes — CHECK3 is zero when DOCUMENTS is at least 50, otherwise below 10,
+and CHECK5 is at most 20 — append only:
 KEEP
 
 Otherwise append every required action. Checks 1, 2, and 3 require `REFILE`; checks 4,
@@ -108,7 +110,7 @@ Existing children are shown one per line:
   <name>/ (<direct documents>) — <purpose>
 
 Documents to refile are shown one per line:
-  [D<number>] <document title> | <document type> | <topics>
+  [D<number>] <document title> | <document type> | <topics> | <summary>
 
 For each document:
 
@@ -164,6 +166,29 @@ specific existing folder whose purpose honestly covers it. When no existing fold
 name a new reusable top-level subject. A new folder may begin with one document; it must
 still be broad enough for different future documents.
 
+Evaluate every destination on independent dimensions: central subject, purpose or
+activity, and the organizing scope stated by the folder. Shared words are insufficient.
+Eligibility is conjunctive: an existing folder fits only when the document satisfies
+every applicable constraint expressed by its purpose and a reader relying on that purpose
+would predict the document. One conflict vetoes the destination completely; relevance on
+another dimension cannot restore it.
+
+The existing tree is evidence about current contents, not a closed taxonomy. Never infer
+a collection-wide restriction from its dominant document kind. When an arriving document
+introduces a new but reusable branch, that is a reason to create a top-level subject, not
+to force it into the nearest existing branch.
+
+When none fits, derive the smallest stable abstraction that preserves the dimensions
+which distinguish this document from existing branches while discarding incidental
+metadata and document-specific names. Create it only when a different future document
+could belong there and documents from at least one existing branch clearly could not.
+Prefer that truthful new subject over the nearest but misleading existing folder.
+
+Construct a new name by starting with the central subject. Compare it with every vetoed
+nearby folder; if the subject alone would hide the dimension that caused the veto, add the
+document's stable purpose or activity as a qualifier. Use the shortest name that preserves
+the separation, never its format, date, or document-specific proper name.
+
 `STAY`, `ROOT`, an empty answer, and an overfull destination are invalid. Do not force a
 document into a misleading folder merely to use an existing name; create a new subject
 instead. No destination may hold more than 25 direct documents.
@@ -173,7 +198,45 @@ D1: <existing full folder path or new top-level subject>
 D2: <existing full folder path or new top-level subject>
 
 For every new subject, append:
-SIGN: <new top-level subject> | <one sentence describing what it contains>\
+SIGN: <new top-level subject> | <one sentence describing what it contains>
+
+`SIGN` is only for a newly named subject; never repeat or rewrite an existing folder's
+purpose here. Perform all comparisons silently and return tagged lines immediately. Do not
+emit analysis, explanations, headings, bullets, or Markdown.\
+"""
+
+_ROOT_FINAL_GATE = """\
+FINAL ELIGIBILITY GATE — apply this after reading the documents above:
+- An existing destination is valid only when every applicable constraint in its purpose
+  passes on subject, purpose or activity, audience, and organizing scope.
+- One conflict vetoes that destination regardless of similarity on another dimension.
+- The current tree is not a closed taxonomy. If all existing folders are vetoed, create
+  the smallest reusable new subject that preserves the dimensions causing separation.
+- A bare central subject is invalid when it could also describe a vetoed folder. Add the
+  stable purpose or activity that caused the veto, using the shortest name that preserves
+  that distinction in the destination name itself; the `SIGN` cannot repair an
+  underspecified name.
+- Separate the enduring object or work described by the document from the circumstances
+  in which it was authored, submitted, reviewed, announced, or stored. Name the former.
+  Mentally replace proper nouns, dates, sponsors, and surrounding occasions; a reusable
+  destination must still describe the substantive body after those changes.
+- Treat the summary as the account of the substantive body; title, type, and topics are
+  retrieval cues and cannot overrule it. Identify which object or work owns most of the
+  summary's goals, actions, functions, and outcomes, and center the destination on that
+  primary referent rather than on the frame through which the document was produced.
+- Apply a role test when a focal work participates in, is submitted to, is funded by, or
+  is reviewed within a surrounding structure. That relation does not make the surrounding
+  structure the primary subject. Center it only when the substantive body describes that
+  structure's own rules, operation, or aggregate outcomes. If the context remains useful
+  as a qualifier, the name must still state the focal work's reusable class.
+- When the substantive body records a bounded undertaking with goals, execution, and
+  outcomes, preserve its enduring work or activity class in the destination name. Do not
+  reduce it to a thematic domain or name it after the reporting genre or occasion.
+- Check a new name against its `SIGN`: every scope-bearing distinction needed to exclude
+  a vetoed folder must occur in the name itself. Derive the `SIGN` only from the arriving
+  documents and plausible siblings, never from traits of vetoed folders.
+- Never choose the least-wrong existing folder, and never emit `SIGN` for an existing one.
+Return tagged lines only.\
 """
 
 
@@ -243,13 +306,14 @@ def build_refiling(
     )
     listed = "\n".join(f"  [{handle}] {line}" for handle, line in documents)
     current = f"{folder}/" if folder.parts else "ROOT"
+    final_gate = f"\n\n{_ROOT_FINAL_GATE}" if must_place else ""
     return Prompt(
         system=_ROOT_REFILE if must_place else _REFILE,
         user=(
             f"{_language_instruction(language)}CURRENT FOLDER: {current}\n\n"
             f"EXISTING CHILDREN:\n{child_list}\n\n"
             f"DIRECT DOCUMENTS: {remaining}\n\n"
-            f"DOCUMENTS TO REFILE ({len(documents)}):\n{listed}"
+            f"DOCUMENTS TO REFILE ({len(documents)}):\n{listed}{final_gate}"
         ),
     )
 

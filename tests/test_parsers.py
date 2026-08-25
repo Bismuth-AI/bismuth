@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import zipfile
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from pypdf import PdfWriter
@@ -11,16 +12,21 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from bismuth.adapters.parsers import (
     CsvParser,
+    DocParser,
+    DocxParser,
+    HwpParser,
     HwpxParser,
     PdfParser,
     PlainTextParser,
     build_registry,
 )
+from bismuth.adapters.parsers.hwp import TAG_PARA_TEXT, _parse_records, _process_section
 from bismuth.adapters.parsers.office import _sheets
 from bismuth.adapters.parsers.pdf import _pages
 from bismuth.domain.errors import ParserUnavailableError
 
 HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 
 def make_hwpx(tmp_path: Path, section_xml: str, *, name: str = "doc.hwpx") -> Path:
@@ -180,11 +186,78 @@ class TestHwpx:
         assert "좋은 내용" in extraction.text
         assert extraction.truncated
 
-    def test_legacy_hwp_says_what_to_do_about_it(self, tmp_path: Path) -> None:
-        path = tmp_path / "old.hwp"
-        path.write_bytes(b"\xd0\xcf\x11\xe0not a zip")
-        with pytest.raises(ParserUnavailableError, match=r"re-save it as .hwpx"):
-            HwpxParser().parse(path, max_chars=10_000)
+    def test_renders_a_markdown_table(self, tmp_path: Path) -> None:
+        table = (
+            f'<hp:sec xmlns:hp="{HP}"><hp:p><hp:tbl>'
+            f"<hp:tr><hp:tc>{paragraph('사업')}</hp:tc><hp:tc>{paragraph('금액')}</hp:tc></hp:tr>"
+            f"<hp:tr><hp:tc>{paragraph('아폴로')}</hp:tc><hp:tc>{paragraph('120,000')}</hp:tc></hp:tr>"
+            f"</hp:tbl></hp:p></hp:sec>"
+        )
+        text = HwpxParser().parse(make_hwpx(tmp_path, table), max_chars=10_000).text
+        assert "| 사업 | 금액 |" in text
+        assert "| --- | --- |" in text
+
+
+class TestHwp:
+    def test_decodes_hwp5_paragraph_records(self) -> None:
+        text = "한글 본문"
+        body = text.encode("utf-16le")
+        header = TAG_PARA_TEXT | (len(body) << 20)
+        section = header.to_bytes(4, "little") + body
+
+        assert _parse_records(section) == [(TAG_PARA_TEXT, 0, body)]
+        assert _process_section(section) == text
+
+    def test_skips_eight_unit_hwp_controls(self) -> None:
+        control = b"\x02\x00" + "secd".encode("utf-16le") + b"\x00" * 4 + b"\x02\x00"
+        body = control + "정상 본문".encode("utf-16le")
+        header = TAG_PARA_TEXT | (len(body) << 20)
+
+        assert _process_section(header.to_bytes(4, "little") + body) == "정상 본문"
+
+    def test_rejects_non_ole_input(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        path = tmp_path / "fake.hwp"
+        path.write_bytes(b"not hwp")
+        olefile = ModuleType("olefile")
+        olefile.isOleFile = lambda path: False  # type: ignore[attr-defined]
+        monkeypatch.setitem(__import__("sys").modules, "olefile", olefile)
+        with pytest.raises(ParserUnavailableError, match=r"not an HWP 5\.x"):
+            HwpParser().parse(path, max_chars=1000)
+
+
+class TestDoc:
+    def test_uses_unword_body_text(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        path = tmp_path / "legacy.doc"
+        path.write_bytes(b"legacy word bytes")
+        unword = ModuleType("unword")
+        unword.parse_doc = lambda data: SimpleNamespace(  # type: ignore[attr-defined]
+            body_text="레거시 워드 본문"
+        )
+        monkeypatch.setitem(__import__("sys").modules, "unword", unword)
+
+        extraction = DocParser().parse(path, max_chars=1000)
+        assert extraction.text == "레거시 워드 본문"
+        assert extraction.parser == "unword"
+
+
+class TestDocx:
+    def test_preserves_paragraph_and_table_order(self, tmp_path: Path) -> None:
+        path = tmp_path / "ordered.docx"
+        document = f'''<w:document xmlns:w="{W_NS}"><w:body>
+          <w:p><w:r><w:t>표 앞</w:t></w:r></w:p>
+          <w:tbl><w:tr><w:tc><w:p><w:r><w:t>항목</w:t></w:r></w:p></w:tc>
+          <w:tc><w:p><w:r><w:t>값</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+          <w:p><w:r><w:t>표 뒤</w:t></w:r></w:p>
+        </w:body></w:document>'''
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("word/document.xml", document)
+
+        extraction = DocxParser().parse(path, max_chars=10_000)
+        assert [section.text for section in extraction.sections] == [
+            "표 앞",
+            "| 항목 | 값 |\n| --- | --- |",
+            "표 뒤",
+        ]
 
 
 class TestPlainText:
@@ -238,6 +311,9 @@ class TestRegistry:
     def test_dispatches_by_extension(self, tmp_path: Path) -> None:
         registry = build_registry()
         assert registry.for_path(tmp_path / "a.hwpx").name == "hwpx"
+        assert registry.for_path(tmp_path / "a.hwp").name == "hwp5"
+        assert registry.for_path(tmp_path / "a.doc").name == "unword"
+        assert registry.for_path(tmp_path / "a.docx").name == "docx-structured"
         assert registry.for_path(tmp_path / "a.pdf").name == "pypdf"
         assert registry.for_path(tmp_path / "a.md").name == "plain"
 

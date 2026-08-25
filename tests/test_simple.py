@@ -8,6 +8,7 @@ from bismuth.container import Bismuth
 from bismuth.prompts import shaping as shaping_prompts
 from bismuth.prompts import simple as simple_prompts
 from bismuth.services import simple as simple_service
+from bismuth.services.sidecar import read_sidecar_meta
 from tests.conftest import ScriptedModel
 
 NEAREST = "DOCUMENTS TO ROUTE"
@@ -88,11 +89,14 @@ class TestFilingAHandfulAtOnce:
         await engine.simple.file(_batch(prepared))
 
         assert len(answers.asked) == 2, "one pair for the batch, not one pair per document"
+        assert prepared[0].card.summary in answers.asked[0]
         assert (engine.vault.root / "문학/doc0.txt").is_file()
         assert (engine.vault.root / "문학/doc1.txt").is_file()
         assert (engine.vault.root / "doc2.txt").is_file(), "the root means the pile, honestly"
         assert (engine.vault.root / "문학/_folder.md").is_file()
         assert engine.catalog.card_count() == 3
+        sidecar = (engine.vault.root / "문학/doc0.txt.md").read_text(encoding="utf-8")
+        assert read_sidecar_meta(sidecar)["summary"]  # type: ignore[index]
 
     async def test_a_named_folder_carries_the_sign_it_was_given(
         self, engine: Bismuth, script: ScriptedModel, llm
@@ -256,6 +260,48 @@ class TestTheQuestionSaysWhatItIsShowing:
         assert "25 or more direct documents" in shaping
         assert "do not use `INSIDE`" in shaping
         assert all(f"CHECK{number}:" in review for number in range(1, 10))
+        assert "independent dimensions" in shaping
+        assert "smallest stable abstraction" in shaping
+        assert "not a closed taxonomy" in shaping
+        assert "One conflict vetoes" in shaping
+        assert "At 50 documents or more" in review
+        assert (
+            shaping_prompts._FINAL_SCOPE_GATE.strip()
+            in shaping_prompts.build_shaping(folders=[], places=[], homeless=[]).user
+        )
+
+    def test_root_refile_prefers_a_new_subject_over_a_scope_mismatch(self) -> None:
+        prompt = simple_prompts.build_refiling(
+            folder=PurePosixPath(),
+            children=[
+                simple_prompts.Folder(
+                    path=PurePosixPath("기술 법규"),
+                    note="기술산업 관련 법률과 규정",
+                    documents=4,
+                )
+            ],
+            documents=[("D1", "도구 개발 결과 | 프로젝트 보고서 | 오픈소스, 소프트웨어")],
+            remaining=1,
+            language="ko",
+            must_place=True,
+        )
+
+        assert "Evaluate every destination on independent dimensions" in prompt.system
+        assert "smallest stable abstraction" in prompt.system
+        assert "Shared words are insufficient" in prompt.system
+        assert "One conflict vetoes" in prompt.system
+        assert "not a closed taxonomy" in prompt.system
+        assert "Open source" not in prompt.system
+        assert "software" not in prompt.system.casefold()
+        assert "bare central subject" in prompt.user
+        assert "enduring object or work" in prompt.user
+        assert "proper nouns, dates, sponsors" in prompt.user
+        assert "bounded undertaking" in prompt.user
+        assert "only from the arriving" in prompt.user
+        assert "summary's goals, actions, functions, and outcomes" in prompt.user
+        assert "Apply a role test" in prompt.user
+        assert "rules, operation, or aggregate outcomes" in prompt.user
+        assert prompt.user.rstrip().endswith("Return tagged lines only.")
 
     def test_shaping_allows_one_current_document_but_forbids_a_one_document_scope(self) -> None:
         shaping = shaping_prompts.build_shaping(

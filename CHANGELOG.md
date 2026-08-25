@@ -7,6 +7,22 @@ that below `1.0.0` the interface may break between minor versions.
 
 ## [Unreleased]
 
+### Added
+
+- Direct HWP 5.x, HWPX, and structured DOCX extraction, plus legacy DOC extraction
+  through `unword`, without office-suite conversion.
+- Vault-wide document search across filenames, current paths, card titles, document types,
+  topics, and summaries, with folder navigation from each browser result.
+
+### Changed
+
+- The complete web upload flow and picker now accept PDF, HWP, HWPX, DOC, DOCX, TXT,
+  and Markdown files, with format-specific signature checks for binary documents.
+- Semantic filing now carries each card's substantive summary into initial placement and
+  mature-root refiling. Corpus-neutral prompts treat folder scopes as conjunctive contracts,
+  distinguish a document's enduring subject from its production context, and may create a
+  new top-level branch instead of forcing the nearest existing topic.
+
 ## [0.2.2] — 2026-08-24
 
 ### Changed

@@ -49,13 +49,16 @@ class TestRequire:
 
 class TestWarm:
     def test_warming_imports_every_parser_dependency(self) -> None:
-        for module in ("pypdf", "docx", "pptx", "openpyxl"):
+        dependencies = {"pypdf", "lxml", "olefile", "unword", "pptx", "openpyxl"}
+        # unword is a PyO3 extension which cannot be initialized twice in one
+        # interpreter, so unlike the pure-Python dependencies it must stay cached.
+        for module in dependencies - {"unword"}:
             sys.modules.pop(module, None)
 
         assert build_registry().warm() == {}
 
         # warm() loads every parser dependency before requests arrive.
-        assert {"pypdf", "docx", "pptx", "openpyxl"} <= set(sys.modules)
+        assert dependencies <= set(sys.modules)
 
     def test_every_registered_parser_can_be_warmed(self) -> None:
         # A parser added without warm() would only fail on the first upload of that format.
@@ -95,7 +98,7 @@ class TestServerPreload:
             assert llm_wire._litellm is not None
 
     def test_no_parser_import_is_left_for_the_first_upload(self, client) -> None:  # type: ignore[no-untyped-def]
-        assert {"pypdf", "docx", "pptx", "openpyxl"} <= set(sys.modules)
+        assert {"pypdf", "lxml", "olefile", "unword", "pptx", "openpyxl"} <= set(sys.modules)
 
 
 class TestStartupMakesNoNetworkCall:
