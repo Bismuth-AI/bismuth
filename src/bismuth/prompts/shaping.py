@@ -21,6 +21,17 @@ whether to file directly, create a child, build a parent over related folders, o
 the placement. Do not answer `NONE` merely because the fit is imperfect. Use `NONE` only
 when the document belongs to a genuinely different branch from every existing folder.
 
+Judge the branch on independent dimensions: central subject, purpose or activity, and the
+organizing scope stated by the folder. Shared vocabulary is not evidence of membership by
+itself. A candidate is near only when the document satisfies every constraint expressed by
+the folder purpose. If one dimension conflicts, treat it as a different branch and answer
+`NONE` so the next step can create an honest top-level subject.
+
+The current tree is evidence about existing contents, not a closed taxonomy of everything
+the collection may accept. Never infer a collection-wide restriction from the dominant
+kind of existing document. A genuinely new branch is allowed and should remain unassigned
+here rather than being forced into the least-wrong existing branch.
+
 Folders are shown one per line:
   <path>/ (<all documents below>, <direct documents>, <child folders>) — <purpose>
 
@@ -29,7 +40,7 @@ below the folder. A large, divided folder may hold few documents directly; that 
 is organized, not empty.
 
 Documents are shown one per line:
-  [D<number>] <document title> | <document type> | <topics>
+  [D<number>] <document title> | <document type> | <topics> | <summary>
 
 Return exactly one line per document and nothing else:
 D1: <folder path or NONE>
@@ -54,6 +65,17 @@ If not, do not file it there. Use `INSIDE` for another existing folder when that
 fits, or `ROOT` when none does. A wrongly filed document may never be found; leaving it
 at the root is better than forcing it into a misleading folder.
 
+Treat a folder's purpose as a contract. Test it on independent dimensions: central
+subject, purpose or activity, audience, and organizing scope. Eligibility is conjunctive:
+every applicable constraint must pass. One conflict vetoes that destination completely;
+topical similarity cannot compensate for it. If a reader relying only on the folder name
+and purpose would not predict the document, use another existing folder or a new top-level
+subject.
+
+The existing tree is not a closed taxonomy. Its dominant document kind does not restrict
+what future top-level branches may contain. Do not use `ROOT` merely because the arriving
+document introduces a kind of knowledge not represented by the current branches.
+
 At each neighbourhood, choose among four operations. Make the decision from the current
 tree and the arriving document, even when only one document is arriving.
 
@@ -72,10 +94,24 @@ tree and the arriving document, even when only one document is arriving.
    subject can be inferred. A single arriving document is enough to establish such a
    category. Include a `SIGN` for every folder you create.
 
+Before using `ROOT`, derive the smallest stable abstraction that describes the document
+and could accept genuinely similar future documents. Preserve every distinguishing
+dimension needed to keep it separate from existing branches, while dropping incidental
+metadata and document-specific names. Prefer `CREATE` when that abstraction passes both
+tests: a different future document could belong there, and documents from at least one
+existing branch would clearly not belong there. Use `ROOT` only when no candidate can
+pass both tests.
+
+Construct the name systematically. Begin with the central subject. Compare it with the
+nearest vetoed folders; when the subject alone would blur a scope difference, add the
+document's stable purpose or activity as a qualifier. Use the shortest label that preserves
+all dimensions responsible for separating the new branch. Never use format, date, or one
+document's proper name as that qualifier.
+
 Several operations may be returned in one answer. Do not group existing sibling folders
 under a parent here; that is asked separately. A proposed new child is checked separately
-before it is applied. A shared domain is not containment: `Insurance regulation` is not
-below `Debt collection and debtor protection` merely because both concern finance.
+before it is applied. Similarity is not containment: a child belongs below a parent only
+when the parent's stated scope actually includes it.
 
 When naming a folder, describe what its documents are about, not what kind of documents
 they are. Format, genre, date, publisher, creator, language, and hierarchy are metadata,
@@ -97,6 +133,9 @@ CREATE: <new folder name> | D4, D6
 ROOT: D7, D9
 SIGN: <new name> | <one sentence describing what it contains>
 
+Perform all comparisons silently. Return the tagged lines immediately, without analysis,
+explanation, headings, bullets, or Markdown. Prose outside the tagged lines is invalid.
+
 `ROOT` means that no existing folder fits and no honest reusable subject can yet be
 inferred. It is a valid answer, but do not use it merely because only one document is
 arriving.\
@@ -107,8 +146,8 @@ Decide whether one proposed child belongs under its proposed parent. This is a s
 containment check, not a similarity check.
 
 Return `KEEP` only when an agent seeing the parent name and purpose would expect the child
-before opening it. Sharing a broad domain is insufficient. For example, insurance
-regulation is related to debt collection but is not contained by debt collection.
+before opening it. Sharing a broad domain is insufficient; every constraint expressed by
+the parent scope must include the child.
 
 When the child and the parent's current contents together reveal an honest broader
 subject, return `PROMOTE` with that broader parent name and a purpose. Otherwise return
@@ -118,6 +157,42 @@ Return exactly one of:
 KEEP
 SIBLING
 PROMOTE: <broader parent name> | <one sentence describing its scope>\
+"""
+
+_FINAL_SCOPE_GATE = """\
+FINAL ELIGIBILITY GATE — apply this after reading the documents above:
+- For every existing destination, compare all constraints in its stated purpose with the
+  document on subject, purpose or activity, audience, and organizing scope.
+- Eligibility requires all applicable dimensions to pass. One conflict makes that
+  destination invalid regardless of similarity on other dimensions.
+- The existing tree is not a closed taxonomy. If every existing destination is invalid,
+  derive a reusable new subject; do not choose the least-wrong existing folder.
+- A bare central subject is insufficient when it could also describe a vetoed branch.
+  Add the stable purpose or activity responsible for the veto, using the shortest label
+  that preserves that distinction in the folder name itself; the `SIGN` cannot repair an
+  underspecified name.
+- Separate the enduring object or work described by the document from the circumstances
+  in which it was authored, submitted, reviewed, announced, or stored. Name the former.
+  Replace proper nouns, dates, sponsors, and surrounding occasions mentally; a reusable
+  name must still describe the document's substantive body after those changes.
+- Treat the summary as the account of the substantive body; title, type, and topics are
+  retrieval cues and cannot overrule it. Identify which object or work owns most of the
+  summary's goals, actions, functions, and outcomes, and center the new name on that
+  primary referent rather than on the frame through which the document was produced.
+- Apply a role test when a focal work participates in, is submitted to, is funded by, or
+  is reviewed within a surrounding structure. That relation does not make the surrounding
+  structure the primary subject. Center it only when the substantive body describes that
+  structure's own rules, operation, or aggregate outcomes. If the context remains useful
+  as a qualifier, the name must still state the focal work's reusable class.
+- When the substantive body records a bounded undertaking with goals, execution, and
+  outcomes, preserve its enduring work or activity class in the folder name. Do not reduce
+  it to a thematic domain or name it after the reporting genre or surrounding occasion.
+- Check the proposed name against its `SIGN`: every scope-bearing distinction needed to
+  exclude a vetoed branch must appear in the name itself. Derive the `SIGN` only from the
+  arriving documents and plausible siblings, never from traits of the vetoed folders.
+- Before returning `ROOT`, verify that no stable abstraction can accept another future
+  document while excluding at least one existing branch.
+Return tagged lines only.\
 """
 
 _GROUPING = """\
@@ -251,7 +326,7 @@ def build_shaping(
         if language
         else ""
     )
-    return Prompt(system=_SHAPING, user=say + "\n\n".join(blocks))
+    return Prompt(system=_SHAPING, user=say + "\n\n".join((*blocks, _FINAL_SCOPE_GATE)))
 
 
 _SETTLING = """\

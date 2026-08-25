@@ -132,7 +132,7 @@ def get_engine(request: Request) -> Bismuth:
 Engine = Annotated[Bismuth, Depends(get_engine)]
 
 
-ACCEPTED_UPLOADS = frozenset({".pdf"})
+ACCEPTED_UPLOADS = frozenset({".pdf", ".hwp", ".hwpx", ".doc", ".docx", ".txt", ".md"})
 """Formats supported by the complete web upload flow."""
 
 MAX_UPLOAD_FILES = 500
@@ -174,12 +174,18 @@ async def _read_upload(upload: UploadFile) -> bytes:
 
 async def _validate_upload_contents(files: list[UploadFile]) -> None:
     """Validate file signatures before staging any part of a request."""
+    ole_signature = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
     for upload in files:
         header = await upload.read(1024)
         await upload.seek(0)
-        if Path(upload.filename or "").suffix.lower() == ".pdf" and b"%PDF-" not in header:
-            name = Path(upload.filename or "").name
+        suffix = Path(upload.filename or "").suffix.lower()
+        name = Path(upload.filename or "").name
+        if suffix == ".pdf" and b"%PDF-" not in header:
             raise HTTPException(400, f"올바른 PDF 파일이 아닙니다: {name}")
+        if suffix in {".hwp", ".doc"} and not header.startswith(ole_signature):
+            raise HTTPException(400, f"올바른 {suffix.upper()[1:]} 파일이 아닙니다: {name}")
+        if suffix in {".hwpx", ".docx"} and not header.startswith(b"PK"):
+            raise HTTPException(400, f"올바른 {suffix.upper()[1:]} 파일이 아닙니다: {name}")
 
 
 def _is_local_origin(value: str) -> bool:
@@ -233,6 +239,7 @@ def create_app(
     app.state.ingest_lock = asyncio.Lock()
     app.state.batches = {}
     app.state.batch_tasks = set()
+    app.state.search_cache = ((), [])
     app.include_router(diagnostics.router)
 
     @app.middleware("http")
@@ -499,6 +506,47 @@ def create_app(
             charter=charter.model_dump(mode="json") if charter else None,
             documents=[DocumentOut.of(engine, file) for file in engine.vault.iter_files(rel)],
         )
+
+    @app.get("/api/search", response_model=list[DocumentOut])
+    def search(engine: Engine, q: str = "", limit: int = 100) -> list[DocumentOut]:
+        """Find documents from saved card metadata without reopening their originals."""
+        needle = q.strip().casefold()
+        if not needle:
+            return []
+        limit = max(1, min(limit, 100))
+        files = list(engine.vault.iter_files(PurePosixPath(), recursive=True))
+        signature = tuple(str(rel) for rel in files)
+        cached_signature, cached_documents = app.state.search_cache
+        if cached_signature != signature:
+            cached_documents = [DocumentOut.of(engine, rel, prefer_catalog=False) for rel in files]
+            app.state.search_cache = (signature, cached_documents)
+        ranked: list[tuple[int, str, DocumentOut]] = []
+        for document in cast(list[DocumentOut], cached_documents):
+            filename = document.filename.casefold()
+            title = document.title.casefold()
+            path = document.path.casefold()
+            doc_type = document.doc_type.casefold()
+            topics = [topic.casefold() for topic in document.topics]
+            summary = document.summary.casefold()
+            if needle in (filename, title):
+                score = 0
+            elif filename.startswith(needle) or title.startswith(needle):
+                score = 1
+            elif needle in topics:
+                score = 2
+            elif needle in filename or needle in title:
+                score = 3
+            elif needle in path:
+                score = 4
+            elif needle in doc_type or any(needle in topic for topic in topics):
+                score = 5
+            elif needle in summary:
+                score = 6
+            else:
+                continue
+            ranked.append((score, path, document))
+        ranked.sort(key=lambda found: (found[0], found[1]))
+        return [document for _score, _path, document in ranked[:limit]]
 
     @app.get("/api/file")
     def open_file(path: str, engine: Engine) -> Response:
@@ -1066,7 +1114,7 @@ class DocumentOut(BaseModel):
     topics: list[str] = []
 
     @classmethod
-    def of(cls, engine: Bismuth, rel: PurePosixPath) -> DocumentOut:
+    def of(cls, engine: Bismuth, rel: PurePosixPath, *, prefer_catalog: bool = True) -> DocumentOut:
         base = cls(filename=rel.name, path=str(rel))
         sidecar = rel.parent / sidecar_name(rel.name)
         if not engine.vault.exists(sidecar):
@@ -1074,7 +1122,9 @@ class DocumentOut(BaseModel):
         meta = read_sidecar_meta(engine.vault.read_text(sidecar))
         if not meta:
             return base
-        card = engine.catalog.load_card(str(meta.get("document_id", "")))
+        card = (
+            engine.catalog.load_card(str(meta.get("document_id", ""))) if prefer_catalog else None
+        )
         # Falls back to sidecar frontmatter when the card cache is gone (e.g. after an undone delete).
         raw_topics = meta.get("topics")
         meta_topics = [str(x) for x in raw_topics] if isinstance(raw_topics, list) else []
@@ -1083,7 +1133,7 @@ class DocumentOut(BaseModel):
             path=str(rel),
             title=card.title if card else str(meta.get("title", "")),
             doc_type=card.doc_type if card else str(meta.get("doc_type", "")),
-            summary=card.summary if card else "",
+            summary=card.summary if card else str(meta.get("summary", "")),
             topics=list(card.topics) if card else meta_topics,
         )
 

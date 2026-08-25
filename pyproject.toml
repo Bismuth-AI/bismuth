@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bismuth-kb"
-version = "0.2.2"
+version = "0.3.0"
 description = "Self-organizing document structure for agentic retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,9 +37,11 @@ dependencies = [
 # Document parsers. Split out so a minimal install stays small.
 parsers = [
     "pypdf>=5.1",         # BSD-3-Clause
-    "python-docx>=1.1",   # MIT
     "python-pptx>=1.0",   # MIT
     "openpyxl>=3.1",      # MIT
+    "lxml>=5.3",          # BSD-3-Clause
+    "olefile>=0.47",      # BSD-2-Clause
+    "unword>=0.2.2",      # MIT
 ]
 server = [
     "fastapi>=0.115",             # MIT
@@ -57,9 +59,11 @@ dev = [
 ]
 all = [
     "pypdf>=5.1",
-    "python-docx>=1.1",
     "python-pptx>=1.0",
     "openpyxl>=3.1",
+    "lxml>=5.3",
+    "olefile>=0.47",
+    "unword>=0.2.2",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "python-multipart>=0.0.12",
@@ -111,7 +115,15 @@ packages = ["bismuth"]
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["litellm.*", "frontmatter.*", "docx.*", "pptx.*", "openpyxl.*"]
+module = [
+    "litellm.*",
+    "frontmatter.*",
+    "pptx.*",
+    "openpyxl.*",
+    "lxml.*",
+    "olefile.*",
+    "unword.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

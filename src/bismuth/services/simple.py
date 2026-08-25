@@ -989,6 +989,7 @@ class SimpleFiler:
             ", ".join(
                 str(topic) for topic in (topics if isinstance(topics, list) else [])[:TOPICS_SHOWN]
             ),
+            str(meta.get("summary") or ""),
         ]
         return " | ".join(part for part in parts if part) or path.name
 
@@ -1002,11 +1003,12 @@ TOPICS_SHOWN = 3
 
 
 def _describe(card: DocumentCard) -> str:
-    """One line per document: what it is called, what kind it is, what it is about.
+    """One line per document: identity, retrieval labels, and its substantive account.
 
-    The title, document type, and leading topics provide a compact filing signal.
+    Labels are compact but can over-weight a title's surrounding occasion. The card summary
+    carries the document's enduring object, purpose, and activity into semantic filing.
     """
-    parts = [card.title, card.doc_type, ", ".join(card.topics[:TOPICS_SHOWN])]
+    parts = [card.title, card.doc_type, ", ".join(card.topics[:TOPICS_SHOWN]), card.summary]
     return " | ".join(part for part in parts if part)
 
 
