@@ -134,6 +134,8 @@ characters), and the benchmark contained 88 questions. The RAG baseline used 1,2
 | Metric | Bismuth agentic | Basic RAG top-8 | Basic RAG top-20 |
 | --- | ---: | ---: | ---: |
 | Accuracy | **0.98** | 0.78 | 0.81 |
+| Full-score questions | **81 / 88** | 53 / 88 | 52 / 88 |
+| Zero-score questions | **0 / 88** | 9 / 88 | 3 / 88 |
 
 The methods tied on direct single-fact questions. The largest observed gap was on
 cross-law comparison (0.96 vs 0.59 / 0.56); version-sensitive and multi-document
