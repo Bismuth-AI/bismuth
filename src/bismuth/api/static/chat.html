@@ -123,7 +123,9 @@ main { flex: 1; overflow: auto; display: flex; justify-content: center; gap: 8px
 
 .books {
   display: flex; align-items: flex-end; gap: 1px; height: 26px; padding: 0 1px;
+  min-width: 0; overflow: hidden;
 }
+.shelf.dense .books { gap: 0; }
 .plank {
   height: 2px; border-radius: 1px; background: var(--line); transition: background .25s;
 }
@@ -131,7 +133,7 @@ main { flex: 1; overflow: auto; display: flex; justify-content: center; gap: 8px
 
 /* One spine per document. Heights vary so a shelf reads as books and not as a bar chart. */
 .book {
-  flex: 1 1 auto; min-width: 2px; max-width: 7px; height: 62%;
+  flex: 1 1 auto; min-width: 0; max-width: 7px; height: 62%;
   background: var(--line); border-radius: 1px 1px 0 0;
   transition: background .25s, height .25s, transform .25s, box-shadow .25s;
 }
@@ -161,8 +163,8 @@ footer { border-top: 1px solid var(--line); background: var(--panel); }
    not under the window. Without the spacer the map pushes one and not the other. */
 footer .bar { display: flex; justify-content: center; gap: 8px; }
 footer .col { flex: 1; max-width: 780px; min-width: 0; }
-footer .pad { width: 320px; flex: none; }
-@media (max-width: 1120px) { footer .pad { display: none } }
+footer .pad { width: 380px; flex: none; }
+@media (max-width: 1200px) { footer .pad { display: none } }
 #composer { padding: 12px 18px; display: flex; gap: 8px; }
 #q { flex: 1; resize: none; padding: 11px 13px; max-height: 40vh; }
 #q:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
@@ -174,6 +176,22 @@ footer .pad { width: 320px; flex: none; }
   border-radius: 999px; cursor: pointer; font-size: 13px; background: var(--panel);
 }
 .seed:hover { border-color: var(--accent); }
+
+@media (max-width: 700px) {
+  header { flex-wrap: wrap; padding: 9px 12px; gap: 7px; }
+  header h1 { flex: 1 1 auto; }
+  header .stat { order: 4; width: 100%; }
+  #thread { padding: 18px 14px 8px; min-width: 0; }
+  .empty { padding: 36px 4px; }
+  .seed { display: block; width: 100%; margin: 7px 0; text-align: left; border-radius: 10px; }
+  #composer { padding: 10px 12px; }
+  #send { padding-inline: 11px; }
+  .hint { padding-inline: 12px; }
+  .overlay { padding: 16px 10px; }
+  .overlay .card { padding: 20px 16px; }
+  .card .hrow { grid-template-columns: 1fr 30px; }
+  .card .hrow .h-value { grid-column: 1 / -1; grid-row: 2; }
+}
 
 .overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 50;
@@ -228,7 +246,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   <span style="flex:1"></span>
   <button id="reset">새 대화</button>
   <button id="btn-model">답변 모델</button>
-  <a href="/" style="font-size:12.5px">← 볼트</a>
+  <a href="/" style="font-size:12.5px">← 서고</a>
 </header>
 
 <!--
@@ -236,8 +254,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   the configuration -- the server, the credential, the model that files documents -- is
   the vault's, and this panel links there rather than carrying a second copy of it.
 -->
-<div id="modal" class="overlay hidden"><div class="card">
-  <div class="cardhead"><h2>답변 모델</h2><button id="m-close">닫기</button></div>
+<div id="modal" class="overlay hidden"><div class="card" role="dialog" aria-modal="true" aria-labelledby="model-title">
+  <div class="cardhead"><h2 id="model-title">답변 모델</h2><button id="m-close">닫기</button></div>
   <p class="sub" id="m-filing"></p>
 
   <div class="field">
@@ -358,6 +376,8 @@ const TOOLS = {
   ls: "폴더 열기", tree: "구조 보기", read_note: "폴더 설명 읽기",
   grep: "본문 검색", read: "문서 읽기",
 };
+const MAP_MAX_SHELVES = 24;
+const MAP_MAX_SPINES_PER_SHELF = 96;
 
 /* One shelf per top-level folder, updated from tool events. */
 const vault = { shelves: new Map(), spines: new Map(), racks: new Map(), seen: new Set(), built: false };
@@ -376,46 +396,57 @@ async function buildMap() {
   // Include documents filed at the root in the displayed total.
   const loose = all.find((f) => f.depth === 0);
   const tops = folders.filter((f) => f.depth === 1);
-  if (loose && loose.files) tops.push({ path: "", name: "그 밖", files: loose.files, depth: 1 });
+  if (loose && loose.files) tops.push({ path: "", name: "분류 전", files: loose.files, depth: 1 });
   if (!tops.length) return;
 
   const under = (t) =>
     t.files + folders.filter((f) => f.depth === 2 && rootOf(f.path) === t.path)
       .reduce((sum, f) => sum + f.files, 0);
 
+  tops.sort((a, b) => under(b) - under(a));
+  let visible = tops;
+  if (tops.length > MAP_MAX_SHELVES) {
+    const kept = tops.slice(0, MAP_MAX_SHELVES - 1);
+    const rest = tops.slice(MAP_MAX_SHELVES - 1);
+    kept.push({
+      path: "__other__",
+      name: `그 외 ${rest.length}개 폴더`,
+      files: rest.reduce((sum, folder) => sum + under(folder), 0),
+      depth: 1,
+      members: rest,
+    });
+    visible = kept;
+  }
+
   const stacks = $("shelves");
   let books = 0;
-  for (const t of tops.sort((a, b) => under(b) - under(a))) {
-    const held = under(t);
+  for (const t of visible) {
+    const members = t.members || [t];
+    const held = t.members ? t.files : under(t);
     books += held;
     const shelf = document.createElement("div");
-    shelf.className = "shelf";
+    shelf.className = `shelf${held > 100 ? " dense" : ""}`;
     shelf.innerHTML =
       `<div class="label"><span>${esc(t.name)}</span><span class="n">${held}</span></div>` +
       `<div class="books"></div><div class="plank"></div>`;
     const row = shelf.querySelector(".books");
     const spines = [];
-    for (let i = 0; i < held; i++) {
+    const spineCount = Math.min(held, MAP_MAX_SPINES_PER_SHELF);
+    for (let i = 0; i < spineCount; i++) {
       const book = document.createElement("i");
       book.className = "book";
       row.append(book);
       spines.push(book);
     }
     stacks.append(shelf);
-    vault.shelves.set(t.path, shelf);
-
-    // Allocate one block per child folder.
-    const kids = folders.filter((f) => f.depth === 2 && rootOf(f.path) === t.path);
-    const blocks = new Map();
-    let at = 0;
-    for (const part of [{ path: t.path, files: t.files }, ...kids]) {
-      blocks.set(part.path, { from: at, size: part.files });
-      at += part.files;
+    for (const member of members) {
+      vault.shelves.set(member.path, shelf);
+      vault.racks.set(member.path, { books: spines });
+      const kids = folders.filter((f) => f.depth === 2 && rootOf(f.path) === member.path);
+      for (const kid of kids) vault.shelves.set(kid.path, shelf);
     }
-    vault.racks.set(t.path, { books: spines, blocks, taken: new Set() });
-    for (const kid of kids) vault.shelves.set(kid.path, shelf);
   }
-  $("mapstat").textContent = `문서 ${books}권 · 책장 ${tops.length}칸`;
+  $("mapstat").textContent = `문서 ${books}개 · 폴더 ${folders.length}개`;
   $("map").hidden = false;
 }
 
@@ -430,16 +461,10 @@ function digest(text) {
 function spine(path) {
   if (vault.spines.has(path)) return vault.spines.get(path);
   const rack = vault.racks.get(rootOf(path));
-  if (!rack) return null;
-  const block = rack.blocks.get(parent(path)) ?? { from: 0, size: rack.books.length };
-  const size = block.size || rack.books.length;
-  const wanted = block.from + (digest(path) % size);
-  // Resolve collisions inside the block before using the rest of the shelf.
-  let book = null;
-  for (let i = 0; i < rack.books.length && !book; i++) {
-    const at = i < size ? block.from + ((wanted - block.from + i) % size) : (wanted + i) % rack.books.length;
-    if (!rack.taken.has(at)) { rack.taken.add(at); book = rack.books[at]; }
-  }
+  if (!rack?.books.length) return null;
+  // Large shelves are deliberately aggregated. Several documents may light the same
+  // spine, keeping the visual useful without creating one DOM node per document.
+  const book = rack.books[digest(path) % rack.books.length];
   if (book) vault.spines.set(path, book);
   return book;
 }
@@ -498,7 +523,7 @@ function landed(preview) {
     .filter((line) => line && !line.startsWith(" ") && line.includes("/") && isFile(line.trim()))
     .map((line) => line.trim());
   for (const path of hits) light(path, "hit");
-  if (hits.length) where(`${hits.length}권 찾음`, "본문에서 일치");
+  if (hits.length) where(`${hits.length}개 찾음`, "본문에서 일치");
 }
 
 function restMap() {
@@ -934,6 +959,7 @@ $("m-cancel").addEventListener("click", () => chatStep(false));
 
 $("btn-model").addEventListener("click", async () => {
   $("modal").classList.remove("hidden");
+  $("m-close").focus();
   modalErr("");
   try {
     config = await fetch("/api/setup").then((r) => r.json());
@@ -999,7 +1025,7 @@ function said(text) {
 
 buildMap();
 fetch("/api/status").then((r) => r.json()).then((s) => {
-  $("stat").textContent = `문서 ${s.documents}건 · 폴더 ${s.folders}개`;
+  $("stat").textContent = `문서 ${s.documents}개 · 폴더 ${s.folders}개`;
 }).catch(() => {});
 $("q").focus();
 </script>

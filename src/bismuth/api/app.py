@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import subprocess
+import sys
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -56,6 +59,27 @@ from bismuth.services.sidecar import read_sidecar_meta
 logger = logging.getLogger(__name__)
 
 STATIC = Path(__file__).parent / "static"
+FOLDER_PAGE_SIZE = 100
+FOLDER_PAGE_MAX = 200
+
+
+def _open_in_file_manager(path: Path) -> None:
+    """Show an existing directory in the host operating system's file manager."""
+    directory = path.resolve(strict=True)
+    if not directory.is_dir():
+        raise NotADirectoryError(directory)
+
+    if sys.platform == "win32":
+        os.startfile(directory)
+        return
+
+    command = "open" if sys.platform == "darwin" else "xdg-open"
+    subprocess.Popen(
+        [command, str(directory)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def _host_of(url: str | None) -> str:
@@ -470,6 +494,17 @@ def create_app(
             spend=engine.ledger.total(),
         )
 
+    @app.post("/api/vault/open")
+    async def open_vault(engine: Engine) -> dict[str, str]:
+        """Open the active vault root in the host operating system's file manager."""
+        root = Path(engine.vault.root)
+        try:
+            await anyio.to_thread.run_sync(_open_in_file_manager, root)
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("could not open vault in file manager: %s", exc)
+            raise HTTPException(500, "볼트 폴더를 파일 탐색기에서 열지 못했습니다.") from exc
+        return {"opened": str(root)}
+
     @app.get("/api/tree", response_model=list[FolderOut])
     def tree(engine: Engine) -> list[FolderOut]:
         folders: list[FolderOut] = []
@@ -492,10 +527,19 @@ def create_app(
         return folders
 
     @app.get("/api/folder", response_model=FolderDetailOut)
-    def folder(path: str, engine: Engine) -> FolderDetailOut:
+    def folder(
+        path: str,
+        engine: Engine,
+        offset: int = 0,
+        limit: int = FOLDER_PAGE_SIZE,
+    ) -> FolderDetailOut:
         rel = PurePosixPath(path) if path not in ("", "/") else PurePosixPath()
         if not engine.vault.is_dir(rel):
             raise HTTPException(404, f"그런 폴더가 없습니다: {path}")
+        offset = max(0, offset)
+        limit = max(1, min(limit, FOLDER_PAGE_MAX))
+        files = list(engine.vault.iter_files(rel))
+        page = files[offset : offset + limit]
         charter = None
         try:
             charter = engine.charters.load(rel)
@@ -504,7 +548,11 @@ def create_app(
         return FolderDetailOut(
             path=str(rel),
             charter=charter.model_dump(mode="json") if charter else None,
-            documents=[DocumentOut.of(engine, file) for file in engine.vault.iter_files(rel)],
+            documents=[DocumentOut.of(engine, file) for file in page],
+            total=len(files),
+            offset=offset,
+            limit=limit,
+            has_more=offset + len(page) < len(files),
         )
 
     @app.get("/api/search", response_model=list[DocumentOut])
@@ -1142,6 +1190,10 @@ class FolderDetailOut(BaseModel):
     path: str
     charter: dict[str, Any] | None
     documents: list[DocumentOut]
+    total: int
+    offset: int
+    limit: int
+    has_more: bool
 
 
 class BatchOut(BaseModel):
