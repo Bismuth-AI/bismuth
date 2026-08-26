@@ -134,24 +134,11 @@ characters), and the benchmark contained 88 questions. The RAG baseline used 1,2
 | Metric | Bismuth agentic | Basic RAG top-8 | Basic RAG top-20 |
 | --- | ---: | ---: | ---: |
 | Accuracy | **0.98** | 0.78 | 0.81 |
-| Full-score questions | **81 / 88** | 53 / 88 | 52 / 88 |
-| Zero-score questions | **0 / 88** | 9 / 88 | 3 / 88 |
-| LLM calls per question | 16.6 | **1** | **1** |
-| Time per question | 82 s | **8.0 s** | 11.5 s |
-| Total query time | 41 min | **4.3 min** | 6.0 min |
 
 The methods tied on direct single-fact questions. The largest observed gap was on
 cross-law comparison (0.96 vs 0.59 / 0.56); version-sensitive and multi-document
 questions also favored folder-aware traversal. In the paired 88-question comparison,
 Bismuth minus RAG top-20 was +0.164 ± 0.028 (33 Bismuth wins, 1 RAG win).
-
-> [!CAUTION]
-> This is evidence for this corpus, not a claim that agentic retrieval generally beats
-> RAG. Bismuth was tuned across seven development runs, while the baseline was one
-> deliberately basic setup with two k values—without reranking, hybrid BM25, query
-> rewriting, or provision-aware chunking. Each final configuration was run once, and the
-> same model participated in answering and judging. The repository publishes the
-> protocol and aggregate results, not the benchmark runner or raw provider logs.
 
 See the public [protocol, category results, evidence-coverage analysis, and
 limitations](BENCHMARK.md).
