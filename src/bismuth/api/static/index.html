@@ -91,6 +91,7 @@ h1 img { width: 22px; height: 22px; }
 #drop .only { margin-top: 6px; font-size: 11.5px; opacity: .75; }
 #searchwrap { position: relative; margin: 0 12px 10px; }
 #searchwrap input { max-width: none; padding: 7px 30px 7px 32px; font-size: 13px; background: var(--bg); }
+#searchwrap input::-webkit-search-cancel-button { display: none; }
 #searchwrap .glass { position: absolute; left: 10px; top: 6px; color: var(--dim); pointer-events: none; }
 #search-clear { position: absolute; right: 5px; top: 3px; padding: 2px 7px; border: 0; background: transparent; color: var(--dim); }
 .pathlink { border: 0; background: transparent; color: var(--accent); padding: 0; font-size: 12px; }
@@ -160,9 +161,22 @@ h2 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.01em; }
 .picker-list .row:hover { background: var(--accent-soft); }
 .doc .meta { font-size: 12px; color: var(--dim); margin-top: 2px; }
 .doc .sm { font-size: 13px; color: var(--dim); margin-top: 6px; }
+body.compact-docs .doc .sm {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.doc .tags { margin-top: 2px; }
+body.compact-docs .doc .tags .topic-chip:nth-of-type(n+4) { display: none; }
+.doc .more-tags { display: none; }
+body.compact-docs .doc .more-tags { display: inline-block; }
 .chip { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); margin: 3px 4px 0 0; }
 .empty { color: var(--dim); text-align: center; padding: 48px 0; }
 .sect { margin: 18px 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.sectbar { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
+.sectbar .sect { margin: 0; }
+.sectbar .view-toggle { margin-left: auto; padding: 3px 8px; font-size: 11.5px; }
+.pager { display: flex; justify-content: center; align-items: center; gap: 10px; padding: 12px 0 4px; color: var(--dim); font-size: 12px; }
+.pager button { min-width: 140px; }
 .del-x { padding: 2px 8px; color: var(--dim); font-size: 14px; line-height: 1; }
 .del-x:hover { color: var(--danger); border-color: var(--danger); }
 .danger-btn:hover { color: var(--danger); border-color: var(--danger); }
@@ -258,6 +272,36 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 20px 0; }
 .rowend { display: flex; gap: 8px; justify-content: flex-end; align-items: center; margin-top: 18px; }
 table.log { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+
+@media (max-width: 900px) {
+  header { gap: 8px; padding: 10px 12px; }
+  .hstat { display: none; }
+  #sidebar { width: 270px; }
+  #main { padding: 20px 18px; }
+}
+@media (max-width: 760px) {
+  body { min-width: 0; }
+  header { flex-wrap: wrap; }
+  header h1 { margin-right: auto; }
+  header .spacer { display: none; }
+  #explorer { display: block; overflow-y: auto; }
+  #sidebar {
+    width: 100%; min-height: auto; border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  #drop { margin: 10px; padding: 10px; }
+  #drop .only { display: none; }
+  #searchwrap { margin-bottom: 6px; }
+  #tree { max-height: 180px; }
+  #main { overflow: visible; padding: 18px 14px 80px; }
+  .doc { padding: 12px; }
+  .doc .meta { overflow-wrap: anywhere; }
+  #selbar { width: calc(100% - 24px); justify-content: center; flex-wrap: wrap; border-radius: 14px; }
+  #uploads { left: 12px; right: 12px; width: auto; }
+  .overlay { padding: 16px 10px; }
+  .card { padding: 20px 16px; }
+  .hrow, .card .hrow { grid-template-columns: 1fr 30px; }
+  .hrow .h-value, .card .hrow .h-value { grid-column: 1 / -1; grid-row: 2; }
+}
 </style>
 </head>
 <body>
@@ -266,11 +310,12 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
   <h1><img src="/favicon.png" alt="" width="22" height="22"> Bismuth</h1>
   <div class="spacer"></div>
   <span class="hstat"><b id="hs-docs">0</b> 문서 · <b id="hs-folders">0</b> 폴더<span id="hs-inbox"></span></span>
-  <button class="ghost" id="btn-empty-tree" title="문서와 카드는 유지하고 폴더만 비웁니다.">폴더 비우기</button>
-  <button class="ghost" id="btn-refile" title="저장된 카드로 전체 폴더 구조를 다시 만듭니다.">카드로 재배치</button>
+  <button class="ghost" id="btn-open-vault" title="현재 서고 폴더를 파일 탐색기에서 엽니다.">볼트 열기</button>
   <button class="primary" onclick="location.href='/chat'" title="폴더를 뒤지고 본문을 찾아 근거와 함께 답합니다.">서고에 묻기</button>
-  <button class="ghost" onclick="location.href='/trace'" title="모델에 무엇이 들어가고 무엇이 나왔는지, 호출 하나씩">추적</button>
-  <button class="ghost" id="btn-settings">설정</button>
+  <button class="ghost" id="btn-manage" aria-haspopup="menu" aria-expanded="false">관리 ▾</button>
+  <button class="hidden" id="btn-empty-tree">폴더 비우기</button>
+  <button class="hidden" id="btn-refile">카드로 재배치</button>
+  <button class="hidden" id="btn-settings">설정</button>
 </header>
 
 <div id="explorer">
@@ -300,8 +345,8 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
 <div id="ctxmenu" class="ctxmenu hidden"></div>
 
 <!-- move modal -->
-<div id="movemodal" class="overlay hidden"><div class="card">
-  <div style="display:flex;align-items:center"><h2 style="flex:1">이동</h2><button class="ghost" id="mv-close">닫기</button></div>
+<div id="movemodal" class="overlay hidden"><div class="card" role="dialog" aria-modal="true" aria-labelledby="mv-title">
+  <div style="display:flex;align-items:center"><h2 id="mv-title" style="flex:1">이동</h2><button class="ghost" id="mv-close">닫기</button></div>
   <p class="muted" id="mv-count" style="margin-top:2px"></p>
   <div class="field">
     <label>대상 폴더를 고르거나, 새 경로를 입력하세요</label>
@@ -313,9 +358,9 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
 </div></div>
 
 <!-- setup wizard -->
-<div id="setup" class="overlay hidden"><div class="card">
+<div id="setup" class="overlay hidden"><div class="card" role="dialog" aria-modal="true" aria-labelledby="setup-title">
   <div class="cardhead">
-    <h2>설정</h2>
+    <h2 id="setup-title">설정</h2>
     <button class="ghost" id="s-close">닫기</button>
   </div>
 
@@ -409,12 +454,15 @@ async function api(path, opts = {}) {
 // The vault root, as /api/tree names it. Documents live here until enough of them
 // arrive to show a distinction, which early on is most of them.
 const ROOT = ".";
+const FOLDER_PAGE_SIZE = 100;
 const UI_VERSION = "2026.08.10-resumable-batch-5";
 document.documentElement.dataset.uiVersion = UI_VERSION;
 let state = {}, tree = [], selected = ROOT, expanded = new Set();
 let rootInfo = null;   // the root's own entry: its loose documents are the common early case
 let sel = new Set(), selAnchor = null, viewDocs = [], moveTargets = [];
 let searchTimer = null, searchRequest = 0;
+let compactDocs = localStorage.getItem("bismuth-document-view") !== "detailed";
+document.body.classList.toggle("compact-docs", compactDocs);
 // Folder and document selections are mutually exclusive.
 let fsel = new Set(), fselAnchor = null;
 
@@ -422,6 +470,7 @@ let fsel = new Set(), fselAnchor = null;
 
 async function refresh() {
   state = await api("/status");
+  $("btn-open-vault").title = `${state.vault}\n서고 폴더를 파일 탐색기에서 열기`;
   $("hs-docs").textContent = state.documents;
   $("hs-folders").textContent = state.folders;
   $("hs-inbox").innerHTML = state.inbox
@@ -459,6 +508,9 @@ const inboxRow = () => state.inbox
 
 function renderTree() {
   const el = $("tree");
+  const hasBranches = tree.some((folder) => childrenOf(folder.path).length);
+  $("tree-expand").classList.toggle("hidden", !hasBranches);
+  $("tree-collapse").classList.toggle("hidden", !hasBranches);
   if (!tree.length) {
     el.innerHTML = rootRow() + inboxRow();
     bindTreeClicks(el);
@@ -556,7 +608,8 @@ async function renderMain() {
 
   const atRoot = selected === ROOT;
   let detail;
-  try { detail = await api("/folder?path=" + encodeURIComponent(atRoot ? "" : selected)); }
+  const folderPath = atRoot ? "" : selected;
+  try { detail = normalizeFolderPage(await api(folderPageUrl(folderPath))); }
   catch (err) { el.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
 
   const parts = selected.split("/");
@@ -569,21 +622,26 @@ async function renderMain() {
   const note = detail.charter;
   const docs = detail.documents;
 
-  const totalFiles = docs.length + kids.reduce((s, k) => s + (k.files || 0), 0);
+  const totalFiles = detail.total + kids.reduce((s, k) => s + (k.files || 0), 0);
   el.innerHTML = `
     <div class="crumb">${crumb}</div>
     <div style="display:flex;align-items:center;gap:10px">
       <h2 style="flex:1">${atRoot ? "전체" : esc(parts[parts.length - 1]) + "/"}</h2>
       ${atRoot ? "" : `<button class="ghost danger-btn" data-del-folder="${esc(selected)}" data-count="${totalFiles}">폴더 삭제</button>`}
     </div>
-    ${atRoot && docs.length ? `<div class="note-box"><div class="k">아직 나뉘지 않음</div>문서가 더 쌓이면 Bismuth 가 여기서 구분을 찾아 폴더로 나눕니다. 그때까지는 여기 그대로 있습니다.</div>` : ""}
+    ${atRoot && detail.total ? (state.folders
+      ? `<div class="note-box"><div class="k">아직 분류 전</div>어울리는 폴더가 정해지지 않은 문서입니다.</div>`
+      : `<div class="note-box"><div class="k">아직 폴더 구조가 없습니다</div>
+        저장된 카드로 문서 ${detail.total}개를 분류할 수 있습니다.
+        <button class="small" id="root-refile" style="margin-left:8px">카드로 분류</button></div>`) : ""}
     ${note?.purpose ? `<div class="note-box"><div class="k">이 폴더</div>${esc(note.purpose)}
       ${note.answers?.length ? `<div style="margin-top:8px;font-size:13px;color:var(--dim)">${note.answers.map((a) => "· " + esc(a)).join("<br>")}</div>` : ""}</div>` : ""}
     ${kids.length ? `<div class="sect">하위 폴더</div>
       ${kids.map((k) => `<div class="doc" data-go="${esc(k.path)}"><div class="t">📁 ${esc(k.name)}</div>
         ${k.purpose ? `<div class="sm">${esc(k.purpose)}</div>` : ""}</div>`).join("")}` : ""}
-    ${docs.length ? `<div class="sect">문서 ${docs.length}개</div>
-      ${docs.map(docRow).join("")}` : (kids.length ? "" : `<div class="empty" style="padding:32px 0">${atRoot ? "왼쪽에 파일을 끌어다 놓으면 Bismuth 가 읽고 정리합니다." : "이 폴더에 문서가 없습니다."}</div>`)}`;
+    ${detail.total ? `<div class="sectbar"><div class="sect">문서 ${detail.total}개</div>${viewToggle()}</div>
+      <div id="doc-list">${docs.map(docRow).join("")}</div>${moreButton(detail, folderPath)}`
+      : (kids.length ? "" : `<div class="empty" style="padding:32px 0">${atRoot ? "왼쪽에 파일을 끌어다 놓으면 Bismuth 가 읽고 정리합니다." : "이 폴더에 문서가 없습니다."}</div>`)}`;
 
   el.querySelectorAll("[data-go]").forEach((n) => n.addEventListener("click", () => {
     sel.clear();
@@ -591,7 +649,64 @@ async function renderMain() {
     renderTree(); renderMain();
   }));
   el.querySelector("[data-del-folder]")?.addEventListener("click", () => deleteFolder(selected, totalFiles));
+  $("root-refile")?.addEventListener("click", () => $("btn-refile").click());
+  bindViewToggle();
+  bindMoreButton();
   bindDocs(el); syncSel();
+}
+
+function folderPageUrl(path, offset = 0) {
+  return "/folder?path=" + encodeURIComponent(path) + `&offset=${offset}&limit=${FOLDER_PAGE_SIZE}`;
+}
+
+function normalizeFolderPage(detail) {
+  // An already-running server can briefly serve the new shell before it is restarted.
+  // Keep that transition usable; pagination takes effect as soon as the backend reloads.
+  detail.total ??= detail.documents.length;
+  detail.offset ??= 0;
+  detail.limit ??= detail.documents.length;
+  detail.has_more ??= false;
+  return detail;
+}
+
+function moreButton(detail, path) {
+  if (!detail.has_more) return "";
+  const shown = detail.offset + detail.documents.length;
+  const next = Math.min(FOLDER_PAGE_SIZE, detail.total - shown);
+  return `<div class="pager"><button id="load-more" data-folder="${esc(path)}" data-offset="${shown}">다음 ${next}개 보기</button>
+    <span>${shown.toLocaleString()} / ${detail.total.toLocaleString()}</span></div>`;
+}
+
+function bindMoreButton() {
+  $("load-more")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const path = button.dataset.folder;
+    const expectedSelection = selected;
+    const offset = Number(button.dataset.offset || 0);
+    button.disabled = true;
+    button.textContent = "불러오는 중…";
+    try {
+      const page = normalizeFolderPage(await api(folderPageUrl(path, offset)));
+      if (!button.isConnected || selected !== expectedSelection) return;
+      $("doc-list").insertAdjacentHTML("beforeend", page.documents.map(docRow).join(""));
+      bindDocs($("doc-list"));
+      syncSel();
+      const shown = page.offset + page.documents.length;
+      if (!page.has_more) {
+        button.closest(".pager").innerHTML = `<span>${page.total.toLocaleString()}개 모두 표시</span>`;
+        return;
+      }
+      const next = Math.min(FOLDER_PAGE_SIZE, page.total - shown);
+      button.dataset.offset = shown;
+      button.textContent = `다음 ${next}개 보기`;
+      button.nextElementSibling.textContent = `${shown.toLocaleString()} / ${page.total.toLocaleString()}`;
+      button.disabled = false;
+    } catch (err) {
+      button.textContent = "다시 시도";
+      button.disabled = false;
+      button.title = err.message;
+    }
+  });
 }
 
 function fileIcon(name) {
@@ -617,9 +732,22 @@ function docRow(d, showFolder = false) {
       </div>
       <button class="kebab" data-kebab="${esc(d.path)}" title="더보기">⋮</button>
     </div>
-    ${d.summary ? `<div class="sm">${esc(d.summary)}</div>` : ""}
-    ${(d.topics || []).map((t) => `<span class="chip">${esc(t)}</span>`).join("")}
+    ${d.summary ? `<div class="sm" title="${esc(d.summary)}">${esc(d.summary)}</div>` : ""}
+    ${(d.topics || []).length ? `<div class="tags">${d.topics.map((t) => `<span class="chip topic-chip">${esc(t)}</span>`).join("")}
+      ${d.topics.length > 3 ? `<span class="chip more-tags">+${d.topics.length - 3}</span>` : ""}</div>` : ""}
   </div>`;
+}
+
+function viewToggle() {
+  return `<button class="ghost view-toggle" id="view-density">${compactDocs ? "자세히 보기" : "간단히 보기"}</button>`;
+}
+function bindViewToggle() {
+  $("view-density")?.addEventListener("click", () => {
+    compactDocs = !compactDocs;
+    document.body.classList.toggle("compact-docs", compactDocs);
+    localStorage.setItem("bismuth-document-view", compactDocs ? "compact" : "detailed");
+    renderMain();
+  });
 }
 
 async function renderSearch(el, query) {
@@ -632,7 +760,7 @@ async function renderSearch(el, query) {
   el.innerHTML = `
     <div class="crumb">전체 서고 검색</div>
     <h2>“${esc(query)}”</h2>
-    <div class="sect">검색 결과 ${docs.length}개${docs.length === 100 ? " · 상위 100개" : ""}</div>
+    <div class="sectbar"><div class="sect">검색 결과 ${docs.length}개${docs.length === 100 ? " · 상위 100개" : ""}</div>${viewToggle()}</div>
     ${docs.length ? docs.map((d) => docRow(d, true)).join("") : `<div class="empty">일치하는 문서가 없습니다.</div>`}`;
   el.querySelectorAll("[data-result-folder]").forEach((button) => button.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -641,6 +769,7 @@ async function renderSearch(el, query) {
     if (selected !== ROOT) { openAncestors(selected); expanded.add(selected); }
     renderTree(); renderMain();
   }));
+  bindViewToggle();
   bindDocs(el); syncSel();
 }
 
@@ -658,46 +787,59 @@ $("search-clear").addEventListener("click", () => {
 
 async function renderInbox(el) {
   let detail;
-  try { detail = await api("/folder?path=_inbox"); }
+  try { detail = normalizeFolderPage(await api(folderPageUrl("_inbox"))); }
   catch (err) { el.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
   const docs = detail.documents;
   el.innerHTML = `
     <div class="crumb">인박스</div>
     <div style="display:flex;align-items:center;gap:10px">
       <h2 style="flex:1">📥 인박스</h2>
-      ${docs.length ? `<button class="primary" id="rescan">전체 다시 분류</button>` : ""}
+      ${detail.total ? `<button class="primary" id="rescan">전체 다시 분류</button>` : ""}
     </div>
     <div class="note-box"><div class="k">여기는</div>Bismuth 가 확신이 없어 아직 폴더에 넣지 못한 문서입니다. 눌러서 원본을 확인하고, 다시 분류하거나 폴더로 옮기거나 삭제하세요.</div>
-    ${docs.length ? docs.map(docRow).join("") : `<div class="empty">인박스가 비었습니다.</div>`}`;
+    ${detail.total ? `<div class="sectbar"><div class="sect">문서 ${detail.total}개</div>${viewToggle()}</div>
+      <div id="doc-list">${docs.map(docRow).join("")}</div>${moreButton(detail, "_inbox")}`
+      : `<div class="empty">인박스가 비었습니다.</div>`}`;
   $("rescan")?.addEventListener("click", async (e) => {
     e.target.disabled = true; e.target.textContent = "분류하는 중…";
     try { await api("/scan", { method: "POST" }); await refresh(); }
     catch (err) { alert(err.message); e.target.disabled = false; e.target.textContent = "전체 다시 분류"; }
   });
+  bindViewToggle(); bindMoreButton();
   bindDocs(el); syncSel();
 }
 
 /* ---- selection + per-row actions ---- */
 
 function bindDocs(el) {
-  viewDocs = [...el.querySelectorAll(".doc[data-open]")].map((n) => n.dataset.open);
-  el.querySelectorAll("[data-chk]").forEach((c) => c.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const path = c.dataset.chk;
-    if (e.shiftKey && selAnchor) selectRange(selAnchor, path);
-    else { c.checked ? sel.add(path) : sel.delete(path); selAnchor = path; }
-    syncSel();
-  }));
+  viewDocs = [...document.querySelectorAll("#main .doc[data-open]")].map((n) => n.dataset.open);
+  el.querySelectorAll("[data-chk]").forEach((c) => {
+    if (c.dataset.bound) return;
+    c.dataset.bound = "true";
+    c.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const path = c.dataset.chk;
+      if (e.shiftKey && selAnchor) selectRange(selAnchor, path);
+      else { c.checked ? sel.add(path) : sel.delete(path); selAnchor = path; }
+      syncSel();
+    });
+  });
   el.querySelectorAll(".doc[data-open]").forEach((n) => {
+    if (n.dataset.bound) return;
+    n.dataset.bound = "true";
     n.addEventListener("click", (e) => {
       if (e.target.closest("[data-chk],[data-kebab]")) return;
       openOriginal(n.dataset.open);
     });
     n.addEventListener("contextmenu", (e) => { e.preventDefault(); openDocMenu(e, n.dataset.path); });
   });
-  el.querySelectorAll("[data-kebab]").forEach((b) => b.addEventListener("click", (e) => {
-    e.stopPropagation(); openDocMenu(e, b.dataset.kebab);
-  }));
+  el.querySelectorAll("[data-kebab]").forEach((b) => {
+    if (b.dataset.bound) return;
+    b.dataset.bound = "true";
+    b.addEventListener("click", (e) => {
+      e.stopPropagation(); openDocMenu(e, b.dataset.kebab);
+    });
+  });
 }
 function openOriginal(path) { window.open("/api/file?path=" + encodeURIComponent(path), "_blank"); }
 function selectRange(a, b) {
@@ -759,13 +901,14 @@ function openFolderMenu(e, path) {
 }
 function showMenu(e, items) {
   const m = $("ctxmenu");
-  m.innerHTML = items.map((it, i) => `<button data-mi="${i}" class="${it.danger ? "danger" : ""}">${esc(it.label)}</button>`).join("");
+  m.setAttribute("role", "menu");
+  m.innerHTML = items.map((it, i) => `<button role="menuitem" data-mi="${i}" class="${it.danger ? "danger" : ""}">${esc(it.label)}</button>`).join("");
   m.classList.remove("hidden");
   m.style.left = Math.min(e.clientX, innerWidth - 180) + "px";
   m.style.top = Math.min(e.clientY, innerHeight - items.length * 40 - 12) + "px";
   m.querySelectorAll("[data-mi]").forEach((b, i) => b.onclick = () => { closeMenu(); items[i].fn(); });
 }
-function closeMenu() { $("ctxmenu").classList.add("hidden"); }
+function closeMenu() { $("ctxmenu").classList.add("hidden"); $("btn-manage").setAttribute("aria-expanded", "false"); }
 function openAncestors(path) { let p = ""; for (const seg of path.split("/").slice(0, -1)) { p = p ? p + "/" + seg : seg; expanded.add(p); } }
 
 /* ---- bulk delete + move ---- */
@@ -795,6 +938,7 @@ function openMoveModal(paths) {
   $("mv-list").querySelectorAll("[data-t]").forEach((r) => r.onclick = () => doMove(r.dataset.t));
   $("mv-custom").value = ""; $("mv-error").classList.add("hidden");
   $("movemodal").classList.remove("hidden");
+  $("mv-close").focus();
 }
 function closeMoveModal() { $("movemodal").classList.add("hidden"); }
 async function doMove(target) {
@@ -1267,6 +1411,27 @@ function setupStep(picking) {
   $("s-cancel").classList.toggle("hidden", !picking || !state.configured);
 }
 $("btn-settings").addEventListener("click", () => openSetup(true));
+$("btn-manage").addEventListener("click", (event) => {
+  event.stopPropagation();
+  const rect = event.currentTarget.getBoundingClientRect();
+  showMenu(
+    { clientX: rect.right - 170, clientY: rect.bottom + 4 },
+    [
+      { label: "설정", fn: () => openSetup(true) },
+      { label: "실행 기록", fn: () => { location.href = "/trace"; } },
+      { label: "카드로 전체 재분류", fn: () => $("btn-refile").click() },
+      { label: "폴더 구조 비우기", danger: true, fn: () => $("btn-empty-tree").click() },
+    ],
+  );
+  event.currentTarget.setAttribute("aria-expanded", "true");
+});
+$("btn-open-vault").addEventListener("click", async () => {
+  const button = $("btn-open-vault");
+  button.disabled = true;
+  try { await api("/vault/open", { method: "POST" }); }
+  catch (err) { alert(err.message); }
+  finally { button.disabled = false; }
+});
 $("btn-empty-tree").addEventListener("click", async () => {
   if (!confirm("문서와 카드는 남기고 폴더 구조만 비울까요?\n\n문서는 루트로 이동하며 실행 기록에서 되돌릴 수 있습니다.")) return;
   const button = $("btn-empty-tree");
