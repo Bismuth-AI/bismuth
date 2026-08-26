@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.agentkit import AssistantMessage
+from bismuth.api import app as api_app
 from bismuth.api.app import create_app
 from bismuth.cli.main import _is_loopback_host
 from bismuth.config import Settings
@@ -62,6 +63,41 @@ class TestIndex:
         assert 'id="btn-empty-tree"' in page
         assert 'id="btn-refile"' in page
 
+    def test_open_vault_control_is_available(self, client: TestClient) -> None:
+        page = client.get("/").text
+
+        assert 'id="btn-open-vault"' in page
+        assert 'api("/vault/open", { method: "POST" })' in page
+
+    def test_primary_header_keeps_maintenance_actions_in_a_menu(self, client: TestClient) -> None:
+        page = client.get("/").text
+
+        assert 'id="btn-manage"' in page
+        assert "카드로 전체 재분류" in page
+        assert "폴더 구조 비우기" in page
+
+    def test_document_view_defaults_to_compact_and_can_be_expanded(
+        self, client: TestClient
+    ) -> None:
+        page = client.get("/").text
+
+        assert 'localStorage.getItem("bismuth-document-view")' in page
+        assert '"자세히 보기"' in page
+        assert "-webkit-line-clamp: 2" in page
+
+    def test_large_folders_are_loaded_one_bounded_page_at_a_time(self, client: TestClient) -> None:
+        page = client.get("/").text
+
+        assert "const FOLDER_PAGE_SIZE = 100" in page
+        assert "function bindMoreButton()" in page
+        assert 'id="load-more"' in page
+
+    def test_chat_map_has_bounded_visual_elements(self, client: TestClient) -> None:
+        page = client.get("/chat").text
+
+        assert "const MAP_MAX_SHELVES = 24" in page
+        assert "const MAP_MAX_SPINES_PER_SHELF = 96" in page
+
     def test_search_controls_are_available(self, client: TestClient) -> None:
         page = client.get("/").text
 
@@ -110,6 +146,34 @@ class TestStatus:
         assert body["documents"] == 1
         assert body["placed"] == 1
         assert body["inbox"] == 0
+
+
+class TestOpenVault:
+    def test_opens_the_active_vault_root(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        opened: list[Path] = []
+        monkeypatch.setattr(api_app, "_open_in_file_manager", opened.append)
+
+        response = client.post("/api/vault/open")
+
+        root = Path(client.app.state.engine.vault.root)  # type: ignore[attr-defined]
+        assert response.status_code == 200
+        assert response.json() == {"opened": str(root)}
+        assert opened == [root]
+
+    def test_reports_when_the_file_manager_cannot_open(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fail(_: Path) -> None:
+            raise OSError("no file manager")
+
+        monkeypatch.setattr(api_app, "_open_in_file_manager", fail)
+
+        response = client.post("/api/vault/open")
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "볼트 폴더를 파일 탐색기에서 열지 못했습니다."
 
 
 class TestOpenFile:
@@ -479,6 +543,37 @@ class TestFolder:
 
     def test_unknown_folder_is_a_404(self, client: TestClient) -> None:
         assert client.get("/api/folder", params={"path": "nope"}).status_code == 404
+
+    def test_large_folder_is_returned_in_bounded_pages(self, client: TestClient) -> None:
+        vault = Path(client.app.state.engine.vault.root)  # type: ignore[attr-defined]
+        folder = vault / "아폴로" / "2023"
+        for index in range(205):
+            (folder / f"document-{index:03}.txt").write_text(str(index), encoding="utf-8")
+
+        first = client.get("/api/folder", params={"path": "아폴로/2023"}).json()
+        second = client.get("/api/folder", params={"path": "아폴로/2023", "offset": 100}).json()
+        last = client.get("/api/folder", params={"path": "아폴로/2023", "offset": 200}).json()
+
+        assert first["total"] == 205
+        assert first["offset"] == 0
+        assert len(first["documents"]) == 100
+        assert first["has_more"] is True
+        assert first["documents"][-1]["filename"] == "document-099.txt"
+        assert second["documents"][0]["filename"] == "document-100.txt"
+        assert len(last["documents"]) == 5
+        assert last["has_more"] is False
+
+    def test_folder_page_size_is_capped(self, client: TestClient) -> None:
+        vault = Path(client.app.state.engine.vault.root)  # type: ignore[attr-defined]
+        folder = vault / "아폴로" / "2023"
+        for index in range(220):
+            (folder / f"document-{index:03}.txt").write_text(str(index), encoding="utf-8")
+
+        body = client.get("/api/folder", params={"path": "아폴로/2023", "limit": 10_000}).json()
+
+        assert body["limit"] == 200
+        assert len(body["documents"]) == 200
+        assert body["has_more"] is True
 
 
 class TestBatchUpload:
