@@ -7,6 +7,16 @@ that below `1.0.0` the interface may break between minor versions.
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-08-29
+
+### Changed
+
+- Setup now calls the chosen model once before it saves, and refuses a configuration
+  the model did not answer. Listing a provider's catalogue only proved the credential,
+  so a model the key could not reach was discovered by the first upload failing. The
+  answering model is probed separately, on its own endpoint. An endpoint that is merely
+  down can still be saved from the dialog's new secondary button.
+
 ## [0.3.1] — 2026-08-25
 
 ### Added
