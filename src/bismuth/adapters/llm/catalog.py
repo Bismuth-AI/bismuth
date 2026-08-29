@@ -89,27 +89,101 @@ _PROBE_SCHEMA = {
 }
 
 
-def supports_response_schema(
-    *, api_base: str, model: str, api_key: str = "", headers: dict[str, str] | None = None
-) -> bool:
-    """Return whether the endpoint enforces a JSON Schema response format."""
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": "ok"}],
-        "max_tokens": 16,
-        "response_format": _PROBE_SCHEMA,
-    }
+@dataclass(frozen=True, slots=True)
+class ModelProbe:
+    """What one real request to the chosen model answered."""
+
+    ok: bool
+    native_schema: bool | None = None
+    """Whether the endpoint constrains decoding to a schema. None means unasked."""
+
+    error: str = ""
+
+
+def probe_model(
+    provider_id: str,
+    *,
+    model: str,
+    api_key: str = "",
+    api_base: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> ModelProbe:
+    """Send the smallest real request to the chosen model. Never raises.
+
+    Listing the catalogue proves the credential, not the model: a key with no
+    entitlement to the model, a typo in its name, or a listed-but-unloaded local
+    model all pass the listing and fail on the first document instead. This is
+    the same shape of call filing makes, so it fails here or not at all.
+    """
+    extra = headers or {}
+    try:
+        if provider_id == "openai":
+            return _probe_openai(api_key, api_base or "https://api.openai.com/v1", model, extra)
+        if provider_id == "anthropic":
+            return _probe_anthropic(api_key, model, extra)
+        if provider_id == "custom":
+            return _probe_custom(api_key, api_base or "http://localhost:11434/v1", model, extra)
+    except Exception as exc:
+        return ModelProbe(ok=False, error=_explain(exc))
+    return ModelProbe(ok=False, error=f"Unknown provider: {provider_id}")
+
+
+def _probe_openai(api_key: str, base: str, model: str, extra: dict[str, str]) -> ModelProbe:
+    # Reasoning models refuse `max_tokens` outright, so the newer name is the only
+    # one that works across the catalogue. Any answer at all settles the question:
+    # a cap this small leaves reasoning models no room to speak, and being heard
+    # was never what was being checked.
+    _post(
+        f"{base.rstrip('/')}/chat/completions",
+        {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}", **extra},
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": "ok"}],
+            "max_completion_tokens": 16,
+        },
+    )
+    return ModelProbe(ok=True)
+
+
+def _probe_anthropic(api_key: str, model: str, extra: dict[str, str]) -> ModelProbe:
+    _post(
+        "https://api.anthropic.com/v1/messages",
+        {
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            **extra,
+        },
+        {"model": model, "max_tokens": 16, "messages": [{"role": "user", "content": "ok"}]},
+    )
+    return ModelProbe(ok=True)
+
+
+def _probe_custom(api_key: str, base: str, model: str, extra: dict[str, str]) -> ModelProbe:
+    """Probe a self-hosted endpoint, which is also where the schema question is open.
+
+    Two requests at most. The schema one doubles as the reachability check, and
+    only when it fails does a plain one decide which of the two failed: refusing
+    a `response_format` and being unreachable look alike from one call.
+    """
+    url = f"{base.rstrip('/')}/chat/completions"
     request_headers = {
         "Content-Type": "application/json",
         **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
-        **(headers or {}),
+        **extra,
+    }
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [{"role": "user", "content": "ok"}],
+        "max_tokens": 16,
     }
     try:
-        response = _post(f"{api_base.rstrip('/')}/chat/completions", request_headers, payload)
+        response = _post(url, request_headers, {**payload, "response_format": _PROBE_SCHEMA})
     except Exception as exc:
-        logger.info("%s does not take a json_schema response_format: %s", api_base, _explain(exc))
-        return False
-    return _probe_succeeded(response)
+        logger.info("%s does not take a json_schema response_format: %s", base, _explain(exc))
+        _post(url, request_headers, payload)
+        return ModelProbe(ok=True, native_schema=False)
+    return ModelProbe(ok=True, native_schema=_probe_succeeded(response))
 
 
 def _probe_succeeded(response: dict[str, Any]) -> bool:

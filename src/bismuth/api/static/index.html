@@ -436,6 +436,7 @@ table.log td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); ver
   <div class="cardfoot">
     <span class="muted hint" id="s-note">설정은 이 컴퓨터에만 저장됩니다</span>
     <button class="ghost hidden" id="s-cancel">취소</button>
+    <button class="ghost hidden" id="s-force">그래도 저장</button>
     <button id="s-check" class="primary">다음</button>
     <button id="s-save" class="primary hidden">저장</button>
   </div>
@@ -1409,6 +1410,7 @@ function setupStep(picking) {
   $("s-check").classList.toggle("hidden", picking);
   $("s-save").classList.toggle("hidden", !picking);
   $("s-cancel").classList.toggle("hidden", !picking || !state.configured);
+  $("s-force").classList.add("hidden");
 }
 $("btn-settings").addEventListener("click", () => openSetup(true));
 $("btn-manage").addEventListener("click", (event) => {
@@ -1643,17 +1645,31 @@ $("s-check").addEventListener("click", async () => {
     setupStep(true);
   } catch (err) { showErr(err.message); } finally { btn.disabled = false; btn.textContent = "다음"; }
 });
-$("s-save").addEventListener("click", async () => {
-  const p = currentProvider(); const btn = $("s-save"); btn.disabled = true;
+/* Saving calls the model once before it writes anything. The catalogue proved the
+   key, not the model, and a model that cannot be called is only discovered on the
+   first upload otherwise -- long after this dialog said it was set up. */
+async function save(force) {
+  const p = currentProvider();
+  const btn = force ? $("s-force") : $("s-save");
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = force ? "저장 중…" : "모델을 불러 보는 중…";
   try {
     if (!bodyIsValid()) return;
     const model = $("s-model").value.trim();
     if (!model) { showErr("모델 이름을 적어 주세요."); return; }
     await api("/setup", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...setupBody(p), model, vault_path: $("s-vault").value }) });
+      body: JSON.stringify({ ...setupBody(p), model, vault_path: $("s-vault").value, force }) });
     $("setup").classList.add("hidden"); await refresh();
-  } catch (err) { showErr(err.message); } finally { btn.disabled = false; }
-});
+  } catch (err) {
+    showErr(err.message);
+    // An endpoint that is merely down should not lock the user out of a dialog
+    // there is no way past.
+    $("s-force").classList.remove("hidden");
+  } finally { btn.disabled = false; btn.textContent = label; }
+}
+$("s-save").addEventListener("click", () => save(false));
+$("s-force").addEventListener("click", () => save(true));
 
 // Open setup when linked from the chat page.
 if (location.search.includes("setup")) {

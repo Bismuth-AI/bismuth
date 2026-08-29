@@ -210,7 +210,9 @@ class TestRequestBody:
         assert kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
-class TestSchemaSupport:
+class TestTheModelProbe:
+    """Listing the catalogue proves the key. Only a call proves the model."""
+
     def test_an_endpoint_that_takes_a_schema(self, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: dict[str, Any] = {}
 
@@ -220,40 +222,115 @@ class TestSchemaSupport:
 
         monkeypatch.setattr(catalog, "_post", fake_post)
 
-        assert catalog.supports_response_schema(
-            api_base="https://gateway/v1",
+        probe = catalog.probe_model(
+            "custom",
             model="qwen3.6-35b",
             api_key="test-key-x",
+            api_base="https://gateway/v1",
             headers={"Cookie": "c"},
         )
+
+        assert probe.ok
+        assert probe.native_schema
         assert seen["url"] == "https://gateway/v1/chat/completions"
         assert seen["payload"]["response_format"]["type"] == "json_schema"
         # Both credentials: the gateway wants the cookie, the model server the bearer.
         assert seen["headers"]["Authorization"] == "Bearer test-key-x"
         assert seen["headers"]["Cookie"] == "c"
 
-    def test_an_endpoint_that_ignores_the_schema_is_not_supported(
+    def test_an_endpoint_that_ignores_the_schema_is_reachable_anyway(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            catalog, "_post", lambda *_: {"choices": [{"message": {"content": "ok"}}]}
+        )
+
+        probe = catalog.probe_model("custom", model="m", api_base="https://g/v1")
+
+        assert probe.ok
+        assert probe.native_schema is False
+
+    def test_refusing_a_schema_is_not_refusing_the_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The second request is what tells the two apart."""
+        calls: list[dict[str, Any]] = []
+
+        def fake_post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
+            calls.append(payload)
+            if "response_format" in payload:
+                raise _http_error(400, b"unsupported response_format")
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        monkeypatch.setattr(catalog, "_post", fake_post)
+
+        probe = catalog.probe_model("custom", model="m", api_base="https://g/v1")
+
+        assert probe.ok
+        assert probe.native_schema is False
+        assert len(calls) == 2
+
+    def test_an_endpoint_that_is_down_is_reported_not_raised(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
             catalog,
             "_post",
-            lambda *_: {"choices": [{"message": {"content": "ok"}}]},
+            lambda *_: (_ for _ in ()).throw(urllib.error.URLError("connection refused")),
         )
 
-        assert not catalog.supports_response_schema(api_base="https://g/v1", model="m")
+        probe = catalog.probe_model("custom", model="m", api_base="http://localhost:11434/v1")
 
-    def test_an_endpoint_that_refuses_is_a_no_not_a_crash(
+        assert not probe.ok
+        assert "connection refused" in probe.error
+
+    def test_a_model_the_key_cannot_reach(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The failure this whole probe exists for: the key lists it, the model refuses."""
+        body = json.dumps({"error": {"message": "model not found"}}).encode()
+        monkeypatch.setattr(
+            catalog, "_post", lambda *_: (_ for _ in ()).throw(_http_error(404, body))
+        )
+
+        probe = catalog.probe_model("openai", model="gpt-nonesuch", api_key="k")
+
+        assert not probe.ok
+        assert "model not found" in probe.error
+
+    def test_openai_asks_for_the_cap_reasoning_models_accept(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            catalog,
-            "_post",
-            lambda *_: (_ for _ in ()).throw(_http_error(400, b"unsupported response_format")),
-        )
+        """`max_tokens` is refused outright by the reasoning models, so it is never sent."""
+        seen: dict[str, Any] = {}
 
-        assert not catalog.supports_response_schema(api_base="https://g/v1", model="m")
+        def fake_post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
+            seen.update(url=url, payload=payload)
+            return {"choices": [{"message": {"content": ""}}]}
 
+        monkeypatch.setattr(catalog, "_post", fake_post)
+
+        assert catalog.probe_model("openai", model="gpt-5.6", api_key="k").ok
+        assert "max_tokens" not in seen["payload"]
+        assert seen["payload"]["max_completion_tokens"] == 16
+
+    def test_anthropic_is_probed_on_its_own_endpoint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: dict[str, Any] = {}
+
+        def fake_post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
+            seen.update(url=url, headers=headers, payload=payload)
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+        monkeypatch.setattr(catalog, "_post", fake_post)
+
+        probe = catalog.probe_model("anthropic", model="claude-x", api_key="k")
+
+        assert probe.ok
+        # Nothing is claimed about schema support: LiteLLM's table already knows.
+        assert probe.native_schema is None
+        assert seen["url"] == "https://api.anthropic.com/v1/messages"
+        assert seen["headers"]["x-api-key"] == "k"
+
+
+class TestSchemaSupport:
     def test_the_adapter_obeys_the_setting_over_the_table(self) -> None:
         forced = LiteLLMAdapter(model="openai/qwen3.6-35b", native_schema=True)
         refused = LiteLLMAdapter(model="openai/gpt-4o", native_schema=False)

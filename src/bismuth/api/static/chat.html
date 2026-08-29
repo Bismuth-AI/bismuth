@@ -326,6 +326,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   <div class="cardfoot">
     <a href="/?setup" class="sub">정리 모델 설정 →</a>
     <button id="m-cancel" class="hidden">취소</button>
+    <button id="m-force" class="hidden">그래도 저장</button>
     <button id="m-check" class="primary">다음</button>
     <button id="m-save" class="primary hidden">저장</button>
   </div>
@@ -782,6 +783,7 @@ function chatStep(picking) {
   $("m-check").classList.toggle("hidden", picking);
   $("m-save").classList.toggle("hidden", !picking);
   $("m-cancel").classList.toggle("hidden", !picking);
+  $("m-force").classList.add("hidden");
 }
 
 function headerRow(name = "", value = "") {
@@ -982,8 +984,9 @@ $("btn-model").addEventListener("click", async () => {
   onChatProvider();
 });
 
-$("m-save").addEventListener("click", async () => {
-  const btn = $("m-save");
+/* Saving calls the answering model once first; see the same note in index.html. */
+async function saveAnswering(force) {
+  const btn = force ? $("m-force") : $("m-save");
   const id = chosenProvider();
   let body;
   if (id !== SAME && !bodyIsValid()) return;
@@ -995,8 +998,8 @@ $("m-save").addEventListener("click", async () => {
   try {
     const payload = id === SAME
       ? { model, api_mode: $("m-api-mode").value,
-          reasoning_effort: $("m-reasoning-effort").value }
-      : { provider_id: id, model,
+          reasoning_effort: $("m-reasoning-effort").value, force }
+      : { provider_id: id, model, force,
           api_key: $("m-key").value.trim(), reuse_saved_key: id === config.chat_provider_id,
           api_base: $("m-base").value.trim() || null,
           api_headers: collectHeaders(), api_body: body,
@@ -1012,8 +1015,13 @@ $("m-save").addEventListener("click", async () => {
     said(config.chat_is_separate
       ? "이제 " + answeringName + " 가 답합니다. 정리는 " + config.model + " 가 계속합니다."
       : "이제 " + config.model + " 가 답합니다.");
-  } catch (err) { modalErr(err.message); } finally { btn.disabled = false; }
-});
+  } catch (err) {
+    modalErr(err.message);
+    $("m-force").classList.remove("hidden");
+  } finally { btn.disabled = false; }
+}
+$("m-save").addEventListener("click", () => saveAnswering(false));
+$("m-force").addEventListener("click", () => saveAnswering(true));
 
 /** A line in the thread, from the app rather than from the librarian. */
 function said(text) {

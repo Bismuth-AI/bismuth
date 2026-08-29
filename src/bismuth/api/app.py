@@ -26,8 +26,8 @@ from bismuth import __version__
 from bismuth.adapters.llm import (
     list_models,
     litellm_adapter,
+    probe_model,
     suggest_model,
-    supports_response_schema,
 )
 from bismuth.api import diagnostics
 from bismuth.api.progress import ProgressBus, stream
@@ -357,18 +357,24 @@ def create_app(
         if chosen.needs_key and not key:
             raise HTTPException(400, f"{chosen.label} 에는 키가 필요합니다.")
 
-        # Probe custom endpoints because they are absent from LiteLLM's model catalog.
-        native: bool | None = None
-        if chosen.id == "custom":
-            native = await anyio.to_thread.run_sync(
-                lambda: supports_response_schema(
-                    api_base=body.api_base or chosen.default_api_base or "",
-                    model=body.model,
-                    api_key=key,
-                    headers=body.api_headers,
-                )
+        # A credential that lists the catalogue still says nothing about the model
+        # chosen from it, and everything downstream assumes the model answers. Ask
+        # it once here, where the answer is a message in the wizard rather than a
+        # failed document hours later. The same call tells us whether a self-hosted
+        # endpoint constrains decoding to a schema, which LiteLLM's table cannot.
+        probe = await anyio.to_thread.run_sync(
+            lambda: probe_model(
+                chosen.id,
+                model=body.model,
+                api_key=key,
+                api_base=body.api_base or chosen.default_api_base,
+                headers=body.api_headers,
             )
-            logger.info("%s constrains decoding to a schema: %s", body.api_base, native)
+        )
+        if not probe.ok and not body.force:
+            raise HTTPException(400, f"{body.model} 호출에 실패했습니다 — {probe.error}")
+        native = probe.native_schema
+        logger.info("%s answers: %s (schema: %s)", body.model, probe.ok, native)
 
         answers = UserConfig(
             vault_path=Path(body.vault_path).expanduser(),
@@ -398,7 +404,7 @@ def create_app(
         return setup_state()
 
     @app.post("/api/setup/chat", response_model=SetupStateOut)
-    def setup_chat(body: ChatSetupIn) -> SetupStateOut:
+    async def setup_chat(body: ChatSetupIn) -> SetupStateOut:
         """Configure the answering model without changing filing settings."""
         current = app.state.settings
         if not current.is_configured:
@@ -409,6 +415,16 @@ def create_app(
             raise HTTPException(400, f"알 수 없는 프로바이더: {body.provider_id}")
 
         model = body.model.strip()
+        # Where the probe below should be sent. Filing and answering may be
+        # different models on different addresses, so the filing probe said
+        # nothing about this one.
+        target: dict[str, Any] = {
+            "provider_id": current.provider_id,
+            "model": model or current.model,
+            "api_key": current.api_key,
+            "api_base": current.api_base,
+            "headers": current.api_headers,
+        }
         if chosen is None:
             # Same provider as filing. The same model name is not a second model;
             # storing it would only mean the two drift apart when one is changed.
@@ -436,6 +452,13 @@ def create_app(
                 raise HTTPException(400, f"{chosen.label} 에는 엔드포인트 주소가 필요합니다.")
             if not model:
                 raise HTTPException(400, "모델을 골라 주세요.")
+            target = {
+                "provider_id": chosen.id,
+                "model": model,
+                "api_key": key,
+                "api_base": base,
+                "headers": body.api_headers,
+            }
             answering = UserConfig(
                 vault_path=current.vault_path,
                 provider_id=current.provider_id,
@@ -456,6 +479,10 @@ def create_app(
                 chat_api_mode=body.api_mode,
                 chat_reasoning_effort=body.reasoning_effort,
             )
+
+        probe = await anyio.to_thread.run_sync(lambda: probe_model(**target))
+        if not probe.ok and not body.force:
+            raise HTTPException(400, f"{target['model']} 호출에 실패했습니다 — {probe.error}")
 
         save_user_config(answering)
         updated = Settings()
@@ -1299,6 +1326,8 @@ class ChatSetupIn(BaseModel):
     api_body: dict[str, Any] = Field(default_factory=dict)
     api_mode: ApiMode = "auto"
     reasoning_effort: ReasoningEffort = "auto"
+    force: bool = False
+    """Save an endpoint that did not answer the probe. A local server that is merely down."""
 
 
 class SetupIn(BaseModel):
@@ -1314,3 +1343,5 @@ class SetupIn(BaseModel):
     chat_model: str = ""
     """Empty means the same model files documents and answers questions."""
     vault_path: str
+    force: bool = False
+    """Save an endpoint that did not answer the probe. A local server that is merely down."""
