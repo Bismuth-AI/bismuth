@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from bismuth.adapters.llm import ModelProbe
 from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.agentkit import AssistantMessage
 from bismuth.api import app as api_app
@@ -387,6 +388,79 @@ class TestLocalSecurityBoundary:
     def test_cli_rejects_external_hosts(self) -> None:
         assert not _is_loopback_host("0.0.0.0")
         assert not _is_loopback_host("192.168.1.10")
+
+
+class TestSetupCallsTheModelBeforeItSaves:
+    """A key that lists the catalogue says nothing about the model chosen from it."""
+
+    def _answers(self, client: TestClient, monkeypatch: pytest.MonkeyPatch, probe: ModelProbe):  # type: ignore[no-untyped-def]
+        seen: dict[str, object] = {}
+
+        def fake(*args: object, **kwargs: object) -> ModelProbe:
+            seen.update(kwargs)
+            seen["provider_id"] = kwargs.get("provider_id", args[0] if args else None)
+            return probe
+
+        monkeypatch.setattr("bismuth.api.app.probe_model", fake, raising=True)
+        return seen
+
+    def _save(self, client: TestClient, **extra: object):  # type: ignore[no-untyped-def]
+        return client.post(
+            "/api/setup",
+            json={
+                "provider_id": "custom",
+                "api_base": "http://gateway/v1",
+                "model": "qwen3-32b",
+                "vault_path": str(client.app.state.engine.vault.root),  # type: ignore[attr-defined]
+                **extra,
+            },
+        )
+
+    def test_a_model_that_cannot_be_called_is_refused(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._answers(client, monkeypatch, ModelProbe(ok=False, error="404 endpoint not found"))
+
+        response = self._save(client)
+
+        assert response.status_code == 400
+        assert "404 endpoint not found" in response.json()["detail"]
+        assert not client.app.state.settings.model  # type: ignore[attr-defined]
+
+    def test_the_user_may_save_past_an_endpoint_that_is_merely_down(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Setup is a dialog with no way out, so a stopped local server cannot be a wall."""
+        self._answers(client, monkeypatch, ModelProbe(ok=False, error="connection refused"))
+
+        response = self._save(client, force=True)
+
+        assert response.status_code == 200
+        assert response.json()["model"] == "qwen3-32b"
+
+    def test_the_probe_goes_to_the_endpoint_being_saved(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = self._answers(client, monkeypatch, ModelProbe(ok=True, native_schema=True))
+
+        assert self._save(client, api_headers={"Cookie": "c"}).status_code == 200
+        assert seen["provider_id"] == "custom"
+        assert seen["model"] == "qwen3-32b"
+        assert seen["api_base"] == "http://gateway/v1"
+        assert seen["headers"] == {"Cookie": "c"}
+
+    def test_the_answering_model_is_probed_too(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Filing and answering can be different models; one probe is not the other."""
+        self._save(client)
+        self._answers(client, monkeypatch, ModelProbe(ok=False, error="model not found"))
+
+        response = client.post("/api/setup/chat", json={"model": "answering-model"})
+
+        assert response.status_code == 400
+        assert "model not found" in response.json()["detail"]
+        assert not client.app.state.settings.chat_model  # type: ignore[attr-defined]
 
 
 class TestAnsweringSide:
@@ -851,8 +925,13 @@ class TestTheWizardDoesNotCarryAnEndpointForward:
         monkeypatch.setattr("bismuth.config.CONFIG_DIR", tmp_path)
         monkeypatch.setattr("bismuth.config.CONFIG_FILE", config)
         monkeypatch.setitem(Settings.model_config, "json_file", config)
+        # As the real probe answers: only a self-hosted endpoint is asked about schemas.
         monkeypatch.setattr(
-            "bismuth.api.app.supports_response_schema", lambda **_: True, raising=True
+            "bismuth.api.app.probe_model",
+            lambda provider_id, **_: ModelProbe(
+                ok=True, native_schema=True if provider_id == "custom" else None
+            ),
+            raising=True,
         )
 
         custom = client.post(

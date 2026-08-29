@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from bismuth import logging_setup
+from bismuth.adapters.llm import ModelProbe
 from bismuth.adapters.llm.fake import FakeLLM
 from bismuth.api.app import create_app
 from bismuth.config import Settings
@@ -25,6 +26,14 @@ from bismuth.prompts import charters as charter_prompts
 @pytest.fixture(autouse=True)
 def _logs_go_somewhere_disposable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(logging_setup, "LOG_DIR", tmp_path / "logs")
+
+
+@pytest.fixture(autouse=True)
+def _the_setup_probe_answers_without_a_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Saving settings calls the chosen model for real. No test may leave this machine."""
+    monkeypatch.setattr(
+        "bismuth.api.app.probe_model", lambda *_, **__: ModelProbe(ok=True), raising=True
+    )
 
 
 @pytest.fixture
