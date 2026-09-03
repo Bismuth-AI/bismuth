@@ -237,6 +237,21 @@ button.small { padding: 4px 9px; font-size: 12px; }
 .more[open] > summary::before { content: "▾ "; }
 .cardfoot a { color: var(--dim); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* One row per past conversation: what was asked, and how to drop it. */
+.past { display: flex; align-items: center; gap: 8px; padding: 9px 2px; border-bottom: 1px solid var(--line); }
+.past:last-child { border-bottom: 0; }
+.past .open {
+  flex: 1; min-width: 0; text-align: left; background: transparent; border-color: transparent;
+  padding: 4px 6px;
+}
+.past .open:hover { background: var(--accent-soft); }
+.past .title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.past .when { display: block; color: var(--dim); font-size: 11.5px; margin-top: 2px; }
+.past .drop { color: var(--dim); border-color: transparent; background: transparent; }
+.past .drop:hover { color: var(--danger); }
+.past.on .title { color: var(--accent); font-weight: 650; }
+#h-list .none { color: var(--dim); padding: 14px 2px; }
 </style>
 </head>
 <body>
@@ -245,9 +260,18 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   <span class="stat" id="stat"></span>
   <span style="flex:1"></span>
   <button id="reset">새 대화</button>
+  <button id="btn-history">지난 대화</button>
   <button id="btn-model">답변 모델</button>
   <a href="/" style="font-size:12.5px">← 서고</a>
 </header>
+
+<!-- Past conversations are read back from the vault's own state directory. -->
+<div id="history" class="overlay hidden"><div class="card" role="dialog" aria-modal="true" aria-labelledby="history-title">
+  <div class="cardhead"><h2 id="history-title">지난 대화</h2><button id="h-close">닫기</button></div>
+  <p class="sub">제목을 누르면 그때 나눈 대화를 그대로 봅니다. 이어서 물어볼 수도 있습니다.</p>
+  <div id="h-list"></div>
+  <div id="h-error" class="err hidden"></div>
+</div></div>
 
 <!--
   Which model answers is a decision made here, where the answers are read. The rest of
@@ -753,10 +777,116 @@ $("q").addEventListener("input", () => {
 document.addEventListener("click", (e) => {
   if (e.target.classList.contains("seed")) ask(e.target.textContent);
 });
-$("reset").addEventListener("click", async () => {
-  if (conversation) await fetch(`/api/chat/${conversation}`, { method: "DELETE" }).catch(() => {});
+/* "새 대화" only lets go of the current thread. Deleting is done from the history panel,
+   where a person can see what they are throwing away. */
+$("reset").addEventListener("click", () => {
   conversation = null;
   location.reload();
+});
+
+/* ---------------- past conversations ---------------- */
+
+const shutHistory = () => $("history").classList.add("hidden");
+$("h-close").addEventListener("click", shutHistory);
+$("history").addEventListener("click", (e) => { if (e.target.id === "history") shutHistory(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("history").classList.contains("hidden")) shutHistory();
+});
+
+function when(iso) {
+  const then = new Date(iso);
+  if (isNaN(then)) return "";
+  const mins = Math.round((Date.now() - then.getTime()) / 60000);
+  if (mins < 1) return "방금";
+  if (mins < 60) return `${mins}분 전`;
+  if (mins < 60 * 24) return `${Math.round(mins / 60)}시간 전`;
+  return then.toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric" });
+}
+
+function historyErr(message) {
+  $("h-error").textContent = message || "";
+  $("h-error").classList.toggle("hidden", !message);
+}
+
+function pastRow(past) {
+  const row = document.createElement("div");
+  row.className = "past" + (past.id === conversation ? " on" : "");
+  row.innerHTML =
+    '<button class="open"><span class="title"></span>'
+    + `<span class="when">${esc(when(past.updated_at))} · 질문 ${past.turns}개</span></button>`
+    + '<button class="drop small" title="이 대화 지우기">✕</button>';
+  row.querySelector(".title").textContent = past.title || "(제목 없는 대화)";
+  row.querySelector(".open").addEventListener("click", () => reopen(past.id));
+  row.querySelector(".drop").addEventListener("click", () => drop(past.id, row));
+  return row;
+}
+
+async function listHistory() {
+  const box = $("h-list");
+  box.innerHTML = '<div class="none">불러오는 중…</div>';
+  historyErr("");
+  let past = [];
+  try {
+    const r = await fetch("/api/chat/conversations");
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    past = await r.json();
+  } catch (err) { box.innerHTML = ""; historyErr(err.message); return; }
+  box.innerHTML = "";
+  if (!past.length) { box.innerHTML = '<div class="none">아직 나눈 대화가 없습니다.</div>'; return; }
+  for (const one of past) box.append(pastRow(one));
+}
+
+/** Draw a stored conversation into the thread and continue it from there. */
+async function reopen(id) {
+  if (busy) return;
+  historyErr("");
+  let past;
+  try {
+    const r = await fetch(`/api/chat/conversations/${encodeURIComponent(id)}`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    past = await r.json();
+  } catch (err) { historyErr(err.message); return; }
+
+  conversation = past.id;
+  $("thread").innerHTML = "";
+  for (const turn of past.turns || []) {
+    const box = fresh("turn", "");
+    box.append(fresh("mine", esc(turn.question)));
+    const answer = fresh("theirs", markdown(turn.answer || ""));
+    box.append(answer);
+    if ((turn.tools || []).length) {
+      const trace = document.createElement("details");
+      trace.className = "work";
+      trace.innerHTML = `<summary>서고에서 ${turn.tools.length}번 찾아봤습니다</summary>`
+        + `<div class="steps">${turn.tools.map((t) =>
+             `<div class="step"><b>${esc(TOOLS[t] || t)}</b></div>`).join("")}</div>`;
+      box.insertBefore(trace, answer);
+    }
+    $("thread").append(box);
+  }
+  shutHistory();
+  $("thread").lastElementChild?.scrollIntoView({ block: "end" });
+  $("q").focus();
+}
+
+async function drop(id, row) {
+  if (!confirm("이 대화를 지웁니다. 되돌릴 수 없습니다.")) return;
+  try {
+    const r = await fetch(`/api/chat/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!r.ok) throw new Error(r.statusText);
+  } catch (err) { historyErr(err.message); return; }
+  row.remove();
+  // The thread on screen is the one that was just deleted; keep the text, drop the thread id.
+  if (conversation === id) conversation = null;
+  if (!$("h-list").children.length) {
+    $("h-list").innerHTML = '<div class="none">아직 나눈 대화가 없습니다.</div>';
+  }
+}
+
+$("btn-history").addEventListener("click", () => {
+  $("history").classList.remove("hidden");
+  $("h-close").focus();
+  listHistory();
 });
 
 /* ---------------- answering model ---------------- */

@@ -7,6 +7,16 @@ that below `1.0.0` the interface may break between minor versions.
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-09-03
+
+### Added
+
+- Chat keeps a history. Past conversations are listed in 「서고에 묻기」, reopened by
+  clicking one — the whole exchange is drawn back into the thread and can be continued —
+  and deleted one at a time. Transcripts live in the vault's own state directory, so
+  history survives a restart. 「새 대화」 now only lets go of the current thread; deleting
+  happens in the history panel, where what is being thrown away is visible.
+
 ## [0.3.2] — 2026-08-29
 
 ### Changed
