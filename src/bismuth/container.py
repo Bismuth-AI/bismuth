@@ -11,6 +11,7 @@ from bismuth.adapters.ledger import LEDGER_FILENAME, JsonlSpendLedger
 from bismuth.adapters.llm import LiteLLMAdapter
 from bismuth.adapters.llm.chat import LiteLLMChatModel
 from bismuth.adapters.parsers import build_registry
+from bismuth.adapters.transcripts import FileTranscripts
 from bismuth.adapters.vault import FileSystemVault
 from bismuth.agentkit import ChatModel
 from bismuth.config import Settings
@@ -19,6 +20,7 @@ from bismuth.ports.journal import JournalStore
 from bismuth.ports.ledger import SpendLedger
 from bismuth.ports.llm import LLM
 from bismuth.ports.parser import ParserRegistry
+from bismuth.ports.transcripts import TranscriptStore
 from bismuth.ports.vault import STATE_DIR, Vault
 from bismuth.services.agent import AgentService
 from bismuth.services.cards import CardService
@@ -45,6 +47,9 @@ class Bismuth:
     ledger: SpendLedger
     """Persistent model usage for this vault."""
     parsers: ParserRegistry
+    transcripts: TranscriptStore
+    """Past conversations, kept so chat history survives a restart."""
+
     transactor: Transactor
     cards: CardService
     charters: CharterService
@@ -76,6 +81,7 @@ def build(
     journal = JsonlJournal(state / JOURNAL_FILENAME)
     ledger = JsonlSpendLedger(state / LEDGER_FILENAME)
     catalog = FileCatalog(state)
+    transcripts = FileTranscripts(state)
     parsers = build_registry()
 
     # Filing and answering are separate jobs and may be separate models; when nothing
@@ -123,6 +129,7 @@ def build(
         journal=journal,
         ledger=ledger,
         parsers=parsers,
+        transcripts=transcripts,
         transactor=transactor,
         cards=cards,
         charters=charters,
@@ -145,6 +152,7 @@ def build(
             charters=charters,
             context_tokens=settings.chat_context_tokens,
             budget_tokens=settings.chat_budget_tokens,
+            transcripts=transcripts,
         ),
         simple=SimpleFiler(
             vault=vault,

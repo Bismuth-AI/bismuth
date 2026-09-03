@@ -47,6 +47,7 @@ from bismuth.domain.document import DocumentCard, sidecar_name
 from bismuth.domain.errors import BismuthError
 from bismuth.domain.journal import Actor, JournalEntry
 from bismuth.domain.progress import Progress, Stage
+from bismuth.domain.transcript import Transcript, TranscriptSummary
 from bismuth.logging_setup import configure_logging, finish_run_manifest, update_run_manifest
 from bismuth.ports.llm import CURRENT_USAGE, Spend, Usage
 from bismuth.ports.vault import INBOX
@@ -1097,9 +1098,22 @@ def create_app(
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
 
+    @app.get("/api/chat/conversations", response_model=list[TranscriptSummary])
+    def conversations(engine: Engine, limit: int = 50) -> list[TranscriptSummary]:
+        """What has been asked here before, most recent first."""
+        return engine.conversation.history(limit=limit)
+
+    @app.get("/api/chat/conversations/{conversation_id}", response_model=Transcript)
+    def conversation(conversation_id: str, engine: Engine) -> Transcript:
+        """One past conversation, read back turn by turn."""
+        found = engine.conversation.get(conversation_id)
+        if found is None:
+            raise HTTPException(404, "지난 대화를 찾을 수 없습니다.")
+        return found.transcript()
+
     @app.delete("/api/chat/{conversation_id}")
     def forget_chat(conversation_id: str, engine: Engine) -> dict[str, str]:
-        """Start over. The tree may have changed under an old transcript anyway."""
+        """Drop a conversation, both the live one and what was written down."""
         engine.conversation.forget(conversation_id)
         return {"forgotten": conversation_id}
 
