@@ -7,6 +7,8 @@ that below `1.0.0` the interface may break between minor versions.
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-09-03
+
 ### Added
 
 - Chat keeps a history. Past conversations are listed in 「서고에 묻기」, reopened by
