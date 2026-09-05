@@ -281,6 +281,24 @@ Not currently supported:
 Parser adapters for additional formats exist in the codebase, but those formats are not
 yet supported by the complete upload and analysis flow.
 
+## Roadmap
+
+### Human-guided folder structures
+
+A future version of Bismuth will let users review and edit AI-generated folder
+structures directly. Creating, renaming, moving, or merging folders will be treated not
+only as a one-time correction, but also as feedback about how that vault should be
+organized.
+
+When new documents are added, Bismuth will consider both their contents and the user's
+previous structural corrections. Those preference signals will give additional weight
+to organization choices that match the user's established filing style while still
+allowing the structure to adapt to new material.
+
+The initial implementation will focus on human-in-the-loop personalization: recording
+corrections as explicit preferences and using them as context and constraints for later
+organization runs. This does not imply training or fine-tuning the underlying model.
+
 ## Architecture
 
 Bismuth uses ports and adapters. Dependency direction is enforced by Ruff rules.
