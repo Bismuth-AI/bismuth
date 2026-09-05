@@ -7,6 +7,14 @@ that below `1.0.0` the interface may break between minor versions.
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-09-05
+
+### Changed
+
+- The English and Korean READMEs now describe the planned human-in-the-loop organization
+  flow: users will be able to revise generated folder structures, and later filing runs
+  will treat those corrections as vault-specific preference signals.
+
 ## [0.3.3] — 2026-09-03
 
 ### Added
